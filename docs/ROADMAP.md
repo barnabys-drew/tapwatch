@@ -1,8 +1,8 @@
 # tapwatch: road to a public release
 
-_Started 2026-10-13. Goal: a **public open-source release** that friends and co-workers can
-install on their own home networks, on **both** a small Linux box and a Windows PC (today's
-setup). Work goes `dev` → PR → `main`; each item lands as its own PR with tests._
+_v0.1.0 released 2026-10-13. Goal: something friends and co-workers can install on their own home
+networks, on **both** a small Linux box and a Windows PC. Work goes `dev` → PR → `main`; each
+item lands as its own PR with tests and the personal-data check._
 
 Each milestone ends in something usable. Tick items as their PRs merge.
 
@@ -54,13 +54,22 @@ Specs are in `detections/DESIGN.md` and `detections/rules/`. Built: R01–R07, R
 ## M6 Release
 
 - [x] Personal-data gate: `tools/check_personal_data.py` (generic patterns in CI, plus a gitignored local denylist of household specifics). It caught a real household MAC in the tests
-- [ ] Public repo from a **clean snapshot**. Today's history holds household specifics (device IPs, roles, measured traffic), so it stays private. Decided 2026-10-13: name **tapwatch**, license **MIT**
+- [x] Public repo from a clean snapshot (the development history held household specifics, so it stays private)
 - [x] README rewrite: what it is, what it catches, setup for each path, the case desk, AI triage and its guardrails, what leaves the network
 - [ ] Screenshots of the case desk on synthetic data
 - [x] LICENSE (MIT), CONTRIBUTING, SECURITY (private reporting), CODE_OF_CONDUCT, issue templates, package metadata
-- [ ] sec-workflows (SAST, Trivy, tests + personal-data gate) on the public repo; Dependabot to `dev` (files ready; switched on when the repo exists)
-- [ ] Tagged `v0.1.0` with release notes
+- [x] SAST, Trivy, tests and the personal-data gate on every PR; Dependabot to `dev`; private vulnerability reporting
+- [x] Tagged `v0.1.0` with release notes
 
 ## Not in scope for v0.1
 
 Fleet server, cloud hosting, multi-site, a mobile app.
+
+## Next (after 0.1)
+
+- [ ] osquery host context on a long-running installed agent (0.1 verified live queries only)
+- [ ] Clean-machine test of the Windows path
+- [ ] Check the UniFi admin-login mapping against real events; port-forward and UPnP change events
+- [ ] Screenshots of the case desk on synthetic data
+- [ ] Jev with `audience: home` wording vs `office`
+- [ ] Stats page that refreshes itself
