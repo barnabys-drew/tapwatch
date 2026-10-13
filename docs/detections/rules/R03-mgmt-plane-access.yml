@@ -1,0 +1,30 @@
+title: Non-admin device touches the management plane or another device's admin port
+id: 2861462f-5d46-4b12-a629-a6ef19376d2a
+status: experimental
+description: |
+  R03. Lateral movement or recon against the UDM/UniFi admin UI or SSH/RDP/SMB/VNC/telnet
+  on other devices. Measured 2026-10-12: only the main PC touched UDM tcp/443 or 22.
+  Blind spot: same-switch device-to-device traffic is not on the mirror.
+  Route: ALERT, code-only. Jev: none (the fact is the verdict).
+logsource:
+  product: zeek
+  service: conn
+detection:
+  internal_pair:
+    id.orig_h|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']
+    id.resp_h|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']
+  admin_port:
+    id.resp_p: [22, 23, 445, 3389, 5900, 8291]
+  gateway_ui:
+    id.resp_h|expand: '%gateway_ips%'      # from config: the UDM interface addresses
+    id.resp_p: [443, 8443]
+  admin_device:
+    id.orig_h|expand: '%admin_devices%'    # assets.yaml entries with admin: true
+  unifi_gear:
+    id.orig_h|expand: '%network_gear%'     # APs/switch/Protect: inform 8080, 7444, 6666, syslog 5514
+  condition: internal_pair and (admin_port or gateway_ui) and not admin_device and not unifi_gear
+fields: [id.orig_h, id.resp_h, id.resp_p, conn_state]
+falsepositives:
+  - A new phone or laptop used for UniFi admin (add it to admin_devices)
+level: high
+tags: [attack.lateral_movement, attack.discovery, attack.t1021, attack.t1046]

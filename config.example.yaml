@@ -1,0 +1,99 @@
+# Copy to config.yaml. Secrets are read from the environment variables named here.
+db_path: /data/tapwatch.db
+assets_file: /config/assets.yaml
+ioc_file: /config/iocs.txt          # optional: one IP or domain per line
+feeds_dir: /config/feeds             # `tapwatch update-feeds` downloads the public lists here (weekly is plenty)
+# The three lists below default to feeds_dir; set them only to use your own copies:
+# popular_domains_file: top-100k.csv  # Tranco popular domains (rank,domain)
+# oui_file: oui.csv                   # IEEE MAC vendor registry (new-device vendor names)
+# asn_file: ip2asn-v4.tsv.gz          # iptoasn.com IP -> network and country (IoT drift)
+
+typesafe:
+  enabled: true                      # false = rules only, nothing leaves the network
+  provider: auto                     # auto | typesafe | vercel  (auto: TypeSafe key if set, else Vercel)
+  api_key_env: TYPESAFE_API_KEY      # direct from console.typesafe.ai
+  model: jev-1.13.0                  # pinned on purpose; re-run the eval before changing
+  gateway_key_env: AI_GATEWAY_API_KEY   # or via Vercel AI Gateway (billed by Vercel)
+  gateway_model: typesafe-ai/jev
+
+# Where alerts go. Set any of these environment variables (in .env); every one that's set gets the
+# alert, and email (below) is the fallback when they all fail. URLs are secrets, so never put them here.
+#   TAPWATCH_NTFY_URL      phone push via ntfy: https://ntfy.sh/<a long random topic> (+ TAPWATCH_NTFY_TOKEN if protected)
+#   TAPWATCH_DISCORD_URL   a Discord channel webhook (Channel settings > Integrations > Webhooks)
+#   TAPWATCH_TEAMS_URL     Teams > channel > Workflows > "Post to a channel when a webhook request is received"
+#   TAPWATCH_WEBHOOK_URL   any JSON webhook (Home Assistant, n8n, Slack workflow...)
+# To read a different variable name: ntfy: {url_env: ..., token_env: ...}, discord: {webhook_url_env: ...},
+# teams: {webhook_url_env: ...}, webhook: {url_env: ...}
+
+# smtp:                              # optional email fallback (or copy, with always: true)
+#   host: smtp.office365.com
+#   port: 587
+#   username: alerts@yourcompany.example
+#   password_env: TAPWATCH_SMTP_PASSWORD
+#   from: alerts@yourcompany.example
+#   to: it@yourcompany.example
+#   always: false
+
+ui:                                  # `tapwatch ui` (case queue in the browser)
+  base_url: http://127.0.0.1:8765    # alert and digest emails link to <base_url>/case/<id>
+  port: 8765
+  zeek_dirs: [/logs]                 # where case pages read evidence from; globs like eval/data/home-mirror-* work
+  # host: 0.0.0.0                    # LAN access: also set TAPWATCH_UI_TOKEN (16+ chars) in .env
+  token_env: TAPWATCH_UI_TOKEN
+
+herdr:                               # pop critical cases up in the Herdr terminal workspace
+  enabled: false                     # `tapwatch test-alert --herdr` to try it
+  ai_severity: 3.5                   # AI-routed alerts must be rated at least this (0-4) to pop up
+  sound: request                     # none | done | request
+  position: top-right
+
+host_context:                        # "who on this PC did it?" for cases on the tapwatch PC itself
+  host: ""                           # this PC's IP as Zeek sees it; empty = off
+  # osquery_bin: /opt/osquery/bin/osqueryd   # default: osqueryi/osqueryd on PATH (live check)
+  # results_logs: [/var/log/osquery/osqueryd.results.log, "/mnt/c/Program Files/osquery/log/osqueryd.results.log"]
+  # transcripts: ~/.claude/projects  # Claude Code session logs, read locally, never sent anywhere
+
+syslog:                              # `tapwatch syslog`: the router's CEF events (IPS, admin logins)
+  listen: 0.0.0.0:5514               # UniFi: Control Plane > Integrations > Activity Logging > SIEM Server
+  out: /logs                         # same dir `run` watches
+  allow: []                          # senders to accept; default network.gateways (UDP can be spoofed)
+timezone: America/Chicago            # for time-of-day rules (night joins, off-hours, business hours); default: local
+audience: office                     # office | home: how summaries and Jev's questions frame events.
+                                     # "office" is what Jev was measured with; "home" awaits the M5 eval
+zeek_retention_days: 30              # rotated Zeek logs older than this are deleted (0 = keep forever)
+digest_hour_utc: 13
+dedupe_seconds: 3600
+warmup_seconds: 86400                # first-seen rules stay quiet for the first day
+
+thresholds:
+  min_confidence: 0.6
+  page_prob: 0.7
+  page_severity: 2.5
+  routine_prob: 0.8
+  alert_confidence: 0.75             # Jev's category confidence needed to alert on its own (see eval/RESULTS.md)
+
+network:                             # home rules (docs/detections/DESIGN.md R03, R14)
+  gateways: []                       # optional: router addresses. Empty = learned from the logs (the address
+                                     # 3+ devices use for DNS/NAT-PMP/DHCP on each /24)
+  admin_devices: []                  # devices allowed to use admin ports (SSH, RDP, router UI)
+
+dev_profile:                         # dev workstations running coding agents
+  hosts: []                          # their traffic to dev services (model APIs, registries, GitHub) is not
+  domains: []                        # flagged by beaconing/dns_anomaly/new_domain; takeover still applies
+
+detectors:
+  beaconing: {min_count: 10, min_span: 600, max_cv: 0.15}
+  dns_anomaly: {window: 600, nx_threshold: 25, random_threshold: 15}   # also: nx_min_names 5, tunnel_queries 200, tunnel_label_len 30
+  scan: {window: 60, threshold: 50}
+  upload_spike: {multiple: 10, floor_bytes: 500000000}
+  new_domain: {window: 300}          # new domains per device are grouped into one case per window
+  exposure: {stun_window: 600, reply_window: 1800, startup: 120}
+  odd_port: {learn_days: 7, long_hours: 4}   # R06: learn the house's ports this long, then flag new ones
+  takeover:                          # R16. Callback and file-drop services can't be marked expected
+    timezone: America/Chicago        # for `hours`; default is this machine's local time
+    session_bytes: 2000000           # outside hours, this much in 10 min to the tool = a live session
+    expected: []
+    # - host: 192.168.1.30           # a work laptop with a remote-support app
+    #   services: [teamviewer.com]
+    #   hours: Mon-Fri 08:00-18:00
+    #   mac: "aa:bb:cc:dd:ee:ff"     # optional: stop applying if a lease gives this IP to another device

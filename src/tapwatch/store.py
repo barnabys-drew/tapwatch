@@ -1,0 +1,313 @@
+"""SQLite storage for cases, AI verdicts, the case workflow and suppressions.
+
+The schema only ever grows (new columns, new tables), so an older `tapwatch run`
+can keep writing to a database that a newer version has already migrated.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from dataclasses import asdict
+
+from .models import Case, Route, Verdict, main_indicator
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS cases (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL,
+    first_ts REAL NOT NULL,
+    last_ts REAL NOT NULL,
+    hits INTEGER NOT NULL DEFAULT 1,
+    detector TEXT NOT NULL,
+    host TEXT NOT NULL,
+    title TEXT NOT NULL,
+    facts TEXT NOT NULL,
+    indicators TEXT NOT NULL,
+    must_alert INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    verdict TEXT,
+    route TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    digested INTEGER NOT NULL DEFAULT 0,
+    feedback TEXT
+);
+CREATE INDEX IF NOT EXISTS cases_key ON cases(key, last_ts);
+"""
+
+# Case workflow (added 2026-10-12). Every statement is additive and safe to run while
+# `tapwatch run` is writing: each one is its own short transaction.
+NEW_CASE_COLUMNS = {
+    "status": "TEXT NOT NULL DEFAULT 'new'",
+    "disposition": "TEXT",
+    "updated_ts": "REAL",
+}
+NEW_TABLES = """
+CREATE TABLE IF NOT EXISTS detector_state (  -- learned baselines, so a restart doesn't start from zero
+    name TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    saved_ts REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY,
+    case_id INTEGER NOT NULL,
+    ts REAL NOT NULL,
+    actor TEXT NOT NULL,
+    text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit (
+    id INTEGER PRIMARY KEY,
+    case_id INTEGER,            -- NULL for changes that aren't about one case (suppression rules)
+    ts REAL NOT NULL,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    old TEXT,
+    new TEXT
+);
+CREATE TABLE IF NOT EXISTS suppressions (
+    id INTEGER PRIMARY KEY,
+    scope TEXT NOT NULL,        -- device_indicator | indicator | port
+    detector TEXT NOT NULL,
+    host TEXT,
+    indicator TEXT,
+    port INTEGER,
+    reason TEXT NOT NULL,
+    created_ts REAL NOT NULL,
+    expires_ts REAL,
+    hits INTEGER NOT NULL DEFAULT 0,
+    last_hit_ts REAL
+);
+CREATE INDEX IF NOT EXISTS notes_case ON notes(case_id);
+CREATE INDEX IF NOT EXISTS audit_case ON audit(case_id);
+"""
+
+STATUSES = ("new", "investigating", "closed")
+# Where each status may go next. Closed cases can be reopened into investigating.
+TRANSITIONS = {"new": {"investigating", "closed"}, "investigating": {"closed"}, "closed": {"investigating"}}
+DISPOSITIONS = ("true_positive", "false_positive", "benign_expected")
+SCOPES = ("device_indicator", "indicator", "port")
+
+# `tapwatch mark` labels and the old feedback column, mapped onto dispositions.
+FEEDBACK_TO_DISPOSITION = {"fp": "false_positive", "tp": "true_positive"}
+# benign_expected means "not malicious", which is what the eval's fp label means too.
+DISPOSITION_TO_FEEDBACK = {"true_positive": "tp", "false_positive": "fp", "benign_expected": "fp"}
+
+
+class WorkflowError(ValueError):
+    """An update that the case workflow doesn't allow (bad status move, closing without a disposition...)."""
+
+
+def describe_rule(rule) -> str:
+    """Short label for a suppression rule, used in the case's route reason and in the UI."""
+    if rule["scope"] == "port":
+        what = f"any device, port {rule['port']}"
+    elif rule["scope"] == "indicator":
+        what = f"any device, {rule['indicator']}"
+    else:
+        what = f"{rule['host']}, {rule['indicator']}"
+    return f"#{rule['id']} {rule['detector']} ({what})"
+
+
+class Store:
+    def __init__(self, path: str = "tapwatch.db", migrate: bool = True):
+        # timeout: wait up to 10 s for the live alerter's short writes instead of failing.
+        self.db = sqlite3.connect(path, timeout=10)
+        self.db.row_factory = sqlite3.Row
+        if migrate:
+            self.db.executescript(SCHEMA)
+            self.migrate()
+
+    def migrate(self) -> None:
+        have = {r["name"] for r in self.db.execute("PRAGMA table_info(cases)")}
+        for name, decl in NEW_CASE_COLUMNS.items():
+            if name not in have:
+                try:
+                    self.db.execute(f"ALTER TABLE cases ADD COLUMN {name} {decl}")  # names are our constants
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e):  # another process migrated first: fine
+                        raise
+        self.db.executescript(NEW_TABLES)
+        if "disposition" not in have:  # first migration: carry over earlier `tapwatch mark` labels
+            for label, disposition in FEEDBACK_TO_DISPOSITION.items():
+                self.db.execute("UPDATE cases SET disposition=? WHERE feedback=? AND disposition IS NULL",
+                                (disposition, label))
+            self.db.commit()
+
+    # ------------------------------------------------------- detector state
+
+    def save_state(self, states: dict[str, dict]) -> None:
+        now = time.time()
+        with self.db:  # all detectors or none, so a crash mid-save can't mix old and new
+            self.db.executemany("INSERT OR REPLACE INTO detector_state (name, data, saved_ts) VALUES (?, ?, ?)",
+                                [(n, json.dumps(d), now) for n, d in states.items()])
+
+    def load_state(self) -> dict[str, dict]:
+        out = {}
+        for r in self.db.execute("SELECT name, data FROM detector_state"):
+            try:
+                out[r["name"]] = json.loads(r["data"])
+            except ValueError:
+                continue
+        return out
+
+    # ------------------------------------------------------------ pipeline
+
+    def recent(self, case: Case, window: float) -> int | None:
+        """If the same case (same key) was recorded within `window` seconds, bump it and return its id."""
+        row = self.db.execute("SELECT id FROM cases WHERE key=? AND last_ts>=? ORDER BY id DESC LIMIT 1",
+                              (case.key, case.ts - window)).fetchone()
+        if row is None:
+            return None
+        self.db.execute("UPDATE cases SET hits=hits+1, last_ts=? WHERE id=?", (case.ts, row["id"]))
+        self.db.commit()
+        return row["id"]
+
+    def add(self, case: Case, state: str, verdict: Verdict | None, route: Route, reason: str) -> int:
+        cur = self.db.execute(
+            "INSERT INTO cases (key, first_ts, last_ts, detector, host, title, facts, indicators, must_alert,"
+            " state, verdict, route, reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (case.key, case.ts, case.ts, case.detector, case.host, case.title, json.dumps(case.facts),
+             json.dumps(case.indicators), int(case.must_alert), state,
+             json.dumps(asdict(verdict)) if verdict else None, route.value, reason))
+        self.db.commit()
+        return cur.lastrowid
+
+    def pending_digest(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM cases WHERE route='digest' AND digested=0 ORDER BY first_ts").fetchall()
+
+    def mark_digested(self, ids: list[int]) -> None:
+        self.db.executemany("UPDATE cases SET digested=1 WHERE id=?", [(i,) for i in ids])
+        self.db.commit()
+
+    def get(self, case_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
+
+    # ------------------------------------------------------------ workflow
+
+    def set_feedback(self, case_id: int, label: str) -> bool:
+        """`tapwatch mark`: fp/tp becomes the disposition and closes the case."""
+        row = self.get(case_id)
+        if row is None:
+            return False
+        self.update_case(case_id, actor="cli", disposition=FEEDBACK_TO_DISPOSITION[label],
+                         status=None if row["status"] == "closed" else "closed")
+        return True
+
+    def update_case(self, case_id: int, actor: str, status: str | None = None, disposition: str | None = None,
+                    note: str | None = None) -> list[str]:
+        """Apply a status change, disposition and/or note in one transaction, auditing each change.
+
+        Returns what changed. Raises WorkflowError if the change isn't allowed."""
+        row = self.get(case_id)
+        if row is None:
+            raise WorkflowError(f"no case #{case_id}")
+        status = status if status and status != row["status"] else None
+        disposition = disposition if disposition and disposition != row["disposition"] else None
+        note = (note or "").strip()
+        if status and status not in STATUSES:
+            raise WorkflowError(f"unknown status {status!r}")
+        if status and status not in TRANSITIONS[row["status"]]:
+            raise WorkflowError(f"can't move a case from {row['status']} to {status}")
+        if disposition and disposition not in DISPOSITIONS:
+            raise WorkflowError(f"unknown disposition {disposition!r}")
+        if status == "closed" and not (disposition or row["disposition"]):
+            raise WorkflowError("pick a disposition before closing the case")
+        now = time.time()
+        changed = []
+        with self.db:  # one transaction: all of it or none of it
+            if disposition:
+                self.db.execute("UPDATE cases SET disposition=?, feedback=?, updated_ts=? WHERE id=?",
+                                (disposition, DISPOSITION_TO_FEEDBACK[disposition], now, case_id))
+                self._audit(case_id, actor, "disposition", row["disposition"], disposition, now)
+                changed.append("disposition")
+            if status:
+                self.db.execute("UPDATE cases SET status=?, updated_ts=? WHERE id=?", (status, now, case_id))
+                self._audit(case_id, actor, "status", row["status"], status, now)
+                changed.append("status")
+            if note:
+                self.db.execute("INSERT INTO notes (case_id, ts, actor, text) VALUES (?,?,?,?)",
+                                (case_id, now, actor, note))
+                self.db.execute("UPDATE cases SET updated_ts=? WHERE id=?", (now, case_id))
+                self._audit(case_id, actor, "note", None, note, now)
+                changed.append("note")
+        return changed
+
+    def _audit(self, case_id: int | None, actor: str, action: str, old, new, now: float) -> None:
+        self.db.execute("INSERT INTO audit (case_id, ts, actor, action, old, new) VALUES (?,?,?,?,?,?)",
+                        (case_id, now, actor, action, old, new))
+
+    def notes(self, case_id: int) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM notes WHERE case_id=? ORDER BY ts, id", (case_id,)).fetchall()
+
+    def audit_trail(self, case_id: int | None = None) -> list[sqlite3.Row]:
+        if case_id is None:
+            return self.db.execute("SELECT * FROM audit ORDER BY ts DESC, id DESC LIMIT 200").fetchall()
+        return self.db.execute("SELECT * FROM audit WHERE case_id=? ORDER BY ts, id", (case_id,)).fetchall()
+
+    # ------------------------------------------------------------ suppressions
+
+    def add_suppression(self, case_id: int, scope: str, reason: str, actor: str,
+                        expires_ts: float | None = None) -> int:
+        """Create a rule from a case. must_alert cases (IOC hits, IDS severity 1) can't be suppressed."""
+        row = self.get(case_id)
+        if row is None:
+            raise WorkflowError(f"no case #{case_id}")
+        if row["must_alert"]:
+            raise WorkflowError("always-alert cases (threat-list hits, IDS severity 1) can't be suppressed")
+        if scope not in SCOPES:
+            raise WorkflowError(f"unknown scope {scope!r}")
+        reason = (reason or "").strip()
+        if not reason:
+            raise WorkflowError("a suppression needs a reason")
+        facts = json.loads(row["facts"])
+        indicator = main_indicator(json.loads(row["indicators"]), facts)
+        port = facts.get("port")
+        if scope == "port" and not isinstance(port, int):
+            raise WorkflowError("this case has no port to suppress on")
+        if scope != "port" and not indicator:
+            raise WorkflowError("this case has no indicator to suppress on")
+        values = {"device_indicator": (row["host"], indicator, None), "indicator": (None, indicator, None),
+                  "port": (None, None, port)}[scope]
+        now = time.time()
+        with self.db:
+            cur = self.db.execute(
+                "INSERT INTO suppressions (scope, detector, host, indicator, port, reason, created_ts, expires_ts)"
+                " VALUES (?,?,?,?,?,?,?,?)", (scope, row["detector"], *values, reason, now, expires_ts))
+            rule = self.db.execute("SELECT * FROM suppressions WHERE id=?", (cur.lastrowid,)).fetchone()
+            self._audit(case_id, actor, "suppression added", None, f"{describe_rule(rule)}: {reason}", now)
+        return cur.lastrowid
+
+    def suppressions(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM suppressions ORDER BY id DESC").fetchall()
+
+    def delete_suppression(self, rule_id: int, actor: str) -> bool:
+        rule = self.db.execute("SELECT * FROM suppressions WHERE id=?", (rule_id,)).fetchone()
+        if rule is None:
+            return False
+        with self.db:
+            self.db.execute("DELETE FROM suppressions WHERE id=?", (rule_id,))
+            self._audit(None, actor, "suppression deleted", f"{describe_rule(rule)}: {rule['reason']}", None,
+                        time.time())
+        return True
+
+    def match_suppression(self, case: Case, now: float | None = None) -> str | None:
+        """Return the label of the first live rule matching this case (and count the hit), else None.
+
+        Never matches must_alert cases; the router double-checks this too."""
+        if case.must_alert:
+            return None
+        now = time.time() if now is None else now
+        port = case.facts.get("port")
+        rule = self.db.execute(
+            "SELECT * FROM suppressions WHERE detector=? AND (expires_ts IS NULL OR expires_ts>?) AND ("
+            " (scope='device_indicator' AND host=? AND indicator=?)"
+            " OR (scope='indicator' AND indicator=?)"
+            " OR (scope='port' AND port=?)) ORDER BY id LIMIT 1",
+            (case.detector, now, case.host, case.indicator, case.indicator,
+             port if isinstance(port, int) else None)).fetchone()
+        if rule is None:
+            return None
+        self.db.execute("UPDATE suppressions SET hits=hits+1, last_hit_ts=? WHERE id=?", (now, rule["id"]))
+        self.db.commit()
+        return describe_rule(rule)

@@ -1,0 +1,836 @@
+import random
+from datetime import datetime, timezone
+
+from conftest import T0, conn, dhcp, dns, eve_alert, ssl
+
+from tapwatch.detectors import (
+    Beaconing,
+    CleartextAuth,
+    DevProfile,
+    Gateways,
+    HourlyProfile,
+    InternetExposure,
+    IOCMatch,
+    ManagementAccess,
+    NewDevice,
+    NewExternalDomain,
+    PortScan,
+    RogueDHCP,
+    SuricataAlert,
+    SuspiciousDNS,
+    TakeoverChannel,
+    Warmup,
+    build,
+    in_hours,
+    is_internal,
+    looks_random,
+    parse_hours,
+    suffix_match,
+)
+from tapwatch.zeek import _parse_line
+
+
+def run(det, recs):
+    out = []
+    for r in recs:
+        out += det.feed(r)
+    return out
+
+
+def test_beaconing_fires_on_regular_heartbeat():
+    recs = [conn(T0 + i * 60) for i in range(15)]
+    cases = run(Beaconing(), recs)
+    assert len(cases) == 1
+    assert cases[0].facts["interval_s"] == 60
+    assert cases[0].facts["regularity"] == "very regular"
+
+
+def test_beaconing_ignores_human_browsing_jitter():
+    rng = random.Random(1)
+    ts, recs = T0, []
+    for _ in range(40):
+        ts += rng.uniform(5, 400)
+        recs.append(conn(ts))
+    assert run(Beaconing(), recs) == []
+
+
+def test_beaconing_reports_once_and_carries_sni():
+    recs = [ssl(T0 - 1, "updates.example.com")] + [conn(T0 + i * 30) for i in range(40)]
+    cases = run(Beaconing(), recs)
+    assert len(cases) == 1
+    assert cases[0].indicators == ["updates.example.com"]
+
+
+def test_beaconing_skips_internal_destinations():
+    assert run(Beaconing(), [conn(T0 + i * 60, dst="192.168.50.2") for i in range(20)]) == []
+
+
+def test_dns_failures_trigger():
+    recs = [dns(T0 + i, f"host{i}.example.net", rcode="NXDOMAIN") for i in range(30)]
+    cases = run(SuspiciousDNS(), recs)
+    assert len(cases) == 1 and cases[0].facts["failed"] >= 25
+
+
+def test_dns_random_names_trigger_dga():
+    rng = random.Random(2)
+    names = ["".join(rng.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(16)) + ".com"
+             for _ in range(20)]
+    cases = run(SuspiciousDNS(), [dns(T0 + i, n) for i, n in enumerate(names)])
+    assert len(cases) == 1 and cases[0].facts["random_looking"] >= 15
+
+
+def test_dns_numbered_cdn_hosts_under_popular_domains_are_not_dga():
+    rng = random.Random(3)
+    cdn = [f"{rng.getrandbits(32):08x}-{rng.getrandbits(16):04x}-netseer-ipaddr-assoc.xz.fbcdn.net" for _ in range(10)]
+    cdn += [f"gspe{n}-ssl-{n * 7}.ls.apple.com" for n in range(10, 20)]
+    popular = {"fbcdn.net", "apple.com"}
+    assert run(SuspiciousDNS(popular=popular), [dns(T0 + i, n) for i, n in enumerate(cdn)]) == []
+    assert run(SuspiciousDNS(), [dns(T0 + i, n) for i, n in enumerate(cdn)])  # without the list it fires
+    # Random names under an unknown domain still count, popular list or not.
+    dga = ["".join(rng.choice("bcdfghjklmnpqrstvwxz0123456789") for _ in range(16)) + ".com" for _ in range(20)]
+    assert run(SuspiciousDNS(popular=popular), [dns(T0 + i, n) for i, n in enumerate(dga)])
+
+
+def test_dns_normal_browsing_quiet():
+    names = ["www.example.com", "mail.example.org", "cdn.example.net"] * 30
+    assert run(SuspiciousDNS(), [dns(T0 + i, n) for i, n in enumerate(names)]) == []
+
+
+def test_port_scan():
+    recs = [conn(T0 + i * 0.1, dst=f"192.168.50.{i % 20 + 2}", port=1000 + i, state="REJ") for i in range(60)]
+    cases = run(PortScan(), recs)
+    assert len(cases) == 1
+    assert cases[0].facts["internal_targets"] is True and cases[0].facts["failed_pct"] == 100
+
+
+def test_ioc_hits_are_must_alert():
+    det = IOCMatch({"198.51.100.66"}, {"bad.example"})
+    cases = run(det, [conn(T0, dst="198.51.100.66"), dns(T0 + 1, "x.bad.example"), dns(T0 + 2, "notbad.example")])
+    assert [c.must_alert for c in cases] == [True, True]
+
+
+def test_suricata_severity_one_is_must_alert():
+    det = SuricataAlert()
+    hi = det.feed(_parse_line(__import__("json").dumps(eve_alert("2026-10-11T12:00:00.000000+0000", 1)), "eve"))
+    lo = det.feed(_parse_line(__import__("json").dumps(eve_alert("2026-10-11T12:00:00.000000+0000", 3)), "eve"))
+    assert hi[0].must_alert and hi[0].ts > 0
+    assert not lo[0].must_alert
+
+
+def test_upload_spike_against_own_baseline():
+    det = HourlyProfile()
+    recs = [conn(T0 + h * 3600, orig_bytes=10_000_000) for h in range(8)]       # 10 MB/h for 8 hours
+    recs += [conn(T0 + 8 * 3600 + 60, orig_bytes=1_000_000_000)]                 # then 1 GB in one hour
+    recs += [conn(T0 + 9 * 3600)]                                                # next hour closes the spike hour
+    cases = [c for c in run(det, recs) if c.detector == "upload_spike"]
+    assert len(cases) == 1 and cases[0].facts["mb"] == 1000 and cases[0].facts["basis"] == "recent hours"
+
+def test_first_seen_rules_quiet_during_warmup():
+    w = Warmup(600)
+    nd, dev = NewExternalDomain(w), NewDevice(w)
+    early = [dns(T0, "a.example.com"), conn(T0, src="192.168.50.11")]
+    late = [dns(T0 + 700, "www.example.com"), dns(T0 + 701, "new.example.org"), conn(T0 + 702, src="192.168.50.12")]
+    assert run(nd, early) == [] and run(dev, early) == []
+    assert run(nd, late) == []  # new domains are buffered into a window
+    cases = nd.flush()
+    assert [c.indicators for c in cases] == [["new.example.org"]]  # same base domain as warmup = known
+    assert [c.host for c in run(dev, late)] == ["192.168.50.12"]
+
+
+def test_new_domains_grouped_per_window_and_failed_lookups_skipped():
+    rng = random.Random(3)
+    nd = NewExternalDomain(Warmup(0), window=300)
+    recs = [dns(T0 + i, "".join(rng.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(16)) + ".com",
+                rcode="NXDOMAIN") for i in range(30)]  # DGA misses: SuspiciousDNS's job
+    recs += [dns(T0 + 40 + i, n) for i, n in enumerate(["news.example.com", "q8z3kx0vw7p2mr.example.net",
+                                                          "shop.example.org"])]
+    assert run(nd, recs) == []
+    cases = run(nd, [dns(T0 + 400, "late.example.info")])  # a record after the window closes it
+    assert len(cases) == 1
+    c = cases[0]
+    assert c.facts["count"] == 3 and c.facts["random"] == 1
+    assert c.indicators[0] == "q8z3kx0vw7p2mr.example.net"  # odd one listed first
+    assert c.title == "First contact with 3 new domains"
+
+
+def test_new_domain_counts_other_devices_already_using_it():
+    nd = NewExternalDomain(Warmup(0))
+    run(nd, [dns(T0, "www.example.com", src="192.168.50.20"), dns(T0 + 1, "www.example.com", src="192.168.50.21")])
+    by_host = {c.host: c for c in nd.flush()}
+    assert by_host["192.168.50.20"].facts["shared"] == 0
+    assert by_host["192.168.50.21"].facts["shared"] == 1
+
+
+def test_readable_long_names_are_not_random_but_dga_is():
+    for name in ["krebsonsecurity.com", "bleepingcomputer.com", "lobste.rs", "stackoverflow.com",
+                 "microsoftonline.com", "googleusercontent.com"]:
+        assert not looks_random(name), name
+    for name in ["q8z3kx0vw7p2mr.com", "xkqjzvbnmtrpwl.net", "a1b2c3d4e5f6.org"]:
+        assert looks_random(name), name
+
+
+def test_multicast_and_broadcast_count_as_local():
+    assert is_internal("224.0.0.251") and is_internal("ff02::fb") and is_internal("255.255.255.255")
+    assert not is_internal("198.51.100.7")
+
+
+def test_mdns_chatter_is_not_beaconing_and_link_local_is_not_a_new_device():
+    assert run(Beaconing(), [conn(T0 + i * 30, dst="224.0.0.251", port=5353) for i in range(40)]) == []
+    dev = NewDevice(Warmup(0))
+    assert run(dev, [conn(T0, src="fe80::1489:d4b5:cb15:a5cf", dst="ff02::fb", port=5353)]) == []
+
+
+# ----------------------------------------------- home rules (R01, R03, R13, R14)
+
+GW = "192.168.50.1"
+
+
+def inbound(ts, dst="192.168.50.10", port=8000, proto="tcp", state="SF", resp_bytes=900, src="198.51.100.7"):
+    r = conn(ts, src=src, dst=dst, port=port, state=state, service="http")
+    r.update(proto=proto, resp_bytes=resp_bytes, history="ShADadFf" if proto == "tcp" else "Dd")
+    return r
+
+
+def test_exposure_alerts_once_on_an_answered_inbound_connection():
+    det = InternetExposure(Warmup(0))
+    assert run(det, [inbound(T0, port=9999)]) == []          # first 2 minutes: may be mid-flow
+    cases = run(det, [inbound(T0 + 200), inbound(T0 + 205, src="203.0.113.9")])
+    assert len(cases) == 1
+    c = cases[0]
+    assert c.host == "192.168.50.10" and c.must_alert and c.facts["port"] == 8000
+    assert not c.facts["after_mapping_request"]
+
+
+def test_exposure_ignores_unanswered_probes_and_learns_existing_forwards():
+    det = InternetExposure(Warmup(600), startup=0)
+    assert run(det, [inbound(T0 + 1, state="S0", resp_bytes=0), inbound(T0 + 2, state="REJ")]) == []
+    assert run(det, [inbound(T0 + 3, port=443)]) == []          # forward that already existed during warmup
+    assert run(det, [inbound(T0 + 700, port=443)]) == []
+    assert len(run(det, [inbound(T0 + 701, port=22)])) == 1
+
+
+def test_exposure_skips_p2p_after_stun_and_notes_mapping_requests():
+    det = InternetExposure(Warmup(0), startup=0)
+    stun = conn(T0, port=3478)
+    stun["proto"] = "udp"
+    mapping = conn(T0 + 1, dst=GW, port=5351)
+    assert run(det, [stun, mapping, inbound(T0 + 10, port=51000, proto="udp")]) == []
+    cases = run(det, [inbound(T0 + 20, port=32400)])
+    assert cases[0].facts["after_mapping_request"]
+
+
+def test_exposure_ignores_flows_zeek_saw_mid_stream_or_that_answer_the_device():
+    det = InternetExposure(Warmup(0), startup=0)
+    midstream = dict(inbound(T0), history="DadA")
+    flipped_udp = dict(inbound(T0 + 1, port=50733, proto="udp"), history="^dD")
+    vpn_out = conn(T0 + 2, dst="203.0.113.50", port=4501)
+    vpn_reply = inbound(T0 + 100, port=50734, proto="udp", src="203.0.113.50")
+    assert run(det, [midstream, flipped_udp, vpn_out, vpn_reply]) == []
+    assert len(run(det, [inbound(T0 + 3000, port=50734, proto="udp", src="203.0.113.50")])) == 1
+
+
+def test_mgmt_access_flags_new_admin_port_pairs_but_not_admins_or_learned_pairs():
+    det = ManagementAccess(Warmup(600), gateways=Gateways({GW}), admin_devices={"192.168.50.20"})
+    learned = conn(T0, src="192.168.50.10", dst=GW, port=443)
+    assert run(det, [learned]) == []                                       # warmup
+    later = [conn(T0 + 700, src="192.168.50.10", dst=GW, port=443),       # learned pair
+             conn(T0 + 701, src="192.168.50.20", dst=GW, port=22),        # admin device
+             conn(T0 + 702, src=GW, dst="192.168.50.30", port=22),        # router managing an AP
+             conn(T0 + 703, src="192.168.50.30", dst="192.168.50.40", port=443),  # 443 on a non-router is fine
+             conn(T0 + 704, src="192.168.50.30", dst=GW, port=443, state="S0"),
+             conn(T0 + 705, src="192.168.50.30", dst="192.168.50.40", port=3389, state="REJ"),
+             conn(T0 + 706, src="192.168.50.30", dst="192.168.50.40", port=3389, state="REJ")]
+    cases = run(det, later)
+    assert [(c.facts["target"], c.facts["port"]) for c in cases] == [("router", 443), ("device", 3389)]
+    assert not cases[0].facts["answered"]
+
+
+def test_cleartext_auth_grades_by_destination_and_never_copies_credentials():
+    det = CleartextAuth()
+    http_auth = {"_type": "http", "ts": T0, "id.orig_h": "192.168.50.10", "id.resp_h": "203.0.113.5",
+                 "id.resp_p": 80, "host": "api.example.com", "username": "alice"}
+    lan_auth = dict(http_auth, **{"id.resp_h": "192.168.50.30", "host": "printer.lan"})
+    ftp = {"_type": "ftp", "ts": T0, "id.orig_h": "192.168.50.10", "id.resp_h": "203.0.113.6",
+           "id.resp_p": 21, "user": "bob", "password": "hunter2"}
+    anon = dict(ftp, user="anonymous")
+    mqtt = conn(T0, port=1883, service="mqtt")
+    telnet = conn(T0, dst="203.0.113.7", port=23, service=None)
+    failed = conn(T0, dst="203.0.113.8", port=23, state="S0")
+    cases = run(det, [http_auth, http_auth, lan_auth, ftp, anon, mqtt, telnet, failed])
+    sev = sorted((c.facts["what"], c.facts["outside"], c.base_severity) for c in cases)
+    assert sev == [("FTP login", True, 4), ("HTTP login (basic auth)", False, 1),
+                   ("HTTP login (basic auth)", True, 2), ("MQTT", True, 2), ("Telnet", True, 4)]
+    blob = repr([(c.facts, c.indicators, c.title) for c in cases])
+    assert "alice" not in blob and "bob" not in blob and "hunter2" not in blob
+
+
+def test_rogue_dhcp_with_configured_gateway():
+    det = RogueDHCP(Warmup(600), gateways=Gateways({GW}))
+    assert run(det, [dhcp(T0), dhcp(T0 + 1, server="192.168.50.1")]) == []
+    cases = run(det, [dhcp(T0 + 2, server="192.168.50.99", msg_types=("OFFER",)),
+                      dhcp(T0 + 3, server="192.168.50.99")])
+    assert len(cases) == 1 and cases[0].host == "192.168.50.99" and cases[0].must_alert
+
+
+def test_rogue_dhcp_learns_servers_during_warmup_and_reads_conn_replies():
+    det = RogueDHCP(Warmup(600))
+    assert run(det, [dhcp(T0)]) == []                                          # learned as trusted
+    reply = conn(T0 + 700, src="192.168.50.10", dst="192.168.50.77", port=67, service="dhcp")
+    reply.update(proto="udp", resp_bytes=300)
+    broadcast = dict(reply, **{"id.resp_h": "255.255.255.255"})
+    assert run(det, [dhcp(T0 + 650), broadcast]) == []
+    assert [c.facts["how"] for c in run(det, [reply])] == ["answered on the DHCP port"]
+
+
+def test_build_wires_home_rules_from_network_config():
+    dets = {d.name: d for d in build({"network": {"gateways": [GW], "admin_devices": ["192.168.50.20"]}})}
+    assert {"gateways", "exposure", "mgmt_access", "cleartext_auth", "rogue_dhcp"} <= set(dets)
+    assert GW in dets["rogue_dhcp"].gateways and dets["mgmt_access"].admins == {"192.168.50.20"}
+    assert next(iter(dets)) == "gateways"  # must see each record before the rules that ask it
+
+
+# ------------------------------------------- no network.gateways: learn the router
+
+def dns_to(ts, client, resolver=GW):
+    r = conn(ts, src=client, dst=resolver, port=53, service="dns")
+    r["proto"] = "udp"
+    return r
+
+
+def feed_all(dets, recs):
+    out = []
+    for r in recs:
+        for d in dets:
+            out += d.feed(r)
+    return out
+
+
+def test_gateways_elects_the_address_three_devices_use_and_keeps_it():
+    gw = Gateways()
+    feed_all([gw], [dns_to(T0, "192.168.50.10"), dns_to(T0 + 1, "192.168.50.11")])
+    assert GW not in gw                                           # 2 devices: not enough yet
+    third = dict(dhcp(T0 + 2), assigned_addr="192.168.50.12")
+    feed_all([gw], [third])                                       # DHCP reply to a third device counts
+    assert GW in gw and gw.leader("192.168.50") == GW
+    rogue_votes = [dns_to(T0 + 10 + i, f"192.168.50.{20 + i}", resolver="192.168.50.99") for i in range(5)]
+    feed_all([gw], rogue_votes)
+    assert gw.leader("192.168.50") == GW and "192.168.50.99" not in gw  # sticky
+    assert "192.168.60.1" not in gw                               # other LANs are separate
+
+
+def test_unconfigured_router_is_not_flagged_even_with_no_warmup():
+    """The bug this guards: with no gateways set and warmup 0, the UDM itself was a 'rogue DHCP server'."""
+    gw = Gateways()
+    dets = [gw, RogueDHCP(Warmup(0), gw)]
+    recs = [dns_to(T0 + i, f"192.168.50.{10 + i}") for i in range(3)] + [dhcp(T0 + 5), dhcp(T0 + 6)]
+    assert feed_all(dets, recs) == []
+
+
+def test_unconfigured_second_dhcp_server_is_rogue_once_the_router_is_known():
+    gw = Gateways()
+    dets = [gw, RogueDHCP(Warmup(0), gw)]
+    feed_all(dets, [dns_to(T0 + i, f"192.168.50.{10 + i}") for i in range(3)])
+    cases = feed_all(dets, [dhcp(T0 + 10, server="192.168.50.99", msg_types=("OFFER",))])
+    assert [c.host for c in cases] == ["192.168.50.99"]
+
+
+def test_unconfigured_first_server_on_a_quiet_lan_is_trusted_and_a_second_one_is_not():
+    gw = Gateways()
+    dets = [gw, RogueDHCP(Warmup(0), gw)]
+    assert feed_all(dets, [dhcp(T0, server="192.168.60.1")]) == []   # 1 device: no router elected
+    cases = feed_all(dets, [dhcp(T0 + 5, server="192.168.60.50")])
+    assert [c.host for c in cases] == ["192.168.60.50"]
+
+
+def test_unconfigured_servers_seen_in_warmup_are_trusted():
+    """E.g. a Pi-hole answers DNS (elected) while the UDM does DHCP: warmup keeps the UDM trusted."""
+    gw = Gateways()
+    dets = [gw, RogueDHCP(Warmup(600), gw)]
+    feed_all(dets, [dns_to(T0 + i, f"192.168.50.{10 + i}", resolver="192.168.50.2") for i in range(3)])
+    assert feed_all(dets, [dhcp(T0 + 10), dhcp(T0 + 900)]) == []
+    assert len(feed_all(dets, [dhcp(T0 + 901, server="192.168.50.77")])) == 1
+
+
+def test_mgmt_access_uses_the_learned_router():
+    gw = Gateways()
+    dets = [gw, ManagementAccess(Warmup(0), gw)]
+    feed_all(dets, [dns_to(T0 + i, f"192.168.50.{10 + i}") for i in range(3)])
+    ui = conn(T0 + 10, src="192.168.50.30", dst=GW, port=443)
+    router_ssh = conn(T0 + 11, src=GW, dst="192.168.50.40", port=22)   # router managing an AP
+    cases = feed_all(dets, [ui, router_ssh])
+    assert [(c.facts["target"], c.facts["port"]) for c in cases] == [("router", 443)]
+
+
+def test_build_without_network_config_learns_the_router_from_the_logs():
+    dets = build({"warmup_seconds": 0})
+    recs = [dns_to(T0 + i, f"192.168.50.{10 + i}") for i in range(3)] + [dhcp(T0 + 5)]
+    assert [c for c in feed_all(dets, recs) if c.detector == "rogue_dhcp"] == []
+    assert GW in dets[0]
+
+
+# ------------------------------------------------ dev workstation + takeover (R16)
+
+DEV = "192.168.50.10"
+OTHER = "192.168.50.11"
+
+
+def test_suffix_match_needs_a_label_boundary():
+    doms = frozenset({"github.com", "pkg.dev"})
+    assert suffix_match("api.github.com.", doms) == "github.com"
+    assert suffix_match("us-docker.pkg.dev", doms) == "pkg.dev"
+    assert suffix_match("evilgithub.com", doms) is None and suffix_match("github.com.evil.io", doms) is None
+
+
+def test_dev_profile_only_covers_listed_hosts_and_dev_services():
+    dev = DevProfile([DEV], ["corp-registry.example"])
+    assert dev.covers(DEV, "api.anthropic.com") and dev.covers(DEV, "pkgs.corp-registry.example")
+    assert not dev.covers(OTHER, "api.anthropic.com")       # other devices are judged as usual
+    assert not dev.covers(DEV, "q8z3kx0vw7p2mr.example.net")
+    assert not dev.covers(DEV, None)
+
+
+def test_dev_host_new_dev_domains_are_skipped_but_others_still_counted():
+    nd = NewExternalDomain(Warmup(0), dev=DevProfile([DEV]))
+    run(nd, [dns(T0, "registry-1.docker.io", src=DEV), ssl(T0 + 1, "api.individual.githubcopilot.com", src=DEV),
+             dns(T0 + 2, "unknown-site.example", src=DEV), dns(T0 + 3, "registry-1.docker.io", src=OTHER)])
+    by_host = {c.host: c.indicators for c in nd.flush()}
+    assert by_host == {DEV: ["unknown-site.example"], OTHER: ["registry-1.docker.io"]}
+
+
+def test_dev_host_dns_to_dev_services_does_not_count_toward_anomaly():
+    det = SuspiciousDNS(dev=DevProfile([DEV]))
+    noisy = [dns(T0 + i, f"x{i}.missing.npmjs.org", src=DEV, rcode="NXDOMAIN") for i in range(30)]
+    assert run(det, noisy) == []
+    assert len(run(det, [dns(T0 + 40 + i, f"h{i}.example.net", src=DEV, rcode="NXDOMAIN") for i in range(30)])) == 1
+
+
+def test_dev_host_polling_a_dev_api_is_not_beaconing_but_unnamed_traffic_still_is():
+    det = Beaconing(dev=DevProfile([DEV]))
+    named = [ssl(T0 - 1, "api.anthropic.com", src=DEV)] + [conn(T0 + i * 60, src=DEV) for i in range(15)]
+    assert run(det, named) == []
+    unnamed = [conn(T0 + i * 60, src=DEV, dst="198.51.100.9", port=8443) for i in range(15)]
+    assert len(run(det, unnamed)) == 1
+
+
+def test_takeover_channels_alert_and_ignore_the_dev_profile():
+    det = TakeoverChannel()
+    http_drop = {"_type": "http", "ts": T0 + 3, "id.orig_h": DEV, "id.resp_h": "203.0.113.5", "host": "transfer.sh"}
+    cases = run(det, [dns(T0, "abc123.webhook.site", src=DEV), ssl(T0 + 1, "abcd.ngrok-free.app", src=DEV),
+                      dns(T0 + 2, "net.anydesk.com", src=OTHER), http_drop,
+                      dns(T0 + 4, "zzz.webhook.site", src=DEV)])           # same service again: deduped
+    got = [(c.facts["channel"], c.must_alert, c.base_severity) for c in cases]
+    assert got == [("callback", True, 5), ("tunnel", False, 4), ("remote_control", False, 4),
+                   ("file_drop", True, 5)]
+
+
+def test_takeover_ignores_failed_lookups_and_lookalikes():
+    det = TakeoverChannel(extra={"tunnel": ["mytunnel.example"]})
+    assert run(det, [dns(T0, "sn.splashtop.com", rcode="NXDOMAIN"), dns(T0 + 1, "notwebhook.site"),
+                     ssl(T0 + 2, "webhook.site.example.com")]) == []
+    assert [c.facts["channel"] for c in run(det, [ssl(T0 + 3, "a.mytunnel.example")])] == ["tunnel"]
+
+
+def test_build_wires_dev_profile_and_takeover():
+    dets = {d.name: d for d in build({"dev_profile": {"hosts": [DEV], "domains": ["corp.example"]}})}
+    assert "takeover" in dets
+    for name in ("beaconing", "dns_anomaly", "new_domain"):
+        assert dets[name].dev.covers(DEV, "x.corp.example")
+
+
+# --------------------------------------- R16 expected remote-support tool (work laptop)
+
+
+
+LAPTOP = "192.168.50.22"
+MON_10 = datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc).timestamp()   # Monday, business hours
+MON_21 = datetime(2026, 10, 12, 21, 0, tzinfo=timezone.utc).timestamp()   # Monday evening
+SAT_10 = datetime(2026, 10, 17, 10, 0, tzinfo=timezone.utc).timestamp()
+
+
+def laptop_takeover(**kw):
+    expected = [{"host": LAPTOP, "services": ["teamviewer.com", "splashtop.com"], "hours": "Mon-Fri 08:00-18:00",
+                 **kw}]
+    return TakeoverChannel(expected=expected, timezone="UTC")
+
+
+def tv_lookup(ts, ip="203.0.113.80"):
+    r = dns(ts, "router7.teamviewer.com", src=LAPTOP)
+    r["answers"] = [ip]
+    return r
+
+
+def tv_traffic(ts, nbytes, dst="203.0.113.80", port=443):
+    r = conn(ts, src=LAPTOP, dst=dst, port=port)
+    r["resp_bytes"] = nbytes
+    return r
+
+
+def test_parse_hours():
+    days, start, end = parse_hours("Mon-Fri 08:00-18:00")
+    assert days == {0, 1, 2, 3, 4} and (start, end) == (480, 1080)
+    assert parse_hours("Sat,Sun 9-17")[0] == {5, 6}
+    assert parse_hours("Fri-Mon 0-24")[0] == {4, 5, 6, 0}
+    assert in_hours(datetime.fromtimestamp(MON_10, timezone.utc), parse_hours("Mon-Fri 08:00-18:00"))
+    assert not in_hours(datetime.fromtimestamp(SAT_10, timezone.utc), parse_hours("Mon-Fri 08:00-18:00"))
+
+
+def test_expected_tool_sightings_never_alert_at_any_hour():
+    det = laptop_takeover()
+    assert run(det, [tv_lookup(MON_10), tv_lookup(MON_21), dns(MON_21, "sn.splashtop.com", src=LAPTOP),
+                     tv_traffic(MON_21, 20_000)]) == []                      # idle keepalive after hours
+    assert [c.host for c in run(det, [dns(MON_10, "net.teamviewer.com", src=OTHER)])] == [OTHER]
+
+
+def test_expected_tool_session_alerts_only_outside_hours_once_per_day():
+    det = laptop_takeover()
+    run(det, [tv_lookup(MON_10 - 60)])
+    assert run(det, [tv_traffic(MON_10 + i * 30, 1_000_000) for i in range(5)]) == []   # 5 MB in hours
+    run(det, [tv_lookup(MON_21 - 60)])
+    cases = run(det, [tv_traffic(MON_21 + i * 30, 1_000_000) for i in range(5)])
+    assert len(cases) == 1
+    c = cases[0]
+    assert c.facts["session"] and c.facts["mb"] >= 2 and c.base_severity == 4 and not c.must_alert
+    assert c.indicators == ["teamviewer.com"]
+    assert run(det, [tv_traffic(MON_21 + 900 + i * 30, 1_000_000) for i in range(5)]) == []  # same night
+    assert len(run(det, [tv_traffic(SAT_10 + i * 30, 1_000_000, dst="198.51.100.1", port=5938)
+                         for i in range(3)])) == 1                    # weekend, direct TeamViewer port
+
+
+def test_expected_entry_stops_applying_when_the_address_changes_hands():
+    det = laptop_takeover(mac="aa:bb:cc:dd:ee:ff")
+    assert run(det, [tv_lookup(MON_10)]) == []                 # no lease seen yet: entry applies
+    lease = dict(dhcp(MON_10 + 1, mac="11:22:33:44:55:66"), assigned_addr=LAPTOP)
+    assert run(det, [lease]) == []
+    assert [c.facts["channel"] for c in run(det, [tv_lookup(MON_10 + 2)])] == ["remote_control"]
+
+
+def test_callback_and_file_drop_services_cannot_be_marked_expected():
+    det = TakeoverChannel(expected=[{"host": LAPTOP, "services": ["webhook.site", "teamviewer.com"]}])
+    assert (LAPTOP, "webhook.site") not in det.expected and (LAPTOP, "teamviewer.com") in det.expected
+    cases = run(det, [dns(MON_10, "x.webhook.site", src=LAPTOP)])
+    assert len(cases) == 1 and cases[0].must_alert
+
+
+def test_beaconing_names_the_destination_from_dns_when_there_is_no_sni():
+    lookup = dict(dns(T0 - 5, "client.wns.windows.com"), answers=["wns.example-cname.net", "203.0.113.5"])
+    cases = run(Beaconing(), [lookup] + [conn(T0 + i * 60, service="quic") for i in range(15)])
+    assert len(cases) == 1 and cases[0].indicators == ["client.wns.windows.com"]
+
+
+def test_sni_wins_over_dns_name():
+    recs = [dict(dns(T0 - 5, "cdn.example.net"), answers=["203.0.113.5"]), ssl(T0 - 1, "api.example.com")]
+    cases = run(Beaconing(), recs + [conn(T0 + i * 60) for i in range(15)])
+    assert cases[0].indicators == ["api.example.com"]
+
+
+# ------------------------------------------------------------- R05 new device by MAC
+
+def mac_conn(ts, src="192.168.50.30", mac="00:00:5e:00:53:01", dst="203.0.113.5"):
+    r = conn(ts, src=src, dst=dst)
+    r["orig_l2_addr"] = mac
+    return r
+
+
+def test_new_device_keys_on_mac_through_ip_changes():
+    det = NewDevice(Warmup(0), oui={"00005E": "Example Networks Inc."})
+    cases = run(det, [mac_conn(T0), mac_conn(T0 + 5, src="192.168.50.31"),         # same device, new IP
+                      mac_conn(T0 + 6, src="fe80::1234")])                          # and its IPv6 address
+    assert len(cases) == 1
+    f = cases[0].facts
+    assert f["vendor"] == "Example Networks Inc." and not f["randomized_mac"] and f["dedupe"] == "00:00:5e:00:53:01"
+
+
+def test_randomized_mac_with_a_known_hostname_is_the_same_device():
+    det = NewDevice(Warmup(600))
+    run(det, [dict(dhcp(T0, mac="aa:bb:cc:00:00:01"), host_name="Pixel-9"), mac_conn(T0 + 1, mac="aa:bb:cc:00:00:01")])
+    later = [dict(dhcp(T0 + 700, mac="da:11:22:33:44:55"), host_name="Pixel-9"),        # same phone, private MAC
+             mac_conn(T0 + 701, src="192.168.50.40", mac="da:11:22:33:44:55")]
+    assert run(det, later) == []
+    stranger = [dict(dhcp(T0 + 800, mac="da:99:88:77:66:55"), host_name="unknown-box"),
+                mac_conn(T0 + 801, src="192.168.50.41", mac="da:99:88:77:66:55")]
+    cases = run(det, stranger)
+    assert cases[0].facts["randomized_mac"] and cases[0].facts["vendor"] == ""
+    assert cases[0].indicators == ["unknown-box"]
+
+
+def test_broadcast_and_multicast_macs_are_not_devices():
+    det = NewDevice(Warmup(0))
+    assert run(det, [mac_conn(T0, src="0.0.0.0", mac="ff:ff:ff:ff:ff:ff"),
+                     mac_conn(T0, src="fe80::9", mac="33:33:00:00:00:fb")]) == []
+
+
+def test_new_device_at_night_is_more_severe():
+    det = NewDevice(Warmup(0), timezone="UTC")
+    three_am = T0 - T0 % 86400 + 3 * 3600
+    c = run(det, [mac_conn(three_am)])[0]
+    assert c.facts["night"] and c.base_severity == 3
+    assert not run(NewDevice(Warmup(0), timezone="UTC"), [mac_conn(three_am + 9 * 3600)])[0].facts["night"]
+
+def test_load_oui_reads_the_ieee_csv(tmp_path):
+    from tapwatch.detectors import load_oui
+    p = tmp_path / "oui.csv"
+    p.write_text('Registry,Assignment,Organization Name,Organization Address\n'
+                 'MA-L,00005E,"Example Networks, Inc.",1 Example Way\n')
+    assert load_oui(str(p)) == {"00005E": "Example Networks, Inc."} and load_oui(None) == {}
+
+
+# --------------------------------------------- R06 odd port, R07 DNS bypass, R15 tunnelling
+
+def udp(ts, port, dst="203.0.113.5", src="192.168.50.10"):
+    r = conn(ts, src=src, dst=dst, port=port)
+    r["proto"] = "udp"
+    return r
+
+
+def test_odd_port_learns_the_house_then_flags_new_ports_once():
+    from tapwatch.detectors import OddPort
+    det = OddPort(learn_days=1)
+    day = 86400
+    assert run(det, [conn(T0, port=443), conn(T0 + 10, port=5223)]) == []        # learning
+    cases = run(det, [conn(T0 + day + 1, port=443), conn(T0 + day + 2, port=4444),
+                      conn(T0 + day + 3, port=4444), conn(T0 + day + 4, port=4444, state="S0")])
+    assert [(c.facts["port"], c.facts["new_for_house"]) for c in cases] == [(4444, True)]
+
+
+def test_odd_port_ignores_high_udp_and_flags_learned_ports_only_when_unusually_long():
+    from tapwatch.detectors import OddPort
+    det = OddPort(learn_days=1, long_hours=4)
+    day = 86400
+    run(det, [conn(T0, port=443), dict(conn(T0 + 1, port=5223), duration=6 * 3600)])   # push channel: long is normal
+    later = [udp(T0 + day + 1, 27015), dict(conn(T0 + day + 2, port=5223), duration=8 * 3600),
+             dict(conn(T0 + day + 3, port=443), duration=5 * 3600),                   # HTTPS streams: normal
+             dict(conn(T0 + day + 4, port=993), duration=5 * 3600)]
+    cases = run(det, later)
+    assert [(c.facts["port"], c.facts["new_for_house"]) for c in cases] == [(993, True)]
+
+
+def test_odd_port_new_port_to_a_service_the_device_already_uses_is_fine():
+    from tapwatch.detectors import OddPort
+    det = OddPort(learn_days=1)
+    cam = "192.168.50.44"
+    name = lambda ts, ip: dict(dns(ts, "media.camera-vendor.example", src=cam), answers=[ip])
+    run(det, [name(T0, "203.0.113.70"), conn(T0 + 1, src=cam, dst="203.0.113.70", port=32311)])
+    later = [name(T0 + 86401, "203.0.113.71"), conn(T0 + 86402, src=cam, dst="203.0.113.71", port=32403),
+             conn(T0 + 86403, src=cam, dst="198.51.100.9", port=6667)]               # unnamed, new: flagged
+    assert [c.facts["port"] for c in run(det, later)] == [6667]
+
+
+def test_odd_port_skips_named_dev_services_on_a_dev_host():
+    from tapwatch.detectors import OddPort
+    det = OddPort(learn_days=0, dev=DevProfile(["192.168.50.10"]))
+    lookup = dict(dns(T0, "ssh.github.com"), answers=["203.0.113.5"])
+    assert run(det, [lookup, conn(T0 + 1, port=22)]) == []
+    assert len(run(det, [conn(T0 + 2, port=22, src="192.168.50.11")])) == 1
+
+
+def test_dns_bypass_learns_hardcoded_resolvers_and_flags_new_ones():
+    from tapwatch.detectors import DnsBypass
+    det = DnsBypass(Warmup(600))
+    camera, pc = "192.168.50.44", "192.168.50.10"
+    assert run(det, [udp(T0, 53, dst="8.8.8.8", src=camera)]) == []                    # learned in warmup
+    later = [udp(T0 + 700, 53, dst="8.8.4.4", src=camera),                             # same habit
+             conn(T0 + 701, src=pc, dst="1.1.1.1", port=853),
+             ssl(T0 + 702, "dns.google", src=pc), ssl(T0 + 703, "mask.icloud.com", src=pc),
+             udp(T0 + 704, 53, dst="9.9.9.9", src=pc)]
+    got = [(c.facts["how"], c.base_severity) for c in run(det, later)]
+    assert got == [("DNS over TLS", 3), ("DNS over HTTPS", 3), ("plain DNS to an outside server", 2)]
+
+
+def test_dns_retry_loop_on_one_dead_name_is_not_dga():
+    det = SuspiciousDNS()
+    assert run(det, [dns(T0 + i, "sn.remote-agent.example", rcode="NXDOMAIN") for i in range(60)]) == []
+
+
+def test_dns_tunnelling_long_labels_to_one_unpopular_zone():
+    rng = random.Random(7)
+    det = SuspiciousDNS(popular={"example.com"})
+    chunk = lambda: "".join(rng.choice("abcdef0123456789") for _ in range(48))
+    cases = run(det, [dict(dns(T0 + i, f"{chunk()}.t.exfil-zone.net"), qtype_name="TXT") for i in range(210)])
+    tunnel = [c for c in cases if c.facts.get("tunnel")]
+    assert len(tunnel) == 1 and tunnel[0].indicators == ["exfil-zone.net"] and tunnel[0].base_severity == 4
+    normal = SuspiciousDNS(popular={"example.com"})
+    assert not [c for c in run(normal, [dns(T0 + i, f"img{i}.cdn.example.com") for i in range(300)])
+                if c.facts.get("tunnel")]
+
+
+# ------------------------------------------- R09 upload drift, upload stopped, R12 off-hours
+
+def test_silent_hours_close_on_the_log_clock_and_a_stopped_uploader_is_noticed():
+    cam, other = "192.168.50.44", "192.168.50.10"
+    det = HourlyProfile(steady_mb=50, stop_hours=2)
+    recs = [conn(T0 + h * 3600 + 10, src=cam, orig_bytes=300_000_000) for h in range(20)]     # 300 MB/h
+    recs += [conn(T0 + h * 3600 + 20, src=other) for h in range(20, 24)]   # camera silent; only others talk
+    stopped = [c for c in run(det, recs) if c.detector == "upload_stopped"]
+    assert len(stopped) == 1 and stopped[0].host == cam and stopped[0].facts["normal_mb"] == 300
+    assert stopped[0].base_severity == 2
+
+
+def test_off_hours_needs_a_quiet_history_at_that_hour():
+    det = HourlyProfile(busy_min=200, timezone="UTC")
+    pc, day = "192.168.50.10", 86400
+    quiet_hour = T0 - T0 % day + 3 * 3600                   # 03:00 UTC on each day
+    recs = []
+    for d in range(8):                                      # 8 quiet nights: 1 connection at 03:xx
+        recs += [conn(quiet_hour + d * day + 60, src=pc), conn(quiet_hour + d * day + 3600 + 60, src=pc)]
+    recs += [conn(quiet_hour + 8 * day + i, src=pc) for i in range(300)]   # 300 connections at 03:xx
+    recs += [conn(quiet_hour + 8 * day + 3600 + 5, src=pc)]                # 04:00 closes the hour
+    off = [c for c in run(det, recs) if c.detector == "off_hours"]
+    assert len(off) == 1 and off[0].facts["conns"] == 300 and off[0].facts["normal"] <= 1
+
+
+def test_devices_gone_a_week_are_dropped():
+    det = HourlyProfile()
+    run(det, [conn(T0 + 10, src="192.168.50.99")])
+    run(det, [conn(T0 + h * 3600 + 5) for h in range(1, 7 * 24 + 3)])
+    assert "192.168.50.99" not in det.history and "192.168.50.10" in det.history
+
+
+# ------------------------------------------------------- R02 IoT drift, R10 TLS oddities
+
+FAKE_ASN = {"203.0.113.5": (64500, "US"), "203.0.113.6": (64500, "US"), "198.51.100.7": (64511, "RU"),
+            "198.51.100.8": (64512, "NL"), "198.51.100.9": (64513, "NL"), "198.51.100.10": (64514, "NL")}
+
+
+class FakeAsn:
+    def lookup(self, ip):
+        return FAKE_ASN.get(ip)
+
+
+def test_fixed_function_roles_match_whole_words():
+    from tapwatch.detectors import fixed_function_hosts
+    t = {"192.168.50.44": {"role": "camera"}, "192.168.50.10": {"role": "workstation"},
+         "192.168.50.12": {"role": "github runner"}, "192.168.50.13": {"role": "TV streamer"}}
+    assert set(fixed_function_hosts(t)) == {"192.168.50.44", "192.168.50.13"}
+
+
+def test_iot_drift_learns_then_flags_country_port_and_network_bursts():
+    from tapwatch.detectors import IotDrift
+    cam, day = "192.168.50.44", 86400
+    det = IotDrift({cam: "camera"}, FakeAsn(), learn_days=1)
+    assert run(det, [conn(T0, src=cam, dst="203.0.113.5"), conn(T0 + 9, src="192.168.50.10", dst="198.51.100.7")]) == []
+    later = [conn(T0 + day + 1, src=cam, dst="203.0.113.6"),                        # same network: fine
+             conn(T0 + day + 2, src=cam, dst="198.51.100.7", port=6881),             # new country + new port
+             conn(T0 + day + 3, src=cam, dst="198.51.100.8"), conn(T0 + day + 4, src=cam, dst="198.51.100.9"),
+             conn(T0 + day + 5, src=cam, dst="198.51.100.10")]                       # 4 new networks in an hour
+    got = [(c.facts["what"], c.facts["value"]) for c in run(det, later)]
+    assert ("country", "RU") in got and ("port", "tcp/6881") in got and ("country", "NL") in got
+    assert any(w == "networks" for w, _ in got)
+
+
+def test_iot_drift_skips_known_vendor_services_and_does_nothing_without_the_table():
+    from tapwatch.detectors import IotDrift
+    cam = "192.168.50.44"
+    det = IotDrift({cam: "camera"}, FakeAsn(), learn_days=0)
+    ntp = dict(udp(T0, 123, dst="198.51.100.7", src=cam))
+    assert run(det, [ntp]) == []                                       # NTP pools: never a "new country"
+    lookup = lambda ts, ip: dict(dns(ts, "media.camera-vendor.example", src=cam), answers=[ip])
+    run(det, [lookup(T0, "203.0.113.5"), conn(T0 + 1, src=cam, dst="203.0.113.5")])
+    assert run(det, [lookup(T0 + 2, "198.51.100.7"), conn(T0 + 3, src=cam, dst="198.51.100.7")]) == []
+    assert run(IotDrift({cam: "camera"}, None), [conn(T0, src=cam)]) == []
+
+
+def test_tls_oddities_need_three_signs():
+    from tapwatch.detectors import TlsOddities
+    det = TlsOddities(Warmup(0))
+    named = dict(dns(T0, "api.example.com"), answers=["203.0.113.5"])
+    ok = dict(ssl(T0 + 1, "api.example.com"), established=True, **{"id.resp_p": 8443})       # 1 sign
+    odd = {"_type": "ssl", "ts": T0 + 2, "id.orig_h": "192.168.50.10", "id.resp_h": "198.51.100.7",
+           "id.resp_p": 4443, "established": True}                                         # 3 signs
+    worse = dict(odd, **{"id.resp_h": "198.51.100.8", "validation_status": "self signed certificate"})
+    cases = run(det, [named, ok, odd, dict(odd, ts=T0 + 3), worse, dict(worse, **{"id.resp_p": 5443})])
+    assert [(c.facts["score"], c.base_severity) for c in cases] == [(3, 2), (4, 3)]   # once per (device, port)
+
+
+def test_tls_oddities_learned_in_warmup_stay_quiet():
+    from tapwatch.detectors import TlsOddities
+    cam = "192.168.50.44"
+    det = TlsOddities(Warmup(600))
+    vendor = {"_type": "ssl", "ts": T0, "id.orig_h": cam, "id.resp_h": "198.51.100.7", "id.resp_p": 32403,
+              "established": True, "validation_status": "self signed certificate"}
+    assert run(det, [vendor]) == []                                                     # warmup
+    assert run(det, [dict(vendor, ts=T0 + 900, **{"id.resp_h": "198.51.100.9"})]) == []  # new server, same habit
+    assert len(run(det, [dict(vendor, ts=T0 + 901, **{"id.resp_p": 4444})])) == 1
+
+
+def test_a_long_udp_stream_split_by_zeek_is_not_beaconing():
+    """Case #63: a voice call. Zeek logged the UDP flow as back-to-back ~60 s records."""
+    recs = []
+    for i in range(15):
+        r = dict(conn(T0 + i * 60.07, dst="203.0.113.77", port=50003), duration=60.07, orig_bytes=500_000)
+        r["proto"] = "udp"
+        recs.append(r)
+    assert run(Beaconing(), recs) == []
+    short = [dict(conn(T0 + i * 60, dst="203.0.113.78", port=8443), duration=0.4) for i in range(15)]
+    assert len(run(Beaconing(), short)) == 1                     # a real heartbeat still fires
+
+
+def test_tcp_sessions_held_for_the_interval_are_still_beacons():
+    """FluBot capture: 300 s TCP sessions, reopened every 300 s."""
+    recs = [dict(conn(T0 + i * 300, dst="203.0.113.90"), duration=300.1) for i in range(12)]
+    assert len(run(Beaconing(), recs)) == 1
+
+
+def test_retry_bursts_collapse_into_one_beat():
+    """HtBot capture: a few rejected attempts seconds apart, then ~27 minutes of quiet."""
+    recs = []
+    for i in range(12):
+        recs += [conn(T0 + i * 1617 + k * 3, dst="203.0.113.91", port=80, state="REJ") for k in range(3)]
+    cases = run(Beaconing(), recs)
+    assert len(cases) == 1 and cases[0].facts["interval_s"] == 1617
+
+
+# --------------------------------------------- household prevalence, sync services (home eval fixes)
+
+def test_beacon_to_a_service_other_devices_use_is_capped():
+    others = [ssl(T0 - 5, "api.popular.example", src="192.168.50.11"), ssl(T0 - 4, "x.niche.example", src="192.168.50.12")]
+    b = Beaconing(popular={"popular.example"})
+    run(b, others + [ssl(T0 - 3, "api.popular.example"), ssl(T0 - 2, "x.niche.example", dst="203.0.113.6")])
+    pop = run(b, [conn(T0 + i * 300) for i in range(12)])[0]
+    niche = run(b, [conn(T0 + i * 300, dst="203.0.113.6", port=8443) for i in range(12)])[0]
+    assert (pop.facts["shared_by"], pop.facts["max_route"]) == (1, "log")
+    assert niche.facts["shared_by"] == 1 and "max_route" not in niche.facts   # obscure + shared: could be a botnet
+    lone = run(Beaconing(), [conn(T0 + i * 300, dst="203.0.113.7") for i in range(12)])[0]
+    assert "max_route" not in lone.facts
+
+
+def test_beacon_to_an_expected_tool_is_skipped():
+    b = Beaconing(expected={"192.168.50.10": {"teamviewer.com"}})
+    recs = [ssl(T0 - 1, "hapi.teamviewer.com")] + [conn(T0 + i * 3600) for i in range(12)]
+    assert run(b, recs) == []
+
+
+def test_new_domain_random_only_off_popular_and_no_bare_hostnames():
+    nd = NewExternalDomain(Warmup(0), popular={"googlevideo.com"})
+    run(nd, [dns(T0, "rr4---sn-bvvbaxivnuxqjvhj5nu-vgqe.googlevideo.com"), dns(T0 + 1, "jsl-dtc-010"),
+             dns(T0 + 2, "q8z3kx0vw7p2mr.example.net")])
+    c = nd.flush()[0]
+    assert c.facts["count"] == 2 and c.facts["random"] == 1 and c.indicators[0] == "q8z3kx0vw7p2mr.example.net"
+
+
+def test_upload_spike_to_a_sync_service_is_capped_at_digest():
+    det = HourlyProfile()
+    lookup = dict(dns(T0, "onedriveclubprodbn1.blob.core.windows.net"), answers=["203.0.113.40"])
+    recs = [lookup] + [conn(T0 + h * 3600, orig_bytes=5_000_000) for h in range(8)]
+    recs += [conn(T0 + 8 * 3600 + 60, dst="203.0.113.40", orig_bytes=800_000_000), conn(T0 + 9 * 3600)]
+    c = next(x for x in run(det, recs) if x.detector == "upload_spike")
+    assert c.facts["to_sync_service"] and c.facts["max_route"] == "digest" and c.facts["top_share_pct"] >= 90
+
+
+def test_one_device_with_several_addresses_is_not_shared():
+    """HtBot capture: the infected machine's own IPv6 addresses made its C2 look 'shared'."""
+    mac = "08:00:27:63:6f:08"
+    b = Beaconing()
+    run(b, [dict(conn(T0 - 9, src="fd77::1"), orig_l2_addr=mac), dict(conn(T0 - 8), orig_l2_addr=mac),
+            dict(dns(T0 - 7, "c2.bad.example", src="fd77::1"), answers=["203.0.113.9"]),
+            dict(dns(T0 - 6, "c2.bad.example"), answers=["203.0.113.9"])])
+    c = run(b, [dict(conn(T0 + i * 600, dst="203.0.113.9", port=80), orig_l2_addr=mac) for i in range(12)])[0]
+    assert c.facts["shared_by"] == 0
+
+
+def test_upload_spike_to_an_endpoint_security_cloud_is_capped_at_digest():
+    det = HourlyProfile()
+    lookup = dict(dns(T0, "ts01-b.cloudsink.net"), answers=["203.0.113.41"])
+    recs = [lookup] + [conn(T0 + h * 3600, orig_bytes=5_000_000) for h in range(8)]
+    recs += [conn(T0 + 8 * 3600 + 60, dst="203.0.113.41", orig_bytes=700_000_000), conn(T0 + 9 * 3600)]
+    c = next(x for x in run(det, recs) if x.detector == "upload_spike")
+    assert c.facts["to_security_vendor"] and c.facts["max_route"] == "digest"

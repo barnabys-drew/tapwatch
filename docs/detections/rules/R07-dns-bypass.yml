@@ -1,0 +1,48 @@
+title: DNS bypassing the household resolver (plain, DoT, DoQ, DoH)
+id: e49fe762-bafc-4702-a284-8364f20cb62f
+status: experimental
+description: |
+  R07. A device resolves names somewhere other than the UDM. Measured 2026-10-12: 1 device
+  (the cloud camera, hardcoded public resolver, 24 queries in 50 min); the work laptop uses
+  VPN resolvers; 0 DoH/DoT. Route: DIGEST; ALERT when a computer starts DoH/DoT to a
+  non-mainstream resolver. Jev: code decides; Q-role-fit advisory only (near Jev's weak spot).
+logsource:
+  product: zeek
+  service: conn
+detection:
+  from_lan:
+    id.orig_h|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']
+  plain_dns:
+    id.resp_p: 53
+  not_household_resolver:
+    id.resp_h|expand: '%gateway_ips%'
+  dot_doq:
+    id.resp_p: [853, 8853]
+  doh_anycast:
+    id.resp_p: 443
+    id.resp_h: ['1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4', '9.9.9.9', '149.112.112.112',
+                '94.140.14.14', '208.67.222.222', '45.90.28.0', '45.90.30.0']
+  allowlisted:
+    id.orig_h|expand: '%dns_bypass_allow%'   # per-device, learned in a 3-day warmup
+  condition: from_lan and ((plain_dns and not not_household_resolver) or dot_doq or doh_anycast) and not allowlisted
+fields: [id.orig_h, id.resp_h, id.resp_p, proto]
+falsepositives:
+  - IoT with hardcoded resolvers, work VPN resolvers, browser Secure DNS, Apple Private Relay
+level: medium
+tags: [attack.command_and_control, attack.t1071.004, attack.t1572]
+---
+title: DoH by TLS server name
+id: fd5105a6-269c-4625-a514-3a5346e5497c
+status: experimental
+description: R07 companion on ssl.log; same routing and allowlist.
+logsource:
+  product: zeek
+  service: ssl
+detection:
+  doh_sni:
+    server_name|endswith: ['dns.google', 'cloudflare-dns.com', 'dns.quad9.net', '.nextdns.io',
+                           'doh.opendns.com', 'dns.adguard-dns.com', 'doh.cleanbrowsing.org']
+  allowlisted:
+    id.orig_h|expand: '%dns_bypass_allow%'
+  condition: doh_sni and not allowlisted
+level: medium

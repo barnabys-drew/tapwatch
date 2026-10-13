@@ -1,0 +1,74 @@
+# tapwatch on a small Linux box whose second NIC is plugged into the switch's mirror (SPAN)
+# port. That NIC needs no IP address. From the repo root:
+#
+#   tapwatch init                                   # writes config.yaml, assets.yaml, .env
+#   TAP_IFACE=enp2s0 docker compose -f deploy/docker-compose.yml up -d --build
+#   docker compose -f deploy/docker-compose.yml --profile syslog up -d   # + router syslog (UDP 5514)
+#   docker compose -f deploy/docker-compose.yml --profile ids up -d      # + Suricata (see docs/setup)
+#
+# Case desk: http://127.0.0.1:8765 on this box (log in with TAPWATCH_UI_TOKEN from .env).
+# config.yaml and assets.yaml are mounted into /data, the containers' working directory, so the
+# relative paths `tapwatch init` writes (tapwatch.db, assets.yaml, feeds) resolve there.
+services:
+  zeek:
+    image: zeek/zeek:7.0.0
+    network_mode: host
+    cap_add: [NET_RAW, NET_ADMIN]
+    working_dir: /logs
+    # JSON logs, MACs in conn.log, hourly rotation (deploy/zeek/tapwatch-live.zeek). The log dir is
+    # opened up so tapwatch (a non-root user) can delete rotated logs after zeek_retention_days.
+    entrypoint: ["sh", "-c", "chmod 0777 /logs && exec zeek -C -i \"$$TAP_IFACE\" /tapwatch/tapwatch-live.zeek"]
+    environment:
+      TAP_IFACE: ${TAP_IFACE:?set TAP_IFACE to the mirror-port NIC}
+    volumes: [zeek-logs:/logs, ./zeek:/tapwatch:ro]
+    restart: unless-stopped
+
+  tapwatch:
+    build: ..
+    depends_on: [zeek]
+    env_file: [{path: ../.env, required: false}]
+    command: ["tapwatch", "-c", "config.yaml", "run", "--zeek-dir", "/logs", "--zeek-dir", "/suricata"]
+    volumes:
+      - zeek-logs:/logs
+      - suricata-logs:/suricata:ro
+      - ../config.yaml:/data/config.yaml:ro
+      - ../assets.yaml:/data/assets.yaml:ro
+      - tapwatch-data:/data
+    restart: unless-stopped
+
+  ui:
+    build: ..
+    env_file: [{path: ../.env, required: false}]
+    command: ["tapwatch", "-c", "config.yaml", "ui", "--host", "0.0.0.0", "--zeek-dir", "/logs"]
+    ports: ["127.0.0.1:8765:8765"]   # this box only; see docs/setup for reaching it from a phone
+    volumes:
+      - zeek-logs:/logs:ro
+      - ../config.yaml:/data/config.yaml:ro
+      - ../assets.yaml:/data/assets.yaml:ro
+      - tapwatch-data:/data
+    restart: unless-stopped
+
+  syslog:
+    build: ..
+    profiles: [syslog]
+    network_mode: host               # keeps the router's real source address for the allow-list
+    env_file: [{path: ../.env, required: false}]
+    command: ["tapwatch", "-c", "config.yaml", "syslog", "--listen", "0.0.0.0:5514", "--out", "/logs"]
+    volumes:
+      - zeek-logs:/logs
+      - ../config.yaml:/data/config.yaml:ro
+    restart: unless-stopped
+
+  suricata:
+    image: jasonish/suricata:7.0.6
+    profiles: [ids]
+    network_mode: host
+    cap_add: [NET_RAW, NET_ADMIN, SYS_NICE]
+    command: ["-i", "${TAP_IFACE:?}"]
+    volumes: [suricata-logs:/var/log/suricata]
+    restart: unless-stopped
+
+volumes:
+  zeek-logs:
+  suricata-logs:
+  tapwatch-data:

@@ -1,0 +1,144 @@
+"""Decide what happens to a case: alert now, daily digest, or log only.
+
+Safety rule: the AI (and the admin's suppression rules) can raise or lower
+priority for ordinary cases, but can never silence a `must_alert` case (threat-intel hit, critical IDS alert). Those
+fields are set by deterministic code, so text an attacker puts in a domain name
+cannot talk its way out of an alert.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .models import Case, Route, Verdict
+
+# Detectors whose cases are routed by code only. Measured 2026-10-11/12: Jev 1.13
+# called ordinary new domains (www.example.com, herdr.dev, bleepingcomputer.com)
+# c2_beaconing at 0.5-0.95 confidence across several prompt wordings, while code
+# facts (random-looking? widely used?) already separate them. Re-test before removing.
+CODE_ONLY = {"new_domain",
+             # Home rules where the fact is the verdict (docs/detections/DESIGN.md R03, R13).
+             # R01 exposure and R14 rogue_dhcp are must_alert, so they skip the AI anyway.
+             "mgmt_access", "cleartext_auth",
+             # R16: the service's identity is the verdict, and judging whether a domain is
+             # normal is Jev's measured weak spot.
+             "takeover",
+             # R07: which resolver a device uses is a fact; whether that's normal for the device is
+             # the kind of "is this destination OK" call Jev is measured weak at.
+             "dns_bypass",
+             # A steady uploader going quiet is a fact about the device; nothing for Jev to weigh.
+             "upload_stopped",
+             # R11: whether the owner logged in is a fact only the owner knows.
+             "udm_admin",
+             # R10 has no names to judge; Jev called a camera's vendor TLS "c2 0.95" (home eval).
+             "tls_odd"}
+
+
+def wants_ai(case: Case) -> bool:
+    return not case.must_alert and case.detector not in CODE_ONLY
+
+
+@dataclass
+class Thresholds:
+    min_confidence: float = 0.6   # below this, a human should look (digest, flagged)
+    page_prob: float = 0.7        # P(page_admin) needed to interrupt
+    page_severity: float = 2.5    # and at least this severity (0..4 scale)
+    routine_prob: float = 0.8     # P(routine) needed to drop to log-only
+    # Category confidence Jev needs before it alone can interrupt. M5 eval (2026-10-13): true C2
+    # beacons scored 0.78-0.99 over 3 runs each (FluBot, HtBot); a game launcher's update check
+    # scored 0.60-0.61 and flipped into an alert at the old 0.6. Margin above FluBot is thin.
+    alert_confidence: float = 0.75
+
+
+RANK = {Route.LOG: 0, Route.DIGEST: 1, Route.ALERT: 2}
+
+
+def route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
+          suppression: str | None = None) -> tuple[Route, str]:
+    r, reason = _route(case, verdict, t, suppression)
+    cap = case.facts.get("max_route")
+    if cap in ("log", "digest") and not case.must_alert and not agent_misused(case) and RANK[r] > RANK[Route(cap)]:
+        # A ceiling the detector proved in code (household prevalence, a known sync service). Jev can
+        # lower a case further but not raise it past this. Never applies to always-alert cases.
+        return Route(cap), f"{reason}; capped at {cap} by code facts"
+    if r is Route.ALERT and not case.must_alert and owner_likely(case):
+        return Route.DIGEST, "on the PC: probably the owner's agent work (not confirmed), " + reason
+    return r, reason
+
+
+def _route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
+           suppression: str | None = None) -> tuple[Route, str]:
+    """Return (route, reason). `verdict` is None when AI triage is off or failed.
+    `suppression` is the label of an admin suppression rule that matched the case, if any."""
+    t = t or Thresholds()
+    if case.must_alert:
+        return Route.ALERT, "always-alert rule"  # checked first: a suppression rule can't silence it either
+    if agent_misused(case):  # before suppressions: an attacker could hide behind a pattern the owner muted
+        return Route.ALERT, "on the PC: a coding agent did this without the owner asking"
+    if suppression:
+        return Route.LOG, f"suppressed: {suppression}"
+    if owner_confirmed(case):
+        return Route.LOG, "on the PC: the owner's own agent work"
+    if verdict is None:
+        if case.base_severity >= 4:
+            return Route.ALERT, "rules-only: high severity"
+        if case.base_severity >= 2:
+            return Route.DIGEST, "rules-only"
+        return Route.LOG, "rules-only: low severity"
+    if verdict.category == "unknown" or verdict.category_confidence < t.min_confidence:
+        return Route.DIGEST, "needs a human look: AI unsure"
+    if verdict.page_admin >= t.page_prob and verdict.severity >= t.page_severity:
+        if verdict.category_confidence >= t.alert_confidence:
+            return Route.ALERT, f"AI: {verdict.category}, severity {verdict.severity:.1f}/4"
+        return Route.DIGEST, f"AI leaning {verdict.category} ({verdict.category_confidence:.2f}), not sure enough to interrupt"
+    if (verdict.category == "benign" and verdict.routine >= t.routine_prob
+            and verdict.category_confidence >= 0.8 and case.base_severity < 4):
+        return Route.LOG, "AI: routine activity"
+    return Route.DIGEST, f"AI: {verdict.category}"
+
+
+def agent_misused(case: Case) -> bool:
+    """Code saw an unattended/SSH-driven agent or web-content-then-action, or Jev judged it so (>= 0.6).
+    Jev's call only counts when code tied the connection to an agent session (process proof): a
+    transcript that merely mentions the destination is context, never routing. Case #63
+    (2026-10-13) was a voice call escalated on transcript-only facts."""
+    f = case.facts
+    return f.get("host_who") == "agent_misused" or (
+        bool(f.get("host_agent_session")) and f.get("host_jev_who") == "agent_misused"
+        and f.get("host_jev_conf", 0) >= 0.6)
+
+
+def owner_confirmed(case: Case) -> bool:
+    """Lower a case only when code corroborates it (an attended session, and the owner asked for it or
+    the command followed their prompt with no outside content in between) AND Jev doesn't disagree."""
+    f = case.facts
+    if not f.get("host_corroborated"):
+        return False
+    jev = f.get("host_jev_who")
+    return not jev or (jev == "owner_using_agent" and f.get("host_jev_conf", 0) >= 0.8)
+
+
+def owner_likely(case: Case) -> bool:
+    """An attended agent session made it, the owner didn't name the destination, and Jev reads it as
+    the owner's work (>= 0.8). Enough to hold an alert back to the digest, never to log it away."""
+    f = case.facts
+    return (f.get("host_who") == "agent_unconfirmed" and f.get("host_attended") and not f.get("host_via_ssh")
+            and f.get("host_jev_who") == "owner_using_agent" and f.get("host_jev_conf", 0) >= 0.8)
+
+
+def critical(case: Case, verdict: Verdict | None, r: Route, ai_severity: float = 3.5) -> bool:
+    """Truly critical: worth interrupting someone at the terminal, not just an alert email.
+
+    Always-alert cases (threat-intel hit, IDS severity 1, internet exposure, rogue DHCP, exfil
+    channel); deterministic code-only rules that alert at severity 4+ (admin-port access, tunnel or
+    remote-control tool, after-hours remote session, telnet/FTP login to the internet); and AI-routed
+    alerts only when Jev rates them critical (>= 3.5 of 4). The STUN false-alarm storm of
+    2026-10-12 was rated 2.8 and would not have popped up.
+    """
+    if r is not Route.ALERT:
+        return False
+    if case.must_alert or agent_misused(case):
+        return True
+    if case.detector in CODE_ONLY:
+        return case.base_severity >= 4
+    return verdict is not None and verdict.severity >= ai_severity

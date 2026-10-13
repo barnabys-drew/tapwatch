@@ -1,0 +1,41 @@
+title: Rogue DHCP server
+id: d05ba0bd-935f-4365-b797-a6dfe7a5c064
+status: experimental
+description: |
+  R14. A DHCP OFFER/ACK from anything but the UDM: hostile gateway/DNS (on-path attack) or a
+  family travel router. Measured 2026-10-12: 1 DHCP server (the UDM).
+  Route: ALERT, code-only, must_alert. Jev: none.
+  Test only by offline pcap replay; never run a DHCP server on the LAN.
+logsource:
+  product: zeek
+  service: dhcp
+detection:
+  server_reply:
+    msg_types|contains: ['OFFER', 'ACK']
+  has_server:
+    server_addr|re: '.+'
+  household_server:
+    server_addr|expand: '%gateway_ips%'
+  condition: server_reply and has_server and not household_server
+fields: [server_addr, mac, assigned_addr, msg_types]
+level: high
+tags: [attack.credential_access, attack.t1557.003]
+---
+title: DHCP server answering from an unexpected host (conn view, catches servers dhcp.log misses)
+id: d022a47d-a0d3-4168-a2c6-95a6f03f4acd
+status: experimental
+logsource:
+  product: zeek
+  service: conn
+detection:
+  # Zeek logs the client as originator and the server as responder on udp/67.
+  dhcp_reply:
+    id.resp_p: 67
+    proto: udp
+    resp_bytes|gt: 0
+  broadcast:
+    id.resp_h: '255.255.255.255'
+  household_server:
+    id.resp_h|expand: '%gateway_ips%'
+  condition: dhcp_reply and not broadcast and not household_server
+level: high

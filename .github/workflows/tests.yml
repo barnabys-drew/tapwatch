@@ -1,0 +1,43 @@
+name: Tests
+
+# Unit tests and lint on every push to dev and every PR into main. Added 2026-10-13
+# after two UI changes merged into a login crash that only the local test suite saw.
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest + ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install --disable-pip-version-check -e '.[dev]'
+
+      - name: No personal data in tracked files
+        run: python tools/check_personal_data.py
+
+      - name: Lint
+        run: ruff check src tests tools
+
+      - name: Test
+        run: python -m pytest -q

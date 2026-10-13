@@ -1,0 +1,62 @@
+title: Takeover channel - callback, file drop, tunnel or remote control service
+id: 3d1c7f0e-2b8a-4c55-9f61-6a2e9d4b7c10
+status: experimental
+description: |
+  R16. With no EDR or SaaS audit logs, an account or machine takeover shows on the network as the
+  attacker's plumbing: a webhook/callback catcher where a prompt-injected agent or token stealer
+  posts secrets, a paste or file-drop site, a tunnel that opens a way in, or a remote-control tool.
+  Applies to every device and is NOT covered by the dev-workstation profile: dev work is what an
+  injected agent hides behind. Built as detectors.TakeoverChannel (domain lists live there).
+  Route: callback and file_drop -> ALERT, must_alert (never suppressed). tunnel and remote_control
+  -> ALERT, code-only, suppressible per device. Jev: none (service identity is the verdict, and
+  domain judgement is Jev's measured weak spot).
+  Measured 2026-10-12 (2.9 h mirror): 1 hit, remote_control on the Windows laptop (TeamViewer).
+references:
+  - docs/detections/DESIGN.md
+logsource:
+  product: zeek
+  service: dns
+detection:
+  resolved:
+    rcode_name: NOERROR
+  callback:
+    query|endswith: ['webhook.site', 'requestbin.net', 'requestcatcher.com', 'pipedream.net', 'beeceptor.com',
+                     'hookbin.com', 'interact.sh', 'oast.fun', 'oast.pro', 'oast.live', 'oast.site',
+                     'oast.online', 'oast.me', 'oastify.com', 'burpcollaborator.net', 'canarytokens.com',
+                     'dnslog.cn', 'ceye.io']
+  file_drop:
+    query|endswith: ['pastebin.com', 'paste.ee', 'hastebin.com', 'rentry.co', 'transfer.sh', 'file.io',
+                     'temp.sh', '0x0.st', 'bashupload.com', 'gofile.io', 'catbox.moe', 'oshi.at',
+                     'api.telegram.org']
+  tunnel:
+    query|endswith: ['ngrok.io', 'ngrok.app', 'ngrok-free.app', 'ngrok.dev', 'ngrok-free.dev',
+                     'trycloudflare.com', 'loca.lt', 'localtunnel.me', 'serveo.net', 'localhost.run',
+                     'pinggy.io', 'pinggy.link', 'bore.pub', 'tunnelmole.net', 'devtunnels.ms', 'playit.gg']
+  remote_control:
+    query|endswith: ['anydesk.com', 'teamviewer.com', 'rustdesk.com', 'screenconnect.com', 'splashtop.com',
+                     'getscreen.me', 'remotepc.com', 'logmein.com', 'logme.in', 'atera.com', 'ammyy.com',
+                     'supremocontrol.com', 'simple-help.com', 'meshcentral.com']
+  condition: resolved and (callback or file_drop or tunnel or remote_control)
+fields: [id.orig_h, query, answers]
+falsepositives:
+  - Remote-support tools used on purpose (tapwatch takeover.expected; still alerts on sessions outside business hours)
+  - Developers using ngrok or VS Code dev tunnels on purpose (suppress per device)
+  - Sigma endswith also matches lookalikes such as notwebhook.site (tapwatch matches whole labels)
+level: high
+tags: [attack.exfiltration, attack.t1567, attack.command_and_control, attack.t1572, attack.t1219]
+---
+title: Takeover channel by TLS server name
+id: 8b6f2a91-5d3e-4f7a-b0c4-1e9a7d2c5f38
+status: experimental
+description: R16 companion on ssl.log (catches clients using DoH or hardcoded IPs). Same lists and routing.
+logsource:
+  product: zeek
+  service: ssl
+detection:
+  channel:
+    server_name|endswith: ['webhook.site', 'pipedream.net', 'oast.fun', 'oast.pro', 'oastify.com', 'interact.sh',
+                           'pastebin.com', 'transfer.sh', 'file.io', 'api.telegram.org', 'ngrok.io',
+                           'ngrok-free.app', 'trycloudflare.com', 'loca.lt', 'devtunnels.ms', 'anydesk.com',
+                           'teamviewer.com', 'rustdesk.com', 'screenconnect.com', 'splashtop.com']
+  condition: channel
+level: high

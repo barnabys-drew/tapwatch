@@ -1,0 +1,10 @@
+# Standalone flags: no server, results go to local log files.
+# The installers fill in the @...@ placeholders.
+--config_path=@CONF_PATH@
+--logger_plugin=filesystem
+--logger_path=@LOG_PATH@
+# Results readable by the local user, so tapwatch can name the program behind a connection
+# without root. They hold process names and remote addresses, nothing secret.
+--logger_mode=0644
+--database_path=@DB_PATH@
+--host_identifier=uuid

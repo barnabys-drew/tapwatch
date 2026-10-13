@@ -1,0 +1,7 @@
+.venv
+.git
+eval/data
+eval/out
+*.db
+config.yaml
+assets.yaml

@@ -1,0 +1,44 @@
+# Rule files
+
+SQL files are **DuckDB** over Zeek JSON logs. Run them with
+`duckdb -c "SET VARIABLE zeek='eval/data/<dir>'; .read docs/detections/rules/R01-....sql"`.
+Each reads `getvariable('zeek') || '/conn*.log*'`. Stateful rules compare a
+**baseline** window with a **detection** window, both set at the top of the file.
+In tapwatch the same logic runs as a streaming detector, and these files are the
+batch/hunt equivalent and the spec.
+
+**Not executed yet.** DuckDB isn't installed, and the design brief allowed no installs, so treat
+the SQL as a reviewed spec. Expect small syntax fixes on the first run (DuckDB ≥ 1.1 for
+`getvariable`). Variables to set: `zeek`, `assets` (CSV export of assets.yaml), `tranco`,
+`nrd_30d`, `domain_allow`, `exposure_baseline`, and an `ip2asn` table for R02.
+
+Sigma files (`.yml`) use `product: zeek`. Allowlists are config (`assets.yaml`
+roles), never hardcoded IPs.
+
+| File | Rule | Format |
+|---|---|---|
+| R01-internet-exposed-service.sql | Internet-exposed service appears | SQL |
+| R02-iot-egress-drift.sql | Fixed-function device egress drift | SQL |
+| R03-mgmt-plane-access.yml | Management-plane / admin-port access | Sigma |
+| R04-beaconing.sql | Beaconing (hunt version of the detector) | SQL |
+| R05-new-device.sql | New MAC joins | SQL |
+| R06-odd-port-long-lived.sql | Odd-port or long-lived outbound | SQL |
+| R07-dns-bypass.yml | DNS bypass (plain / DoT / DoH / DoQ) | Sigma |
+| R08-rare-new-domain.sql | Rare-in-household / newly registered domain | SQL |
+| R09-upload-drift.sql | Upload drift and camera stop | SQL |
+| R10-tls-weak-signals.sql | TLS weak-signal stack | SQL |
+| R13-cleartext-credentials.yml | Cleartext credentials | Sigma |
+| R14-rogue-dhcp.yml | Rogue DHCP server | Sigma |
+| R16-takeover-channels.yml | Takeover channel: callback, file drop, tunnel, remote control | Sigma |
+
+**Built into `src/tapwatch/detectors.py`:** R01 `InternetExposure`, R03 `ManagementAccess`,
+R13 `CleartextAuth`, R14 `RogueDHCP`. The streaming versions differ from these specs in a few
+places. R01 and R03 learn existing exposures and admin pairs during warmup. R01 skips flows
+whose direction Zeek can't know: the first 2 min after start, TCP without the outside host's SYN,
+and UDP replies to a remote the device contacted in the last 30 min. R13 also reads `ftp.log`.
+`network.gateways` is optional: `Gateways` learns each /24's router from the logs (the first address
+3 devices use for DNS, NAT-PMP or DHCP), and R14 then expects one DHCP server per LAN.
+
+R11 (UDM admin login), R12 (off-hours drift) and R15 (DNS tunnelling) are
+specified in `../DESIGN.md`. R11 needs the UDM syslog input. R12 and R15 are
+extensions of existing streaming detectors.

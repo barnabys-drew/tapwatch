@@ -1,0 +1,46 @@
+<!--
+  Small Sysmon config for a home machine. Goal: answer "which program made this
+  connection?" for network alerts, plus basic process history.
+
+  Logged: process starts (1), network connections (3, except loopback),
+  process ends (5), DNS queries (22). Everything else is off to keep the log small.
+  For a fuller config see https://github.com/olafhartong/sysmon-modular.
+-->
+<Sysmon schemaversion="4.50">
+  <HashAlgorithms>sha256</HashAlgorithms>
+  <CheckRevocation/>
+  <EventFiltering>
+    <RuleGroup name="process create" groupRelation="or">
+      <ProcessCreate onmatch="exclude"/>
+    </RuleGroup>
+    <RuleGroup name="network connect" groupRelation="or">
+      <NetworkConnect onmatch="exclude">
+        <DestinationIp condition="is">127.0.0.1</DestinationIp>
+        <DestinationIp condition="is">::1</DestinationIp>
+      </NetworkConnect>
+    </RuleGroup>
+    <RuleGroup name="process terminate" groupRelation="or">
+      <ProcessTerminate onmatch="exclude"/>
+    </RuleGroup>
+    <RuleGroup name="dns query" groupRelation="or">
+      <DnsQuery onmatch="exclude"/>
+    </RuleGroup>
+    <!-- Off: empty include rules match nothing. -->
+    <RuleGroup name="off" groupRelation="or">
+      <FileCreateTime onmatch="include"/>
+      <DriverLoad onmatch="include"/>
+      <ImageLoad onmatch="include"/>
+      <CreateRemoteThread onmatch="include"/>
+      <RawAccessRead onmatch="include"/>
+      <ProcessAccess onmatch="include"/>
+      <FileCreate onmatch="include"/>
+      <RegistryEvent onmatch="include"/>
+      <FileCreateStreamHash onmatch="include"/>
+      <PipeEvent onmatch="include"/>
+      <WmiEvent onmatch="include"/>
+      <FileDelete onmatch="include"/>
+      <ClipboardChange onmatch="include"/>
+      <ProcessTampering onmatch="include"/>
+    </RuleGroup>
+  </EventFiltering>
+</Sysmon>
