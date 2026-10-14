@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import glob
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -38,7 +39,8 @@ from .detectors import base_domain, is_internal
 # Same columns as agents/config/osquery.conf `outbound_connections_ctx`. Selects named
 # environment variables only: the Claude messaging token sits in the same environment.
 LIVE_SQL = (
-    "SELECT p.pid, p.name, p.path, s.remote_address, s.remote_port, "
+    "SELECT p.pid, p.name, p.path, p.cmdline, p.on_disk, s.remote_address, s.remote_port, "
+    "(SELECT name FROM processes pp WHERE pp.pid = p.parent) AS parent_name, "
     "(SELECT value FROM process_envs e WHERE e.pid = p.pid AND e.key = 'CLAUDE_CODE_SESSION_ID') AS claude_session, "
     "(SELECT value FROM process_envs e WHERE e.pid = p.pid AND e.key = 'CLAUDE_CODE_SESSION_ATTENDED') AS claude_attended, "
     "(SELECT value FROM process_envs e WHERE e.pid = p.pid AND e.key = 'CLAUDE_CODE_ENTRYPOINT') AS claude_entrypoint, "
@@ -67,6 +69,9 @@ class Owner:
     entrypoint: str = ""     # "cli" for the interactive app
     in_herdr: bool = False
     via_ssh: bool = False
+    cmdline: str = ""        # redacted before it's stored anywhere (see redact)
+    parent: str = ""
+    on_disk: str = ""        # "0" = the program's file was deleted after it started
     start: float = 0.0       # first seen (log rows); 0 for live rows
     end: float | None = None
 
@@ -75,7 +80,59 @@ def _owner(c: dict, start: float = 0.0) -> Owner:
     return Owner(name=c.get("name") or "?", path=c.get("path") or "", session=c.get("claude_session") or "",
                  attended=str(c.get("claude_attended") or ""), entrypoint=c.get("claude_entrypoint") or "",
                  in_herdr=str(c.get("in_herdr") or "0") not in ("0", ""),
-                 via_ssh=str(c.get("via_ssh") or "0") not in ("0", ""), start=start)
+                 via_ssh=str(c.get("via_ssh") or "0") not in ("0", ""), cmdline=redact(c.get("cmdline") or ""),
+                 parent=c.get("parent_name") or "", on_disk=str(c.get("on_disk") if c.get("on_disk") is not None else ""),
+                 start=start)
+
+
+SECRET = re.compile(r"(?i)((?:token|secret|password|passwd|pass|key|auth|bearer|api[_-]?key|sig)[=: ]+)\S+"
+                    r"|\b[A-Za-z0-9+/=_-]{32,}\b")
+
+
+def redact(cmd: str, limit: int = 240) -> str:
+    """A command line with anything secret-looking masked, for local case facts only (never sent to Jev)."""
+    out = SECRET.sub(lambda m: (m.group(1) or "") + "<redacted>", cmd)
+    return out if len(out) <= limit else out[:limit] + "..."
+
+
+# What makes a program on the PC look suspicious or ordinary. Code decides; Jev only reads the outcome.
+SUSPICIOUS_DIRS = ("/tmp/", "/dev/shm/", "/var/tmp/", "/run/user/")
+SUSPICIOUS_CMD = re.compile(r"(curl|wget)[^|;]*\|\s*(ba|z|da)?sh\b|base64\s+(-d|--decode)|/dev/tcp/|\bnc\b.*\s-e\s"
+                            r"|\bbash\s+-i\b|mkfifo|-enc(odedcommand)?\s|python[0-9.]*\s+-c\s.*socket", re.IGNORECASE)
+SYSTEM_DIRS = ("/usr/bin/", "/usr/sbin/", "/usr/lib/", "/usr/libexec/", "/usr/share/", "/usr/local/bin/", "/bin/",
+               "/sbin/", "/lib/", "/opt/", "/snap/")
+USER_TOOL_DIRS = ("/.local/share/claude/", "/.local/bin/", "/.nvm/", "/.vscode-server/", "/.cursor-server/",
+                  "/.cargo/bin/", "/.pyenv/", "/.rustup/", "/.venv/bin/", "/node_modules/.bin/")
+
+
+def assess(owners: list[Owner], who: str) -> tuple[str, list[str]]:
+    """(assessment, signals): likely_benign / suspicious / unclear, from what ran on the PC."""
+    if not owners:
+        return "unclear", ["no program on the PC could be tied to the connection"]
+    bad, good = [], []
+    for o in owners:
+        path = o.path or ""
+        if path.startswith(SUSPICIOUS_DIRS):
+            bad.append(f"{o.name} runs from a temporary folder")
+        if o.on_disk == "0":
+            bad.append(f"{o.name}'s program file was deleted after it started")
+        if o.cmdline and SUSPICIOUS_CMD.search(o.cmdline):
+            bad.append(f"{o.name}'s command line downloads-and-runs or opens a raw shell")
+        if path.startswith(SYSTEM_DIRS):
+            good.append(f"{o.name} is an installed program ({path.rsplit('/', 1)[0]})")
+        elif any(d in path for d in USER_TOOL_DIRS):
+            good.append(f"{o.name} is a user-installed tool")
+    if who == "agent_misused":
+        bad.append("a coding agent did this without the owner asking")
+    if bad:
+        return "suspicious", sorted(set(bad))
+    if who == "owner_using_agent":
+        return "likely_benign", ["the owner's coding agent did this at the owner's request", *sorted(set(good))]
+    if who == "agent_unconfirmed":
+        return "unclear", ["a coding agent did this; the owner didn't name the destination", *sorted(set(good))]
+    if good and len(good) >= len({o.name for o in owners}):
+        return "likely_benign", sorted(set(good))
+    return "unclear", sorted(set(good)) or ["the program isn't in an installed location"]
 
 
 @dataclass
@@ -159,7 +216,7 @@ def _human_text(rec: dict) -> str | None:
 def transcript_facts(path: Path, needles: set[str], ts: float) -> dict:
     """What the session's transcript says about the case's destinations around `ts`."""
     prompts: list[tuple[float, str]] = []
-    calls: list[tuple[float, str, str]] = []  # (time, tool name, input as lowercase JSON)
+    calls: list[tuple[float, str, str, str]] = []  # (time, tool name, input as lowercase JSON, command text)
     try:
         with path.open(errors="replace") as fh:
             for line in fh:
@@ -177,12 +234,17 @@ def transcript_facts(path: Path, needles: set[str], ts: float) -> dict:
                 content = (rec.get("message") or {}).get("content") if rec.get("type") == "assistant" else None
                 for c in content if isinstance(content, list) else ():
                     if isinstance(c, dict) and c.get("type") == "tool_use":
-                        calls.append((t, c.get("name", ""), json.dumps(c.get("input", {})).lower()))
+                        inp = c.get("input", {})
+                        raw = inp.get("command") if isinstance(inp, dict) and isinstance(inp.get("command"), str) \
+                            else json.dumps(inp)
+                        calls.append((t, c.get("name", ""), json.dumps(inp).lower(), raw))
     except OSError:
         return {"transcript": False}
     named = [c for c in calls if ts - BEFORE <= c[0] and any(n in c[2] for n in needles)]
     facts: dict = {"transcript": True, "agent_named_dest": bool(named),
                    "agent_busy": any(abs(c[0] - ts) <= AFTER for c in calls)}
+    if named:
+        facts["agent_command"] = redact(named[-1][3])  # what the agent ran, for the case page (local only)
     anchor = named[-1][0] if named else ts
     before = [p for p in prompts if p[0] <= anchor]
     if before:
@@ -284,6 +346,17 @@ class HostContext:
                  "host_via_ssh": any(o.via_ssh for o in owners), "host_in_terminal": any(o.in_herdr for o in owners),
                  "host_transcript_only": transcript_only}
         facts.update({f"host_{k}": v for k, v in tf.items()})
+        assessment, signals = assess(owners, who)
+        facts["host_assessment"], facts["host_signals"] = assessment, signals[:4]
+        paths = sorted({o.path for o in owners if o.path})
+        if len(paths) == 1:  # one program explains every matched connection: suppressions can key on it
+            facts["host_program_path"] = paths[0]
+            o = next(o for o in owners if o.path == paths[0])
+            facts["host_parent"], facts["host_cmdline"] = o.parent, o.cmdline
+        if assessment == "suspicious":
+            facts["min_route"] = "alert"
+        elif assessment == "likely_benign" and not corroborated:
+            facts["host_max_route"] = "digest"  # its own key: never loosens a detector's stricter max_route
         if idx.notes:
             facts["host_notes"] = idx.notes[:2]
         return facts

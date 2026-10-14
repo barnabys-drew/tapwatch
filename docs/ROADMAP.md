@@ -67,7 +67,8 @@ Fleet server, cloud hosting, multi-site, a mobile app.
 
 ## Next (after 0.1)
 
-- [ ] osquery host context on a long-running installed agent (0.1 verified live queries only)
+- [x] Host context assesses what ran (suspicious / likely benign / unclear) and `tapwatch explain` proposes program-scoped suppressions
+- [ ] Long-running test of host context on an installed agent: how many cases get explained, how often `explain` suggests suppressions, any wrong calls
 - [ ] Clean-machine test of the Windows path
 - [ ] Check the UniFi admin-login mapping against real events; port-forward and UPnP change events
 - [ ] Screenshots of the case desk on synthetic data

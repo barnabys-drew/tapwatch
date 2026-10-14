@@ -62,6 +62,24 @@ variables are read, never the rest of the environment (it holds tokens). Results
 agent **inside WSL** too: Windows can't see Linux processes, and the coding agents run there.
 See `tapwatch who <case>` and `host_context` in `config.example.yaml`.
 
+### What tapwatch does with it
+
+For each case on a machine with the agent, `tapwatch` assesses what ran:
+
+| Assessment | When | Effect |
+|---|---|---|
+| **suspicious** | the program runs from `/tmp`, `/dev/shm` or similar; its file was deleted after it started; its command line downloads-and-runs or opens a raw shell; or an agent acted unattended, over SSH or after reading web content | always alerts, past suppressions and the AI |
+| **likely benign** | an installed program (system or app folder) or a known user-installed tool, with none of the above, or your own agent work you asked for | capped at digest |
+| **unclear** | anything else | normal routing |
+
+Command lines are read only by the live check, as your user, and redacted in memory. They are never
+written to the world-readable results log, and never sent to Jev (it reads the assessment only).
+
+`tapwatch explain` groups repeat cases by detector, device, program and destination. Where every
+case was assessed likely benign, it proposes a **program-scoped suppression** with the reason. A
+different program talking to the same place still alerts. `--apply` creates it (30-day expiry) and
+closes those cases as `benign_expected` with the explanation, all in the audit trail.
+
 ## Useful queries
 
 ```sql

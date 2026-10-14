@@ -56,10 +56,16 @@ RANK = {Route.LOG: 0, Route.DIGEST: 1, Route.ALERT: 2}
 def route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
           suppression: str | None = None) -> tuple[Route, str]:
     r, reason = _route(case, verdict, t, suppression)
-    cap = case.facts.get("max_route")
-    if cap in ("log", "digest") and not case.must_alert and not agent_misused(case) and RANK[r] > RANK[Route(cap)]:
-        # A ceiling the detector proved in code (household prevalence, a known sync service). Jev can
-        # lower a case further but not raise it past this. Never applies to always-alert cases.
+    if case.facts.get("min_route") == "alert" and not case.must_alert and r is not Route.ALERT:
+        # Code saw something suspicious on the PC itself (a program in /tmp, a deleted binary, a
+        # download-and-run command line). That floor beats suppressions and AI.
+        signals = "; ".join(case.facts.get("host_signals", [])[:2])
+        return Route.ALERT, f"on the PC: suspicious process ({signals})"
+    caps = [c for c in (case.facts.get("max_route"), case.facts.get("host_max_route")) if c in ("log", "digest")]
+    cap = min(caps, key=lambda c: RANK[Route(c)]) if caps else None
+    if cap and not case.must_alert and not agent_misused(case) and RANK[r] > RANK[Route(cap)]:
+        # A ceiling proven in code (household prevalence, a known sync service, a likely-benign program
+        # on the PC). Jev can lower a case further but not raise it past this. Never for always-alert.
         return Route(cap), f"{reason}; capped at {cap} by code facts"
     if r is Route.ALERT and not case.must_alert and owner_likely(case):
         return Route.DIGEST, "on the PC: probably the owner's agent work (not confirmed), " + reason
