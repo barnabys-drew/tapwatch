@@ -28,10 +28,12 @@ per line) with your own hostnames, addresses and names. Run it before every push
 
 1. Write the threat, the fields it reads, the logic, the baseline, the expected false positives
    and how to test safely at home. `docs/detections/DESIGN.md` has the format.
-2. Implement it in `src/tapwatch/detectors.py`: a `Detector` with `feed()` returning `Case`s. Put
-   counting, timing and thresholds in code. If it learns something, list it in `PERSIST`.
+2. Implement it in `src/tapwatch/detectors.py`: a `Detector` with `feed()` returning `Case`s, and
+   register it in `detectors.build()`. Put counting, timing and thresholds in code. If it learns
+   something, list it in `PERSIST`. Describe its facts in words in `summarizer.py` (no IPs).
 3. Decide routing: always-alert (`must_alert`), code-only (`router.CODE_ONLY`), or AI-assisted.
-   Don't ask Jev whether a domain or address is normal.
+   Don't ask Jev whether a domain or address is normal. [ARCHITECTURE.md](docs/ARCHITECTURE.md#case-lifecycle-and-routing)
+   explains the routing order, floors and ceilings.
 4. Add tests, including the false positives you expect.
 5. Show it on data: `tapwatch eval` on a public capture or a synthetic pcap, and the noise on
    benign traffic. Share numbers, not logs.
@@ -39,4 +41,4 @@ per line) with your own hostnames, addresses and names. Run it before every push
 ## Style
 
 Match the surrounding code. Comments explain *why* (often with the measurement that motivated a
-threshold). `ruff check src tests` must pass.
+threshold). `ruff check src tests tools` must pass (CI runs exactly that).

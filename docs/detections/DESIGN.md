@@ -1,6 +1,9 @@
 # tapwatch home detections: design
 
-_2026-10-12. Design only: nothing here is installed or wired up yet._
+_Written 2026-10-12 as a design, before the rules were built. Status as of v0.1: R01–R07 and R09–R16
+are built in `src/tapwatch/detectors.py`, and R08 is the code-routed `new_domain`. See
+[Built in M2](#built-in-m2-2026-10-13-what-changed-from-the-specs-above) for how the code differs
+from these specs, and [ARCHITECTURE.md](../ARCHITECTURE.md) for how cases are routed._
 
 **Scope.** This is a home network with limited telemetry. There is no EDR raw-event
 feed (no CrowdStrike FDR or Sysmon pipeline) and no SaaS audit logs (no GitHub,
@@ -176,7 +179,7 @@ Ranking is household value × visibility on this tap × low noise. "Device role"
 comes from `assets.yaml`, seeded by R05. **Fixed-function** means camera,
 TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable, so drift means something.
 
-### R01 Internet-exposed service appears (`exposure`)
+### R01 Internet-exposed service appears (`exposure`) — **built**
 - **Threat:** a port forward, UPnP/NAT-PMP mapping or a compromised device opening a
   listener that the internet can reach. This is the classic home compromise path.
 - **Data:** Zeek `conn`: external `id.orig_h` → internal `id.resp_h`, `conn_state` in
@@ -215,7 +218,7 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Safe test:** replay a synthetic pcap (`eval/make_synthetic_pcap.py` style) in which a host
   labelled "camera" in a test `assets.yaml` contacts TEST-NET addresses on a new port. Don't touch the real camera.
 
-### R03 Device touches the management plane or other devices' admin ports (`mgmt_access`)
+### R03 Device touches the management plane or other devices' admin ports (`mgmt_access`) — **built**
 - **Threat:** lateral movement or reconnaissance against the UDM/UniFi admin interface, or against
   SSH/RDP/SMB/VNC/telnet on other devices.
 - **Data:** `conn` internal → internal: `id.resp_p` in {22, 23, 443 or 8443 on the gateway, 445, 3389,
@@ -328,7 +331,7 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Safe test:** look up a domain you registered yourself in the last 30 days, and add it to a test
   NRD file. Or inject a synthetic DNS row in a replay.
 
-### R09 Upload anomaly, camera and everything else (`upload_drift`) — **built**
+### R09 Upload anomaly, camera and everything else (`upload_spike`, `upload_stopped`) — **built**
 - **Threat:** exfiltration or a compromised device used as a proxy. For cameras: an upload to a **new
   destination** (stream hijack), or a **stop** (camera offline or jammed).
 - **Data:** `conn.orig_bytes` per device per hour, by destination base domain/ASN; UniFi Protect events (optional).
@@ -364,7 +367,7 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Safe test:** `openssl s_server -accept 8443` with a self-signed cert on a cloud VM you control;
   `curl -k https://<vm-ip>:8443` from the PC. That gives no SNI, a bare IP, a self-signed cert and a non-443 port.
 
-### R11 UDM admin login from a new source (`udm_admin`, needs UDM syslog)
+### R11 UDM admin login from a new source (`udm_admin`, from UDM syslog) — **built**
 - **Threat:** stolen UniFi credentials or a compromised admin device. The UDM controls everything else.
 - **Data:** UDM syslog/CEF admin-login and SSH events (user, source IP, method, success/fail),
   config-change events.
@@ -395,7 +398,7 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   devices of the same role did the same tonight. Questions: `Q-routine`, `Q-human`, `Q-cat`.
 - **Safe test:** schedule a Windows task at 03:00 that runs `curl` against 30 popular sites.
 
-### R13 Cleartext credentials and protocols (`cleartext_auth`)
+### R13 Cleartext credentials and protocols (`cleartext_auth`) — **built**
 - **Threat:** credential exposure (and a sign of old or abandoned IoT).
 - **Data:** `http` (`username`, plus `password` if `HTTP::default_capture_password` is on, which
   should stay off; log presence only), `ftp`, `conn` tcp/23, pop3/imap/smtp without STARTTLS, and MQTT
@@ -410,7 +413,7 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Safe test:** `curl -u test:test http://httpbin.org/basic-auth/test/test`. Those are dummy
   credentials against a public test endpoint.
 
-### R14 Rogue DHCP server (`rogue_dhcp`)
+### R14 Rogue DHCP server (`rogue_dhcp`) — **built**
 - **Threat:** a malicious or misconfigured device handing out a hostile gateway or DNS (an on-path attack).
 - **Data:** `dhcp` (`server_addr`, `msg_types` OFFER/ACK), `conn` udp/67 responders; UDM syslog DHCP.
 - **Logic:** `rules/R14-rogue-dhcp.yml` (Sigma). Raise on an OFFER or ACK from any server other than the UDM interfaces.
@@ -436,7 +439,7 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Safe test:** existing synthetic pcap; or `for i in $(seq 40); do nslookup $(openssl rand -hex 8).example.com; done`
   from the PC. These are NXDOMAINs under a reserved domain.
 
-### R16 Takeover channel (`takeover`, built)
+### R16 Takeover channel (`takeover`) — **built**
 - **Threat:** account or machine takeover. Without EDR or SaaS audit logs, the takeover itself
   (a stolen GitHub or Anthropic token used from elsewhere) never crosses this network. What does
   cross it is the attacker's plumbing on this end: a webhook or callback catcher where a
