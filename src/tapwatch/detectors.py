@@ -254,6 +254,9 @@ class SuricataAlert(Detector):
 # STUN/TURN (3478/3479/5349), Tailscale direct (41641), Google STUN (19302-19309), NTP (123).
 # Measured 2026-10-12: Tailscale's netcheck hit all 57 DERP relays on UDP 3478
 # every ~317s and produced 43 c2_beaconing alerts.
+# Names that never leave the LAN or never reach a zone someone else controls: reverse lookups,
+# mDNS, the DHCP search suffix, reserved private TLDs. DGA and tunnelling can't use them.
+LOCAL_ONLY_SUFFIXES = (".arpa", ".local", ".localdomain", ".lan", ".home", ".internal")
 HOUSEKEEPING_UDP_PORTS = {3478, 3479, 5349, 41641, 123, *range(19302, 19310)}
 
 
@@ -376,6 +379,11 @@ class SuspiciousDNS(Detector):
     and DGA or tunnelling needs a zone the attacker controls, which apple.com is not.
     Measured 2026-10-12: case #53 was an iPhone whose 15 "random" names were all Apple,
     Meta, AWS and Google hosts.
+
+    Local-only names (LOCAL_ONLY_SUFFIXES) don't count at all. Measured 2026-10-14 on a home
+    network: every dns_anomaly case on a Windows PC was reverse PTR lookups of CDN IPs with no
+    PTR record, wpad.localdomain probes and Chrome's <uuid>.local WebRTC names; none had a
+    failed internet lookup that mattered.
     """
 
     name = "dns_anomaly"
@@ -398,7 +406,8 @@ class SuspiciousDNS(Detector):
         if rec["_type"] != "dns" or not rec.get("query"):
             return []
         host, ts, q = rec.get("id.orig_h", ""), rec["ts"], rec["query"]
-        if not is_internal(host) or self.dev.covers(host, q):
+        if not is_internal(host) or q.lower().rstrip(".").endswith(LOCAL_ONLY_SUFFIXES) \
+                or self.dev.covers(host, q):
             return []
         nx = rec.get("rcode_name") == "NXDOMAIN"
         dom = base_domain(q)
@@ -683,7 +692,7 @@ class NewExternalDomain(Detector):
         name = rec.get("query") if rec["_type"] == "dns" else rec.get("server_name") if rec["_type"] == "ssl" else None
         host = rec.get("id.orig_h", "")
         if not name or "." not in name.strip(".") or not is_internal(host) \
-                or name.endswith((".local", ".arpa", ".lan", ".home", ".localdomain")) \
+                or name.endswith(LOCAL_ONLY_SUFFIXES) \
                 or self.dev.covers(host, name):
             return out
         if rec["_type"] == "dns" and rec.get("rcode_name") not in (None, "NOERROR"):

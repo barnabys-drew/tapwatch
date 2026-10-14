@@ -91,6 +91,20 @@ def test_dns_numbered_cdn_hosts_under_popular_domains_are_not_dga():
     assert run(SuspiciousDNS(popular=popular), [dns(T0 + i, n) for i, n in enumerate(dga)])
 
 
+def test_dns_local_only_names_dont_count():
+    # Reverse lookups of CDN IPs with no PTR, search-suffix probes, and Chrome's WebRTC
+    # <uuid>.local names. None of these can reach an attacker's zone.
+    rng = random.Random(4)
+    recs = [dns(T0 + i, f"{i}.33.18.104.in-addr.arpa", rcode="NXDOMAIN") for i in range(30)]
+    recs += [dns(T0 + 30 + i, "wpad.localdomain", rcode="NXDOMAIN") for i in range(10)]
+    recs += [dns(T0 + 40 + i, f"{rng.getrandbits(128):032x}.local") for i in range(20)]
+    recs += [dns(T0 + 60, "metadata.google.internal.", rcode="NXDOMAIN")]
+    assert run(SuspiciousDNS(), recs) == []
+    # Internet failures still fire alongside them.
+    recs += [dns(T0 + 70 + i, f"host{i}.example.net", rcode="NXDOMAIN") for i in range(25)]
+    assert len(run(SuspiciousDNS(), recs)) == 1
+
+
 def test_dns_normal_browsing_quiet():
     names = ["www.example.com", "mail.example.org", "cdn.example.net"] * 30
     assert run(SuspiciousDNS(), [dns(T0 + i, n) for i, n in enumerate(names)]) == []
