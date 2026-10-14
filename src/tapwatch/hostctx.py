@@ -49,6 +49,15 @@ LIVE_SQL = (
     "FROM process_open_sockets s JOIN processes p USING (pid) "
     "WHERE s.remote_address NOT IN ('', '0.0.0.0', '::', '127.0.0.1', '::1') AND s.remote_port != 0;"
 )
+# Windows has no process_envs (so no Claude markers) but can check code signatures (authenticode).
+WIN_LIVE_SQL = (
+    "SELECT p.pid, p.name, p.path, p.cmdline, p.on_disk, s.remote_address, s.remote_port, "
+    "(SELECT name FROM processes pp WHERE pp.pid = p.parent) AS parent_name, "
+    "(SELECT result FROM authenticode a WHERE a.path = p.path) AS signature, "
+    "(SELECT subject_name FROM authenticode a WHERE a.path = p.path) AS signer "
+    "FROM process_open_sockets s JOIN processes p USING (pid) "
+    "WHERE s.remote_address NOT IN ('', '0.0.0.0', '::', '127.0.0.1', '::1') AND s.remote_port != 0;"
+)
 QUERIES = ("outbound_connections", "outbound_connections_ctx")
 SLACK = 90                    # snapshot interval plus splay
 LIVE_WINDOW = 600             # a live osquery check only counts for cases this recent
@@ -73,6 +82,8 @@ class Owner:
     parent: str = ""
     on_disk: str = ""        # "0" = the program's file was deleted after it started (or it's in a container)
     container: bool | None = None  # None = unknown (an older log row without cgroup_path)
+    signature: str = ""      # Windows authenticode: "trusted", "missing", "invalid", "untrusted"...
+    signer: str = ""
     start: float = 0.0       # first seen (log rows); 0 for live rows
     end: float | None = None
 
@@ -84,7 +95,7 @@ def _owner(c: dict, start: float = 0.0) -> Owner:
                  via_ssh=str(c.get("via_ssh") or "0") not in ("0", ""), cmdline=redact(c.get("cmdline") or ""),
                  parent=c.get("parent_name") or "", on_disk=str(c.get("on_disk") if c.get("on_disk") is not None else ""),
                  container=None if "cgroup_path" not in c else bool(CONTAINER.search(c.get("cgroup_path") or "")),
-                 start=start)
+                 signature=(c.get("signature") or "").lower(), signer=c.get("signer") or "", start=start)
 
 
 # A container's program file lives in the container's filesystem, so from the host it looks deleted
@@ -112,6 +123,41 @@ USER_TOOL_DIRS = ("/.local/share/claude/", "/.local/bin/", "/.nvm/", "/.vscode-s
                   "/.cargo/bin/", "/.pyenv/", "/.rustup/", "/.venv/bin/", "/node_modules/.bin/")
 
 
+# Windows (paths compared lower-case with forward slashes).
+WIN_SUSPICIOUS_DIRS = ("/appdata/local/temp/", "c:/windows/temp/", "c:/users/public/", "/$recycle.bin/", "c:/perflogs/")
+WIN_INSTALLED_DIRS = ("c:/windows/system32/", "c:/windows/syswow64/", "c:/program files/", "c:/program files (x86)/",
+                      "c:/windows/systemapps/", "c:/program files/windowsapps/")
+# Built-in Windows tools attackers use to download, proxy-execute or bypass controls (LOLBins). A browser
+# or app connecting out is normal; these connecting out on their own is not.
+WIN_LOLBINS = {"rundll32.exe", "regsvr32.exe", "mshta.exe", "certutil.exe", "bitsadmin.exe", "msbuild.exe",
+               "installutil.exe", "cmstp.exe", "wmic.exe", "regasm.exe", "regsvcs.exe", "cscript.exe", "wscript.exe",
+               "odbcconf.exe", "msxsl.exe", "ieexec.exe", "presentationhost.exe", "forfiles.exe"}
+WIN_SUSPICIOUS_CMD = re.compile(r"frombase64string|downloadstring|downloadfile|invoke-webrequest.*\|\s*iex|\biex\s*\("
+                                r"|-w(indowstyle)?\s+hidden|-ep\s+bypass|-executionpolicy\s+bypass|-nop\b.*-enc", re.IGNORECASE)
+
+
+def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) -> None:
+    name = o.name.lower()
+    if any(d in path for d in WIN_SUSPICIOUS_DIRS):
+        bad.append(f"{o.name} runs from a temporary or shared folder")
+    if name in WIN_LOLBINS:
+        bad.append(f"{o.name} is a built-in Windows tool often abused to download or run code, and it connected out")
+    if o.cmdline and WIN_SUSPICIOUS_CMD.search(o.cmdline):
+        bad.append(f"{o.name}'s command line is encoded, hidden or downloads-and-runs")
+    if o.signature in ("invalid", "distrusted", "untrusted"):
+        bad.append(f"{o.name}'s code signature is {o.signature}")
+    if bad:
+        return
+    if o.signature == "trusted":
+        good.append(f"{o.name} is signed by {o.signer or 'a trusted publisher'}")
+    elif path.startswith(WIN_INSTALLED_DIRS):
+        good.append(f"{o.name} is an installed program ({path.rsplit('/', 1)[0]})")
+    elif "/downloads/" in path:
+        unclear.append(f"{o.name} runs from a Downloads folder")
+    elif o.signature == "missing":
+        unclear.append(f"{o.name} isn't code-signed")
+
+
 def assess(owners: list[Owner], who: str) -> tuple[str, list[str]]:
     """(assessment, signals): likely_benign / suspicious / unclear, from what ran on the PC."""
     if not owners:
@@ -119,6 +165,12 @@ def assess(owners: list[Owner], who: str) -> tuple[str, list[str]]:
     bad, good, bad_or_unclear = [], [], []
     for o in owners:
         path = o.path or ""
+        if re.match(r"^[a-z]:\\", path, re.IGNORECASE) or path.lower().endswith(".exe"):   # a Windows process
+            ob, og = [], []
+            _windows_signals(o, path.replace("\\", "/").lower(), ob, og, bad_or_unclear)
+            bad += ob
+            good += og
+            continue
         if path.startswith(SUSPICIOUS_DIRS):
             bad.append(f"{o.name} runs from a temporary folder")
         if o.on_disk == "0" and o.container is False:
@@ -290,22 +342,29 @@ def verdict(owners: list[Owner], tf: dict) -> tuple[str, bool]:
 
 
 class HostContext:
-    def __init__(self, host: str, osquery_bin: str | None = None, results_logs=(), transcripts: str | None = None,
+    def __init__(self, host: str, osquery_bin=None, results_logs=(), transcripts: str | None = None,
                  runner=subprocess.run, timeout: float = 20.0):
-        self.host, self.osquery_bin, self.results_logs = host, osquery_bin, [Path(p) for p in results_logs]
+        # One binary or several: on a Windows PC with WSL, both osqueryi (Linux processes) and
+        # osqueryi.exe (Windows processes) answer for the same IP address.
+        bins = osquery_bin if isinstance(osquery_bin, (list, tuple)) else [osquery_bin] if osquery_bin else []
+        self.osquery_bins = [b for b in bins if b]
+        self.osquery_bin = self.osquery_bins[0] if self.osquery_bins else None
+        self.host, self.results_logs = host, [Path(p) for p in results_logs]
         self.transcripts = Path(transcripts).expanduser() if transcripts else Path.home() / ".claude/projects"
         self.runner, self.timeout = runner, timeout
 
     def live(self) -> list[dict]:
-        if not self.osquery_bin:
-            return []
-        shell = ["-S"] if Path(self.osquery_bin).name.startswith("osqueryd") else []  # osqueryd -S = osqueryi
-        try:
-            res = self.runner([self.osquery_bin, *shell, "--disable_database", "--json", LIVE_SQL],
-                              capture_output=True, text=True, timeout=self.timeout)
-            return json.loads(res.stdout) if res.returncode == 0 else []
-        except (OSError, subprocess.TimeoutExpired, ValueError):
-            return []
+        rows: list[dict] = []
+        for b in self.osquery_bins:
+            windows = b.lower().endswith(".exe")
+            shell = ["-S"] if Path(b).name.startswith("osqueryd") else []  # osqueryd -S = osqueryi
+            try:
+                res = self.runner([b, *shell, "--disable_database", "--json", WIN_LIVE_SQL if windows else LIVE_SQL],
+                                  capture_output=True, text=True, timeout=self.timeout)
+                rows += json.loads(res.stdout) if res.returncode == 0 else []
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                continue
+        return rows
 
     def index(self, since: float, live: bool = True) -> OwnerIndex:
         idx = OwnerIndex()
