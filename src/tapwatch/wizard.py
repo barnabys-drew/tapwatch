@@ -66,7 +66,9 @@ def suggest_iface(f: Facts) -> str:
 def build(f: Facts, ask) -> tuple[dict, dict, dict, list[str]]:
     """Ask the questions. Returns (config, assets, env vars, notes for the user)."""
     notes: list[str] = []
-    audience = ask("Is this a home or an office network?", "home", ["home", "office"])
+    # Not asked: "office" framing makes Jev better at alerting on real C2, even on a home network
+    # (eval/RESULTS.md, "Wording"). A home user would answer "home" and get the worse wording.
+    audience = "office"
     gateway = ask("Router (gateway) IP", f.gateway)
     this_ip = ask("This machine's IP on that network", f.this_ip)
     tz = ask("Timezone", f.timezone or "UTC")

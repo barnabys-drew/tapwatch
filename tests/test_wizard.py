@@ -30,7 +30,7 @@ def test_defaults_give_a_loadable_home_config_with_ntfy(tmp_path):
     cfg, assets, env, notes = wizard.build(FACTS, answers())
     written = wizard.write(str(tmp_path), cfg, assets, env)
     loaded = config.load(str(tmp_path / "config.yaml"))
-    assert loaded["audience"] == "home" and loaded["network"]["gateways"] == ["192.168.50.1"]
+    assert loaded["audience"] == "office" and loaded["network"]["gateways"] == ["192.168.50.1"]
     assert loaded["typesafe"] == {"enabled": False} and "smtp" not in loaded
     assert env["TAPWATCH_NTFY_URL"].startswith("https://ntfy.sh/tapwatch-") and len(env["TAPWATCH_NTFY_URL"]) > 40
     assert len(env["TAPWATCH_UI_TOKEN"]) >= 24                                  # case desk login, >= 16 required
