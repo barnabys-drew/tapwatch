@@ -290,12 +290,13 @@ def test_queue_filters_ignore_junk_and_stay_escaped():
 
 @pytest.fixture
 def server(tmp_path):
-    def start(token=None, host="127.0.0.1"):
+    def start(token=None, host="127.0.0.1", tailscale_users=None, base_url=None):
         db = str(tmp_path / "t.db")
         store = Store(db)
         make_case(store, indicators=["cdn.example.com"])
         store.db.close()
-        app = ui.App(db, Assets(), host=host, port=0, token=token)
+        app = ui.App(db, Assets(), host=host, port=0, token=token, tailscale_users=tailscale_users,
+                     base_url=base_url)
         srv = ui.make_server(app)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         started.append(srv)
@@ -308,9 +309,9 @@ def server(tmp_path):
         s.server_close()
 
 
-def request(app, method, path, body=None, cookie=None, host=None, origin=None):
+def request(app, method, path, body=None, cookie=None, host=None, origin=None, headers=None):
     c = http.client.HTTPConnection("127.0.0.1", app.port, timeout=5)
-    headers = {"Host": host or f"127.0.0.1:{app.port}"}
+    headers = {"Host": host or f"127.0.0.1:{app.port}", **(headers or {})}
     if cookie:
         headers["Cookie"] = f"{ui.COOKIE}={cookie}"
     if origin:
@@ -450,3 +451,49 @@ def test_login_survives_the_favicon_race(server):
     assert r.status == 303 and app.session_ok(re.search(rf"{ui.COOKIE}=([^;]+)", r.getheader("Set-Cookie")).group(1))
     r, _ = request(app, "POST", "/login", {"csrf": csrf_a, "token": tok}, cookie=sid_a)
     assert r.status == 303  # the original, unraced flow still works
+
+
+# ------------------------------------------------------------------ behind `tailscale serve`
+
+TS_HOST = "desk.tailnet-example.ts.net"
+
+
+def ts(login):
+    return {"Tailscale-User-Login": login}
+
+
+def test_tailscale_mode_admits_only_listed_tailnet_users(server):
+    app, _ = server(token="abcde-fghij-klmno-pqrst", tailscale_users=["Owner@example.com"],
+                    base_url=f"https://{TS_HOST}")
+    assert app.token is None                                     # Tailscale replaces the token login
+    r, _ = request(app, "GET", "/", host=TS_HOST, headers=ts("owner@example.com"))
+    assert r.status == 200
+    for headers in ({}, ts("someone-else@example.com"), ts("")):
+        r, _ = request(app, "GET", "/", host=TS_HOST, headers=headers)
+        assert r.status == 403                                   # no identity, or not on the list
+    r, _ = request(app, "GET", "/")                              # straight to the port: no side door
+    assert r.status == 403
+    r, _ = request(app, "GET", "/", host="evil.example", headers=ts("owner@example.com"))
+    assert r.status == 421                                       # Host check still applies
+
+
+def test_tailscale_mode_records_the_login_and_still_checks_csrf(server):
+    app, db = server(tailscale_users=["owner@example.com"], base_url=f"https://{TS_HOST}")
+    who = ts("owner@example.com")
+    r, text = request(app, "GET", "/case/1", host=TS_HOST, headers=who)
+    sid = re.search(rf"{ui.COOKIE}=([^;]+)", r.getheader("Set-Cookie")).group(1)
+    csrf = re.search(r'name="csrf" value="([^"]+)"', text).group(1)
+    r, _ = request(app, "POST", "/case/1/update", {"status": "investigating"}, cookie=sid, host=TS_HOST,
+                   headers=who)
+    assert r.status == 403                                       # identity isn't a CSRF token
+    r, _ = request(app, "POST", "/case/1/update", {"csrf": csrf, "status": "investigating"}, cookie=sid,
+                   host=TS_HOST, headers=who)
+    assert r.status == 303
+    actors = [row[0] for row in sqlite3.connect(db).execute("SELECT actor FROM audit")]
+    assert actors and all(a == "ui owner@example.com" for a in actors)
+
+
+def test_tailscale_mode_refuses_a_non_loopback_listener(tmp_path):
+    with pytest.raises(SystemExit):
+        ui.App(str(tmp_path / "t.db"), Assets(), host="0.0.0.0", token="abcde-fghij-klmno-pqrst",
+               tailscale_users=["owner@example.com"])

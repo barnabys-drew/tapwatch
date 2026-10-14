@@ -259,7 +259,7 @@ def cmd_ui(args, cfg) -> int:
                  zeek_dirs=args.zeek_dir or u.get("zeek_dirs") or [],
                  host=args.host or u.get("host", "127.0.0.1"), port=args.port or u.get("port", 8765),
                  token=os.environ.get(u.get("token_env", "TAPWATCH_UI_TOKEN")) or None,
-                 base_url=u.get("base_url"))
+                 base_url=u.get("base_url"), tailscale_users=u.get("tailscale_users"))
     ui.serve(app)
     return 0
 

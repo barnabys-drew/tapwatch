@@ -302,6 +302,9 @@ tapwatch treats everything from the network as hostile and keeps the household's
   no scripts at all, just one nonce'd stylesheet. Every write is a POST with an HMAC CSRF token.
   SQL is parameterised. It binds to 127.0.0.1 and checks the Host header (DNS rebinding). Any other
   bind address requires `TAPWATCH_UI_TOKEN` (16+ characters) and gives you signed session cookies.
+  Or, with `ui.tailscale_users`, it stays on 127.0.0.1 behind `tailscale serve`: every request must
+  carry the `Tailscale-User-Login` that Tailscale sets (and strips from clients) for a listed user,
+  the token login is off, and the audit trail records that login.
 - **Notifications.** Push and chat text is defanged (`example[.]com`, `hxxps`). Discord mentions are
   disabled. Notification and API URLs must be http(s).
 - **Secrets.** API keys and webhook or topic URLs come only from environment variables (`.env`,

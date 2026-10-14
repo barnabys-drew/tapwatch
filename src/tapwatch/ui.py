@@ -720,7 +720,13 @@ class App:
     """Settings and session state shared by every request."""
 
     def __init__(self, db_path: str, assets: Assets, zeek_dirs=None, host: str = "127.0.0.1", port: int = 8765,
-                 token: str | None = None, base_url: str | None = None):
+                 token: str | None = None, base_url: str | None = None, tailscale_users=None):
+        # Behind `tailscale serve`: Tailscale authenticates, and the desk only listens on loopback.
+        self.tailscale_users = {u.strip().lower() for u in tailscale_users or () if u.strip()} or None
+        if self.tailscale_users:
+            if not is_loopback(host):
+                raise SystemExit("ui.tailscale_users needs ui.host 127.0.0.1: `tailscale serve` is the only way in")
+            token = None  # Tailscale's identity replaces the token login
         if not is_loopback(host) and not token:
             raise SystemExit("--host other than 127.0.0.1 needs TAPWATCH_UI_TOKEN set (in .env) for the login form")
         if token is not None and len(token) < 16:
@@ -831,6 +837,26 @@ class Handler(BaseHTTPRequestHandler):
     def _host_ok(self) -> bool:
         return self.app.allowed_hosts is None or self.headers.get("Host", "") in self.app.allowed_hosts
 
+    def _tailnet_user(self) -> str | None:
+        """With ui.tailscale_users: the allowed Tailscale login on this request, else None.
+
+        `tailscale serve` sets Tailscale-User-Login for tailnet users and strips any copy the client
+        sent, so on a loopback-only listener the header can only come from Tailscale (or from a
+        process on this machine, which can read the database directly anyway). Requests without
+        it (tagged devices, Funnel, anything else) are refused."""
+        login = self.headers.get("Tailscale-User-Login", "").strip().lower()
+        return login if login and login in self.app.tailscale_users else None
+
+    def _gate(self) -> bool:
+        """Host check, plus the Tailscale identity check when configured. Sends the refusal itself."""
+        if not self._host_ok():
+            self._send(421, "wrong host")
+            return False
+        if self.app.tailscale_users and self._tailnet_user() is None:
+            self._send(403, "This case desk only answers signed-in Tailscale users it knows.")
+            return False
+        return True
+
     def _origin_ok(self) -> bool:
         """If the browser says where a POST came from, it must be this site."""
         origin = self.headers.get("Origin")
@@ -839,8 +865,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---------------------------------------------------- GET
 
     def do_GET(self):
-        if not self._host_ok():
-            return self._send(421, "wrong host")
+        if not self._gate():
+            return
         url = urlsplit(self.path)
         if url.path == "/favicon.ico":
             # Browsers fetch this in parallel with the page, often before storing the page's
@@ -883,8 +909,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---------------------------------------------------- POST
 
     def do_POST(self):
-        if not self._host_ok():
-            return self._send(421, "wrong host")
+        if not self._gate():
+            return
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_BODY:
             return self._send(413, "too large")
@@ -907,7 +933,7 @@ class Handler(BaseHTTPRequestHandler):
             self.app.revoked.add(sid)
             return self._send(303, location="/login")
 
-        actor = f"ui {self.client_address[0]}"
+        actor = f"ui {self._tailnet_user() or self.client_address[0]}"
         first = {k: v[0] for k, v in form.items()}
         store = Store(self.app.db_path, migrate=False)
         try:
@@ -998,7 +1024,8 @@ def serve(app: App) -> None:
     server = make_server(app)
     shown = "127.0.0.1" if is_loopback(app.host) else app.host
     log.info("tapwatch ui on http://%s:%s/ (Ctrl+C to stop)%s", shown, server.server_port,
-             "" if app.token is None else " - token login required")
+             " - Tailscale users only: " + ", ".join(sorted(app.tailscale_users)) if app.tailscale_users
+             else "" if app.token is None else " - token login required")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
