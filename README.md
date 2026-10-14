@@ -243,7 +243,8 @@ on PRs into `main`.
 
 **v0.1.1**, running on a real home network, so expect rough edges. Next up, per the
 [roadmap](docs/ROADMAP.md): a long-running test of host context (in progress), a clean-machine
-Windows test, basic macOS support, and endpoint rules from osquery process events.
+Windows test, and endpoint rules from osquery process events. macOS waits until there's a Mac to
+test on.
 
 ## License
 
