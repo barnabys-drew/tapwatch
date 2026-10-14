@@ -63,6 +63,24 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
 - **Few dependencies.** Standard-library Python plus PyYAML, SQLite, and Zeek in Docker. Runs
   under Docker Compose or as systemd user services, on Linux or a Windows PC with WSL.
 
+## The case desk
+
+A triage queue, case pages with the evidence and what the AI was shown, workflow and notes,
+expiring suppressions, and per-detector stats. It's server-rendered HTML with no JavaScript at all.
+
+![The case desk queue: open cases with severity, device, route and status](docs/img/case-desk-queue.png)
+
+<details>
+<summary>A case page, stats and suppressions</summary>
+
+![A beaconing case: details, host context, Jev's answers and what it was shown, notes](docs/img/case-desk-case.png)
+![Stats: cases per hour and per detector, false-positive rates](docs/img/case-desk-stats.png)
+![Suppressions: an expiring rule with its reason](docs/img/case-desk-suppressions.png)
+
+</details>
+
+Screenshots are of made-up data: `python3 tools/demo_desk.py` builds the same demo desk locally.
+
 ## Results
 
 From [eval/RESULTS.md](eval/RESULTS.md): six public Stratosphere Lab malware captures, plus 14 hours
@@ -223,10 +241,9 @@ on PRs into `main`.
 
 ## Status
 
-**v0.1**, running on a real home network, so expect rough edges. Next up, per the
-[roadmap](docs/ROADMAP.md) (all planned, none built yet): a clean-machine Windows test, basic
-macOS support, case-desk screenshots on synthetic data, and endpoint rules from osquery process
-events.
+**v0.1.1**, running on a real home network, so expect rough edges. Next up, per the
+[roadmap](docs/ROADMAP.md): a long-running test of host context (in progress), a clean-machine
+Windows test, basic macOS support, and endpoint rules from osquery process events.
 
 ## License
 

@@ -22,3 +22,5 @@ tapwatch-ui.log
 tapwatch-ui.pid
 feeds/
 .personal-denylist
+# tools/demo_desk.py output
+/demo/
