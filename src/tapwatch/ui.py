@@ -42,6 +42,7 @@ from .store import (
     describe_rule,
 )
 from .summarizer import Assets
+from .triage import SEVERITY_LEVELS
 
 log = logging.getLogger("tapwatch.ui")
 
@@ -296,6 +297,19 @@ def severity(row) -> tuple[str, str]:
     return "rules", "none"
 
 
+LEVEL_NAMES = [level.split(":")[0].lower() for level in SEVERITY_LEVELS]  # informational .. critical
+
+
+def severity_label(row) -> str:
+    """The named level a severity score rounds to (2.9 -> high), for the queue's label column."""
+    if row["must_alert"]:
+        return "critical"
+    sev = json.loads(row["verdict"]).get("severity") if row["verdict"] else None
+    if not isinstance(sev, (int, float)):
+        return "\u2013"  # rules-only: no score to name
+    return LEVEL_NAMES[min(len(LEVEL_NAMES) - 1, max(0, int(sev + 0.5)))]  # half up: 2.5 is high, like the badge
+
+
 def csrf_field(csrf: str) -> str:
     return f'<input type="hidden" name="csrf" value="{e(csrf)}">'
 
@@ -380,7 +394,7 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
             f'<tr class="r-{e("critical" if r["must_alert"] else r["route"])}">'
             f'<td><input type="checkbox" name="ids" value="{r["id"]}" aria-label="select case {r["id"]}"></td>'
             f'<td class="num hide-sm"><a href="/case/{r["id"]}">#{r["id"]}</a></td>'
-            f'<td>{badge(sev_cls, sev)}</td>'
+            f'<td>{badge(sev_cls, sev)}</td><td>{e(severity_label(r))}</td>'
             f'<td><a class="title" href="/case/{r["id"]}">{e(r["title"])}</a>'
             f'<div class="faint mono">{e(r["detector"])}</div></td>'
             f'<td>{device(assets, r["host"])}</td>'
@@ -389,7 +403,7 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
             f'<td class="num">{r["hits"]}</td><td class="faint hide-sm tnum">{e(when(r["last_ts"]))}</td></tr>')
     shown = f"showing {len(rows)} of {total}" if total > len(rows) else f"{total} case(s)"
     table = (f"""<form method="post" action="/bulk">{csrf_field(csrf)}
-<div class="card flush scroll"><table><thead><tr><th></th><th class="num hide-sm">#</th><th>severity</th><th>case</th><th>device</th>
+<div class="card flush scroll"><table><thead><tr><th></th><th class="num hide-sm">#</th><th>severity</th><th>label</th><th>case</th><th>device</th>
 <th class="hide-sm">route</th><th>status</th><th class="hide-sm">disposition</th><th class="num">hits</th><th class="hide-sm">last seen</th></tr></thead>
 <tbody>{"".join(body_rows)}</tbody></table></div>
 <div class="card bar"><b>Close selected</b> as

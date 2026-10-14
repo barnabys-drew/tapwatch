@@ -497,3 +497,18 @@ def test_tailscale_mode_refuses_a_non_loopback_listener(tmp_path):
     with pytest.raises(SystemExit):
         ui.App(str(tmp_path / "t.db"), Assets(), host="0.0.0.0", token="abcde-fghij-klmno-pqrst",
                tailscale_users=["owner@example.com"])
+
+
+def test_queue_names_the_severity_level_next_to_the_score(tmp_path):
+    from tapwatch.models import Verdict
+
+    store = Store(str(tmp_path / "t.db"))
+    for sev in (0.2, 1.5, 2.49, 2.5, 2.9, 3.9):
+        make_case(store, host=f"192.168.50.{int(sev * 10)}", verdict=Verdict("benign", 0.9, sev, 0.8, 0.1, 0.1))
+    make_case(store, host="192.168.50.99", must_alert=True)
+    make_case(store, host="192.168.50.98")                           # rules-only: no score
+    labels = {r["id"]: ui.severity_label(r) for r in store.db.execute("SELECT * FROM cases")}
+    assert list(labels.values()) == ["informational", "medium", "medium", "high", "high", "critical",
+                                     "critical", "–"]
+    _, body = ui.render_queue(store, Assets(), {"status": ["all"]}, "x")
+    assert "<th>severity</th><th>label</th>" in body and "<td>high</td>" in body
