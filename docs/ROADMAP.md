@@ -16,7 +16,7 @@ Each milestone ends in something usable. Tick items as their PRs merge.
 
 ## M2 Detections: the rules people will judge it by
 
-Specs are in `detections/DESIGN.md` and `detections/rules/`. Built: R01–R07, R09, R10, R12–R16, plus host context. R08 is `new_domain` (code-routed); R11 waits for the syslog input (M3).
+Specs are in `detections/DESIGN.md` and `detections/rules/`. Built: R01–R07, R09, R10, R12–R16, plus host context. R08 is `new_domain` (code-routed); R11 (`udm_admin`) landed with the syslog input in M3.
 
 - [x] Detector state survives restarts: learned baselines are saved to SQLite every 10 min and on shutdown
 - [x] R05 new device keyed on MAC (Zeek `mac-logging`), with vendor (OUI table) and randomized-MAC handling
