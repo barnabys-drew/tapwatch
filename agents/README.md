@@ -33,7 +33,7 @@ local logs, and you can ask it anything with `osqueryi`:
 | `outbound_connections` | 5 min | which process holds which outside connection |
 | `startup_items`, `launchd`, `crontab`, auto-start services, scheduled tasks | 1 h | persistence |
 | `chrome_extensions` | 1 day | browser add-ons |
-| `sysmon_events` (Windows) | 1 min | Sysmon, as it happens: every process start with its **command line** and parent, every outgoing connection and every DNS lookup, each with the program behind it |
+| `sysmon_events` (Windows) | 1 min | Sysmon, as it happens: every process start with its parent and **command-line signals**, every outgoing connection and every DNS lookup, each with the program behind it |
 | `logged_in_users`, `system_info`, `os_version` | 1 h – 1 day | inventory |
 
 Results go to `/var/log/osquery/osqueryd.results.log` (macOS and Linux) or
@@ -62,10 +62,13 @@ variables are read, never the rest of the environment (it holds tokens). Results
 `0644` (`--logger_mode`), so tapwatch can read them without root. On the PC that runs tapwatch, install the
 agent **inside WSL** too: Windows can't see Linux processes, and the coding agents run there.
 
-On Windows, `sysmon_events` puts **command lines** in the results log, and command lines can hold passwords or
-tokens. The installer restricts the log folder to SYSTEM, Administrators and the person who installed it (who
-reads it from WSL for tapwatch), and tapwatch redacts command lines before storing them. They never go to Jev:
-it sees facts such as "a document app started PowerShell", not the text.
+On Windows, command lines can hold passwords or tokens, and osquery's results log is readable by every local
+account (osquery sets the file's permissions itself, and tapwatch has to read it without admin rights). So
+`sysmon_events` turns each command line into yes/no signals inside osquery (an encoded payload, base64
+decoding, download-and-run, Invoke-Expression, a hidden window, an execution-policy bypass, a URL) and logs the
+raw text **only when a suspicious one fires**: encoded, base64, download-and-run or Invoke-Expression. tapwatch
+redacts what it does get before storing it, and Jev never sees command lines, only facts such as "a document
+app started PowerShell".
 See `tapwatch who <case>` and `host_context` in `config.example.yaml`.
 
 ### What tapwatch does with it

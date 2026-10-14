@@ -66,11 +66,6 @@ $conf = Join-Path $Root "osquery.conf"
 $db = Join-Path $Root "osquery.db"
 $logs = Join-Path $Root "log"
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
-# The results log holds Sysmon command lines, which can contain secrets: only SYSTEM, Administrators and the
-# person who installed it (who reads it from WSL for tapwatch) may read it, not every local account.
-$reader = (Get-CimInstance Win32_ComputerSystem).UserName
-if (-not $reader) { $reader = "$env:USERDOMAIN\$env:USERNAME" }
-icacls $logs /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "${reader}:(OI)(CI)RX" /T /Q | Out-Null
 Copy-Item (Join-Path $Repo "config\osquery.conf") $conf -Force
 
 if ($Mode -eq "fleet") {

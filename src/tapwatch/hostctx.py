@@ -61,7 +61,12 @@ WIN_LIVE_SQL = (
 )
 QUERIES = ("outbound_connections", "outbound_connections_ctx", "sysmon_events")
 QUERY_KEYS = tuple(f'"{q}"'.encode() for q in QUERIES)
-SYSMON = "sysmon_events"      # Windows: Sysmon process starts (1), connections (3) and DNS lookups (22), as they happen
+SYSMON = "sysmon_events"
+# Command-line signals the sysmon_events query computes (agents/config/osquery.conf), so benign command lines never
+# reach the results log, which every local account can read. Raw text is logged only when a suspicious one fires.
+CMD_SUSPICIOUS = {"enc": "an encoded payload", "b64": "base64 decoding", "dl": "a download-and-run",
+                  "iex": "Invoke-Expression"}
+CMD_UNUSUAL = {"hidden": "a hidden window", "bypass": "an execution-policy bypass"}      # Windows: Sysmon process starts (1), connections (3) and DNS lookups (22), as they happen
 SLACK = 90                    # snapshot interval plus splay
 LIVE_WINDOW = 600             # a live osquery check only counts for cases this recent
 LOG_TAIL = 50_000_000         # bytes of a results log to read at most
@@ -90,6 +95,7 @@ class Owner:
     start: float = 0.0       # first seen (log rows); 0 for live rows
     end: float | None = None
     guid: str = ""           # Sysmon ProcessGuid: joins a connection or lookup to its process start (command line)
+    cmd_flags: tuple = ()    # Sysmon: command-line signals osquery computed (raw text is only logged when suspicious)
 
 
 VERSION_NAME = re.compile(r"^\d+(\.\d+)+$")
@@ -166,13 +172,15 @@ def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) 
         bad.append(f"{o.name} is a built-in Windows tool often abused to download or run code, and it connected out")
     if o.cmdline and WIN_SUSPICIOUS_CMD.search(o.cmdline):
         bad.append(f"{o.name}'s command line is encoded, hidden or downloads-and-runs")
+    if sus := [CMD_SUSPICIOUS[f] for f in o.cmd_flags if f in CMD_SUSPICIOUS]:
+        bad.append(f"{o.name}'s command line has " + " and ".join(sus))
     if o.signature in ("invalid", "distrusted", "untrusted"):
         bad.append(f"{o.name}'s code signature is {o.signature}")
     if name in WIN_SHELLS and o.parent.lower() in WIN_DOC_APPS:
         bad.append(f"{o.name} was started by {o.parent}, a document or mail app")
     if bad:
         return
-    if o.cmdline and WIN_UNUSUAL_CMD.search(o.cmdline):
+    if (o.cmdline and WIN_UNUSUAL_CMD.search(o.cmdline)) or any(f in CMD_UNUSUAL for f in o.cmd_flags):
         unclear.append(f"{o.name} runs hidden or bypasses PowerShell's execution policy")
         return
     if not path:
@@ -253,7 +261,8 @@ class OwnerIndex:
         eid, guid, path = str(c.get("eventid", "")), c.get("guid") or "", c.get("path") or ""
         ts = _sysmon_ts(c.get("utc")) or fallback_ts
         if eid == "1":
-            self.procs[guid] = (c.get("cmdline") or "", c.get("parent_path") or "")
+            flags = tuple(k for k in (*CMD_SUSPICIOUS, *CMD_UNUSUAL, "url") if str(c.get(f"cmd_{k}", "0")) == "1")
+            self.procs[guid] = (c.get("cmdline") or "", c.get("parent_path") or "", flags)
             return
         o = Owner(name=_basename(path) or "?", path=path, start=ts, end=ts, guid=guid)
         if eid == "3":
@@ -266,8 +275,8 @@ class OwnerIndex:
         for owners in (*self.by_remote.values(), *self.lookups.values()):
             for o in owners:
                 if o.guid and o.guid in self.procs and not o.cmdline:
-                    cmdline, parent = self.procs[o.guid]
-                    o.cmdline, o.parent = redact(cmdline), _basename(parent)
+                    cmdline, parent, flags = self.procs[o.guid]
+                    o.cmdline, o.parent, o.cmd_flags = redact(cmdline), _basename(parent), flags
 
     def add(self, remote: str, port, owner: Owner) -> None:
         try:

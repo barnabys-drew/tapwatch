@@ -6,7 +6,7 @@
 # Events wait in osquery's database between scheduled runs; drop them after an hour if unread.
 --events_expiry=3600
 --events_max=200000
-# Sysmon makes the results log busy: rotate at 100 MB, keep 10 files.
+# Sysmon makes the results log busier: rotate at 100 MB, keep 10 files.
 --logger_rotate=true
 --logger_rotate_size=104857600
 --logger_rotate_max_files=10
