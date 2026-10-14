@@ -39,7 +39,7 @@ from .detectors import base_domain, is_internal
 # Same columns as agents/config/osquery.conf `outbound_connections_ctx`. Selects named
 # environment variables only: the Claude messaging token sits in the same environment.
 LIVE_SQL = (
-    "SELECT p.pid, p.name, p.path, p.cmdline, p.on_disk, s.remote_address, s.remote_port, "
+    "SELECT p.pid, p.name, p.path, p.cmdline, p.on_disk, p.cgroup_path, s.remote_address, s.remote_port, "
     "(SELECT name FROM processes pp WHERE pp.pid = p.parent) AS parent_name, "
     "(SELECT value FROM process_envs e WHERE e.pid = p.pid AND e.key = 'CLAUDE_CODE_SESSION_ID') AS claude_session, "
     "(SELECT value FROM process_envs e WHERE e.pid = p.pid AND e.key = 'CLAUDE_CODE_SESSION_ATTENDED') AS claude_attended, "
@@ -71,7 +71,8 @@ class Owner:
     via_ssh: bool = False
     cmdline: str = ""        # redacted before it's stored anywhere (see redact)
     parent: str = ""
-    on_disk: str = ""        # "0" = the program's file was deleted after it started
+    on_disk: str = ""        # "0" = the program's file was deleted after it started (or it's in a container)
+    container: bool | None = None  # None = unknown (an older log row without cgroup_path)
     start: float = 0.0       # first seen (log rows); 0 for live rows
     end: float | None = None
 
@@ -82,7 +83,13 @@ def _owner(c: dict, start: float = 0.0) -> Owner:
                  in_herdr=str(c.get("in_herdr") or "0") not in ("0", ""),
                  via_ssh=str(c.get("via_ssh") or "0") not in ("0", ""), cmdline=redact(c.get("cmdline") or ""),
                  parent=c.get("parent_name") or "", on_disk=str(c.get("on_disk") if c.get("on_disk") is not None else ""),
+                 container=None if "cgroup_path" not in c else bool(CONTAINER.search(c.get("cgroup_path") or "")),
                  start=start)
+
+
+# A container's program file lives in the container's filesystem, so from the host it looks deleted
+# (measured 2026-10-13: every process of a local Jitsi stack reported on_disk=0).
+CONTAINER = re.compile(r"docker|containerd|libpod|kubepods|/lxc/|machine\.slice", re.IGNORECASE)
 
 
 SECRET = re.compile(r"(?i)((?:token|secret|password|passwd|pass|key|auth|bearer|api[_-]?key|sig)[=: ]+)\S+"
@@ -109,13 +116,15 @@ def assess(owners: list[Owner], who: str) -> tuple[str, list[str]]:
     """(assessment, signals): likely_benign / suspicious / unclear, from what ran on the PC."""
     if not owners:
         return "unclear", ["no program on the PC could be tied to the connection"]
-    bad, good = [], []
+    bad, good, bad_or_unclear = [], [], []
     for o in owners:
         path = o.path or ""
         if path.startswith(SUSPICIOUS_DIRS):
             bad.append(f"{o.name} runs from a temporary folder")
-        if o.on_disk == "0":
+        if o.on_disk == "0" and o.container is False:
             bad.append(f"{o.name}'s program file was deleted after it started")
+        elif o.on_disk == "0" and o.container is None:
+            bad_or_unclear.append(f"{o.name}'s program file isn't on disk (deleted, or inside a container)")
         if o.cmdline and SUSPICIOUS_CMD.search(o.cmdline):
             bad.append(f"{o.name}'s command line downloads-and-runs or opens a raw shell")
         if path.startswith(SYSTEM_DIRS):
@@ -126,6 +135,8 @@ def assess(owners: list[Owner], who: str) -> tuple[str, list[str]]:
         bad.append("a coding agent did this without the owner asking")
     if bad:
         return "suspicious", sorted(set(bad))
+    if bad_or_unclear:
+        return "unclear", sorted(set(bad_or_unclear))
     if who == "owner_using_agent":
         return "likely_benign", ["the owner's coding agent did this at the owner's request", *sorted(set(good))]
     if who == "agent_unconfirmed":
