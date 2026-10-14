@@ -412,7 +412,7 @@ def win(name, path, **kw):
 
 
 def test_windows_signed_and_installed_programs_are_likely_benign():
-    discord = win("Discord.exe", r"C:\Users\u\AppData\Local\Discord\app-1.0\Discord.exe", signature="trusted",
+    discord = win("Discord.exe", r"C:\Users\<user>\AppData\Local\Discord\app-1.0\Discord.exe", signature="trusted",
                   signer="Discord Inc.")
     a, s = assess([discord], "other_program")
     assert a == "likely_benign" and "signed by Discord Inc." in s[0]
@@ -422,7 +422,7 @@ def test_windows_signed_and_installed_programs_are_likely_benign():
 
 def test_windows_suspicious_signs():
     cases = [
-        win("upd.exe", r"C:\Users\u\AppData\Local\Temp\upd.exe"),
+        win("upd.exe", r"C:\Users\<user>\AppData\Local\Temp\upd.exe"),
         win("x.exe", r"C:\Users\Public\x.exe"),
         win("rundll32.exe", r"C:\Windows\System32\rundll32.exe", signature="trusted", signer="Microsoft Windows"),
         win("powershell.exe", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
@@ -435,7 +435,7 @@ def test_windows_suspicious_signs():
 
 
 def test_windows_unsigned_or_downloads_is_unclear():
-    assert assess([win("tool.exe", r"C:\Users\u\Downloads\tool.exe")], "other_program")[0] == "unclear"
+    assert assess([win("tool.exe", r"C:\Users\<user>\Downloads\tool.exe")], "other_program")[0] == "unclear"
     assert assess([win("thing.exe", r"D:\apps\thing.exe", signature="missing")], "other_program")[0] == "unclear"
 
 
