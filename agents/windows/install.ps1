@@ -140,8 +140,13 @@ if ($Mode -eq "fleet") {
     Write-Host "    Ask it anything:   & `"$Root\osqueryi.exe`" `"SELECT name, port FROM listening_ports JOIN processes USING (pid);`""
 }
 if (-not $NoSysmon) {
-    Write-Host "    Sysmon network history (osqueryi): SELECT datetime, data FROM windows_eventlog"
-    Write-Host "      WHERE channel = 'Microsoft-Windows-Sysmon/Operational' AND eventid = 3 LIMIT 20;"
+    Write-Host "    Sysmon: program starts, connections and DNS lookups reach osquery as 'sysmon_events' each minute"
+    Write-Host "      (command lines only as yes/no signals). Rows appear within about two minutes:"
+    if ($Mode -eq "fleet") {
+        Write-Host "      in Fleet, the host's sysmon_events query results."
+    } else {
+        Write-Host "      Select-String -Path `"$logs\osqueryd.results.log`" -Pattern sysmon_events | Select-Object -Last 3"
+    }
 }
 if ($Window) {
     Write-Host ""
