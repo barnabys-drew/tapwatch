@@ -6,7 +6,7 @@ of truth for individual items; this page is the why and the order._
 ```mermaid
 flowchart LR
     A["<b>v0.1</b> · shipped 2026-10-13<br/>network detection, guardrailed AI triage,<br/>case desk, Linux + Windows install"]
-    B["<b>v0.2</b> · next<br/>prove it outside one house:<br/>long-running test, clean installs, macOS"]
+    B["<b>v0.2</b> · next<br/>prove it outside one house:<br/>long-running test, clean installs"]
     C["<b>v0.3</b><br/>endpoint rules: living off the land,<br/>per OS, then installed software"]
     D["<b>Later</b><br/>Fleet, richer TLS and domain intel,<br/>packages and images"]
     E["<b>v0.4</b><br/>learned triage: a judge trained on<br/>closed cases does tier 1"]
@@ -30,7 +30,7 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 | Windows install | **Works on one PC.** WSL + Npcap services; a clean-machine test is still to do |
 | Host context (who on the PC made this traffic) | **Experimental, under test.** osquery on Linux/WSL and Windows, plus agent-session awareness. Measuring it over days of real traffic before trusting it to lower alerts |
 | Router syslog | **Partial.** IPS verdicts work; admin-login mapping still needs real samples |
-| macOS | **Not started** |
+| macOS | **Later.** Waiting on a tester with a Mac; it won't ship untested |
 
 ### v0.1.1 (2026-10-14): host context grows up
 
@@ -60,7 +60,6 @@ machine from the docs alone, and the README shows the case desk.
 |---|---|---|
 | [#4](https://github.com/barnabys-drew/tapwatch/issues/4) | Long-running test of host context on an installed osquery agent | **in progress**, started 2026-10-13 |
 | [#6](https://github.com/barnabys-drew/tapwatch/issues/6) | Clean-machine test of the Windows (WSL + Npcap) path | planned |
-| [#5](https://github.com/barnabys-drew/tapwatch/issues/5) | Basic macOS support for the tapwatch box | planned |
 | [#7](https://github.com/barnabys-drew/tapwatch/issues/7) | Check the UniFi admin-login mapping against real events | planned |
 | [#8](https://github.com/barnabys-drew/tapwatch/issues/8) | Router port-forward and UPnP events enrich internet-exposure cases | planned |
 | [#10](https://github.com/barnabys-drew/tapwatch/issues/10) | Measure Jev with `audience: home` wording vs `office` | planned |
@@ -77,11 +76,11 @@ to network cases on the same device ("`certutil` downloaded something, then a ne
 beaconing").
 
 The rules come in two passes. First **per OS**, for the tools each operating system ships with (Windows
-LOLBins, Linux shells and GTFOBins, macOS `osascript` and LOOBins). Then **installed software**, the less
+LOLBins, Linux shells and GTFOBins; macOS waits for a Mac tester). Then **installed software**, the less
 common but harder case: signed, trusted third-party programs such as remote-management tools, tunnels, sync
 and cloud CLIs, vulnerable drivers and DLL hijacks. Most of those work on every OS, so they're written once.
 
-**Done when:** one rule per OS runs end to end, from an installed agent to a routed case, with the
+**Done when:** one rule each on Windows and Linux runs end to end, from an installed agent to a routed case, with the
 agent's log locked down.
 
 | Issue | What | Status |
@@ -89,13 +88,14 @@ agent's log locked down.
 | [#26](https://github.com/barnabys-drew/tapwatch/issues/26) | Framework: osquery process events, host detectors, network correlation | planned |
 | [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | planned |
 | [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | planned |
-| [#29](https://github.com/barnabys-drew/tapwatch/issues/29) | macOS living-off-the-land rules (osquery + EndpointSecurity) | planned |
 | [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools, drivers) | planned |
 
 ## Later ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/2))
 
 Ordered by theme, not date.
 
+- **macOS**, once there's a Mac to test on: basic support for the tapwatch box ([#5](https://github.com/barnabys-drew/tapwatch/issues/5)) and
+  macOS living-off-the-land rules ([#29](https://github.com/barnabys-drew/tapwatch/issues/29))
 - **More endpoints:** host context for other computers through a Fleet server ([#14](https://github.com/barnabys-drew/tapwatch/issues/14)); program
   attribution from Sysmon network events on Windows ([#15](https://github.com/barnabys-drew/tapwatch/issues/15))
 - **Sharper detection:** JA4 TLS fingerprints ([#16](https://github.com/barnabys-drew/tapwatch/issues/16)), the Public Suffix List ([#17](https://github.com/barnabys-drew/tapwatch/issues/17)), a
