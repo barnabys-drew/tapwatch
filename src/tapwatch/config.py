@@ -138,7 +138,9 @@ def hostctx(cfg: dict) -> HostContext | None:
         bins.append(str(win))
     logs = h.get("results_logs") or ["/var/log/osquery/osqueryd.results.log",
                                      "/mnt/c/Program Files/osquery/log/osqueryd.results.log"]
-    return HostContext(h["host"], bins, logs, h.get("transcripts"))
+    ps = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+    return HostContext(h["host"], bins, logs, h.get("transcripts"),
+                       powershell=str(ps) if win.exists() and ps.exists() else None)
 
 
 def thresholds(cfg: dict) -> Thresholds:
