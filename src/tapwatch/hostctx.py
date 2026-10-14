@@ -464,9 +464,14 @@ class HostContext:
         self._snaps: list[tuple[float, frozenset]] = []   # (time, addresses) from the agents' host_addresses
         self._addr_pos: dict[str, tuple[int, int]] = {}   # results log -> (inode, bytes read)
 
+    def _snapshot_logs(self) -> list[Path]:
+        logs = [p.with_name(p.name.replace("results", "snapshots")) for p in self.results_logs if "results" in p.name]
+        return logs + self.results_logs  # some setups log snapshots with the rest
+
     def _read_addresses(self) -> None:
-        """Pick up new host_addresses snapshots from the results logs, reading only what was appended since."""
-        for p in self.results_logs:
+        """Pick up new host_addresses snapshots, reading only what was appended since. osquery's filesystem logger
+        writes snapshot queries to osqueryd.snapshots.log, next to the results log."""
+        for p in self._snapshot_logs():
             try:
                 st = p.stat()
                 fh = p.open("rb")

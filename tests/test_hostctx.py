@@ -620,9 +620,9 @@ NEW_IP = "192.168.50.77"
 
 
 def test_agent_reported_addresses_beat_the_configured_ip(tmp_path):
-    log = tmp_path / "osqueryd.results.log"
+    log = tmp_path / "osqueryd.snapshots.log"         # osquery writes snapshot queries here, not the results log
     log.write_text(addr_snap(T0 - 300, NEW_IP, "100.64.0.5") + addr_snap(T0, NEW_IP))
-    hc = HostContext(PC, None, [log])
+    hc = HostContext(PC, None, [tmp_path / "osqueryd.results.log"])
     assert hc.is_this_pc(NEW_IP, T0 + 60)
     assert not hc.is_this_pc(PC, T0 + 60)              # the configured IP moved on: maybe another device now
     assert hc.is_this_pc(PC, T0 - 86400)               # no reports back then: the configured IP still counts
