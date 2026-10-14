@@ -234,15 +234,18 @@ LOGO = ('<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="cur
 NAV = (("/", "Cases"), ("/stats", "Stats"), ("/suppressions", "Suppressions"))
 
 
+STATS_REFRESH_S = 60  # the stats page reloads itself; pages with forms never do (they'd lose your typing)
+
+
 def page(title: str, body: str, nonce: str, csrf: str = "", logged_in_with_token: bool = False,
-         active: str = "") -> str:
+         active: str = "", refresh: int = 0) -> str:
     logout = (f'<form method="post" action="/logout"><input type="hidden" name="csrf" value="{e(csrf)}">'
               '<button class="plain">Log out</button></form>') if logged_in_with_token else ""
     tabs = "".join(f'<a class="tab{" on" if href == active else ""}" href="{href}">{name}</a>' for href, name in NAV)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
+<meta name="referrer" content="no-referrer">{f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""}
 <title>{e(title)} · tapwatch</title>
 <style nonce="{e(nonce)}">{CSS}</style></head>
 <body><div class="top"><div class="top-in"><a class="brand" href="/">{LOGO}tapwatch <small>case desk</small></a>
@@ -836,12 +839,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _page(self, status: int, title: str, body: str, sid: str, set_sid: str | None = None) -> None:
+    def _page(self, status: int, title: str, body: str, sid: str, set_sid: str | None = None,
+              refresh: int = 0) -> None:
         nonce = secrets.token_urlsafe(16)
         path = urlsplit(self.path).path
         active = "/stats" if path == "/stats" else "/suppressions" if path.startswith("/suppressions") else "/"
         logged_in = self.app.token is not None and self.app.session_ok(sid)
-        self._send(status, page(title, body, nonce, self.app.csrf(sid), logged_in, active),
+        self._send(status, page(title, body, nonce, self.app.csrf(sid), logged_in, active, refresh),
                    nonce=nonce, set_sid=set_sid)
 
     def _error(self, status: int, message: str, sid: str | None = None) -> None:
@@ -898,6 +902,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed(sid):
             return self._send(303, set_sid=new_sid, location="/login")
         params = parse_qs(url.query)
+        refresh = 0
         store = Store(self.app.db_path, migrate=False)
         try:
             csrf = self.app.csrf(sid)
@@ -905,6 +910,7 @@ class Handler(BaseHTTPRequestHandler):
                 title, body = render_queue(store, self.app.assets, params, csrf)
             elif url.path == "/stats":
                 title, body = render_stats(store)
+                refresh = STATS_REFRESH_S
             elif url.path == "/suppressions":
                 title, body = render_suppressions(store, csrf)
             elif (m := CASE_PATH.match(url.path)) and not m.group(2):
@@ -916,7 +922,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(404, "Not found.", sid)
         finally:
             store.db.close()
-        self._page(200, title, body, sid, new_sid)
+        self._page(200, title, body, sid, new_sid, refresh)
 
     do_HEAD = do_GET
 
