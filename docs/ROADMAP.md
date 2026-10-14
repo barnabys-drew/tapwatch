@@ -17,7 +17,7 @@ flowchart LR
 
 ## Where we are
 
-**v0.1.0** has been running on a real home network since it shipped. It watches a mirror
+**v0.1.1** is the current release; tapwatch has been running on a real home network since v0.1.0 shipped. It watches a mirror
 port with Zeek, runs 21 case types from 19 plain-code detectors, and asks a small AI model (Jev) for
 triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
 the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -32,7 +32,7 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 | Router syslog | **Partial.** IPS verdicts work; admin-login mapping still needs real samples |
 | macOS | **Not started** |
 
-### Since v0.1.0 (on `main`, not yet tagged)
+### v0.1.1 (2026-10-14): host context grows up
 
 Host context grew from "which program" to "is that program OK", and the Windows endpoint agent works:
 
