@@ -24,8 +24,11 @@ with the [README](../README.md). Rule-by-rule specs are in [detections/DESIGN.md
 
 **Goals**
 
-- **See every device, install nothing on them.** Phones, TVs, cameras and IoT can't run an agent,
-  so the sensor is the network: a switch mirror port and Zeek.
+- **Network first, an agent only where one fits.** Phones, TVs, cameras and IoT can't run an agent,
+  so the main sensor is the network: a switch mirror port and Zeek, with nothing installed on those
+  devices. Computers that can run [osquery](https://osquery.io) (Windows, macOS, Linux) can
+  optionally get the endpoint agent: osquery, plus Sysmon on Windows (see
+  [what runs on the endpoints](#what-runs-on-the-endpoints)).
 - **Quiet by default.** A household has no SOC. Most cases are logged, a few reach a daily digest,
   and only things worth a phone push alert.
 - **Code produces facts; the AI only judges.** Counting, timing, baselines, addresses and "is this
@@ -39,10 +42,12 @@ with the [README](../README.md). Rule-by-rule specs are in [detections/DESIGN.md
 
 **Non-goals (v0.1)**
 
-- Not a SIEM or EDR: there's no event store beyond Zeek logs and SQLite, and no endpoint event feed.
+- Not a SIEM or EDR: there's no event store beyond Zeek logs and SQLite. The endpoint agent takes
+  scheduled osquery snapshots; there's no process-event stream yet (that's v0.3).
 - No inline blocking. tapwatch is passive and never sits in the traffic path.
 - No fleet server, cloud hosting, multi-site or mobile app (see the [roadmap](ROADMAP.md)).
-- Host context covers only the machine tapwatch runs on. Other devices would need Fleet (planned).
+- Host context reads the agent only on the machine tapwatch runs on. Agents on other computers log
+  locally, and tapwatch can't use them until it can query them through Fleet (planned).
 
 ## Data flow
 
@@ -314,6 +319,21 @@ documentation and test ranges. Locally it also reads a gitignored `.personal-den
 per line) of the owner's own hostnames, addresses and names. Tests use documentation address
 ranges (RFC 5737, RFC 7042). See [SECURITY.md](../SECURITY.md) for reporting.
 
+### What runs on the endpoints
+
+The network side installs nothing on the devices it watches. The **endpoint agent** is the one
+exception, and it's optional: it goes only on computers the owner chooses (`agents/`).
+
+| | What it does |
+|---|---|
+| **Installs** | osquery from each platform's package manager (winget, Homebrew, osquery's apt/dnf repo). On Windows, also Sysmon, downloaded from Microsoft and refused unless its Authenticode signature is Microsoft's. Both need admin rights once and run as system services (root/SYSTEM). |
+| **Collects** | Scheduled osquery queries ([osquery.conf](../agents/config/osquery.conf)): which program holds which outside connection, listening ports, persistence (startup items, services, scheduled tasks, cron, launchd), browser extensions, logged-in users and inventory. Command lines aren't logged. Sysmon records process starts and network connections in the Windows event log. |
+| **Writes** | Standalone mode: a local results log only, nothing sent anywhere. On Linux and macOS the log is mode `0644` so tapwatch can read it without root. Fleet mode sends results to the owner's own Fleet server, and the enrol secret is readable only by SYSTEM/Administrators or root. |
+| **Removes** | `uninstall.cmd` / `uninstall.sh` stop and remove the services and the agent's files. |
+
+Installing it on someone else's computer needs their consent, and never on a work-managed device
+(MDM, Intune or an EDR). The checklist is in [agents/README.md](../agents/README.md#installing-on-someone-elses-computer).
+
 ## Deployment
 
 | Path | How | What runs |
@@ -366,7 +386,7 @@ caveats and the tuning history: from 26 items and 4 false alerts down to 8 items
 
 | # | Decision | Why | Trade-off |
 |---|---|---|---|
-| 1 | **Passive mirror port, not an inline sensor or endpoint agents** | It sees devices that can't run agents and can't break the network. | Encrypted payloads are opaque, and small-footprint malware (9–55 connections) goes unseen. Host context only partly closes that gap. |
+| 1 | **Passive mirror port first; endpoint agents optional, not inline** | It sees devices that can't run agents and can't break the network. On computers, an optional osquery agent adds what the wire can't show. | Encrypted payloads are opaque, and small-footprint malware (9–55 connections) goes unseen on the wire. The agent only partly closes that gap, and it's software installed with admin rights. |
 | 2 | **Streaming Python detectors over Zeek JSON, not a SIEM or DuckDB** | Small enough for a mini PC, state is cheap, and rules are readable code with tests. The SQL and Sigma files in `docs/detections/rules/` are the hunt-and-spec versions. | Each rule is code, so there's no ad-hoc query language. |
 | 3 | **Code computes facts; the AI judges behaviour from words** | Jev's documented weak spots are arithmetic, counting, IPs and timestamps, and it was measured unable to judge whether a domain is "normal". | Detectors need careful fact design, and the AI is only as good as the summary. |
 | 4 | **Always-alert rules and code-proven floors and ceilings** | An injected domain name, or a confident model, must never silence proven danger or escalate proven benign traffic. | Some always-alert noise has to be fixed in the rule, since it can't be suppressed. |

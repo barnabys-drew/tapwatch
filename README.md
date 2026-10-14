@@ -18,7 +18,8 @@ and alerts reach your phone. One small box runs it all, with no SIEM and no clou
 - **Homes have no SOC.** Commercial NSM assumes an analyst reads alerts all day. tapwatch's job is
   to stay quiet: one real home night produced **8 digest items and 0 alerts**.
 - **Most devices can't run an agent.** TVs, cameras, hubs and phones are only visible on the
-  wire, so tapwatch watches the network rather than the devices.
+  wire, so tapwatch watches the network first. Computers can optionally run an
+  [osquery agent](agents/README.md) that names the program behind a connection.
 - **LLM triage is useful but unsafe on its own.** Here, code does the counting, baselines and "is
   this domain normal?". The model only judges behaviour described in words, and code-proven
   facts set floors and ceilings it can't cross.
