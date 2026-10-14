@@ -426,7 +426,7 @@ def test_windows_suspicious_signs():
         win("x.exe", r"C:\Users\Public\x.exe"),
         win("rundll32.exe", r"C:\Windows\System32\rundll32.exe", signature="trusted", signer="Microsoft Windows"),
         win("powershell.exe", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-            cmdline="powershell -nop -w hidden -enc SQBFAFgA"),
+            cmdline="powershell -nop -w hidden -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA"),
         win("app.exe", r"C:\Program Files\App\app.exe", signature="invalid"),
     ]
     for o in cases:
@@ -453,3 +453,25 @@ def test_live_runs_both_linux_and_windows_osquery():
     rows = hc.live()
     assert len(rows) == 2 and "process_envs" in calls[0][-1] and "authenticode" in calls[1][-1]
     assert "process_envs" not in calls[1][-1]
+
+
+def test_windows_installer_style_powershell_is_unclear_not_suspicious():
+    """Measured: tapwatch's own installer window (-ExecutionPolicy Bypass) was called suspicious."""
+    ps = win("powershell.exe", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+             cmdline=r'powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -File "C:\x\install.ps1"')
+    a, s = assess([ps], "other_program")
+    assert a == "unclear" and "execution policy" in s[0]
+
+
+def test_redact_needs_a_word_boundary():
+    assert "-File" in redact("powershell -ExecutionPolicy Bypass -File x.ps1")
+    assert "hunter2" not in redact("tool --password hunter2")
+
+
+def test_windows_service_without_a_path_and_pseudo_processes():
+    a, s = assess([win("svchost.exe", "")], "other_program")
+    assert a == "unclear" and "system service" in s[0]
+    both = [win("svchost.exe", ""), win("svchost.exe", r"C:\Windows\System32\svchost.exe", signature="trusted",
+                                         signer="Microsoft Windows Publisher")]
+    assert assess(both, "other_program")[0] == "likely_benign"
+    assert assess([win("[System Process]", "")], "other_program")[0] == "unclear"

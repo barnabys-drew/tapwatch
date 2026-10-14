@@ -103,7 +103,7 @@ def _owner(c: dict, start: float = 0.0) -> Owner:
 CONTAINER = re.compile(r"docker|containerd|libpod|kubepods|/lxc/|machine\.slice", re.IGNORECASE)
 
 
-SECRET = re.compile(r"(?i)((?:token|secret|password|passwd|pass|key|auth|bearer|api[_-]?key|sig)[=: ]+)\S+"
+SECRET = re.compile(r"(?i)(\b(?:token|secret|password|passwd|pass|key|auth|bearer|api[_-]?key|sig)[=: ]+)\S+"
                     r"|\b[A-Za-z0-9+/=_-]{32,}\b")
 
 
@@ -133,7 +133,10 @@ WIN_LOLBINS = {"rundll32.exe", "regsvr32.exe", "mshta.exe", "certutil.exe", "bit
                "installutil.exe", "cmstp.exe", "wmic.exe", "regasm.exe", "regsvcs.exe", "cscript.exe", "wscript.exe",
                "odbcconf.exe", "msxsl.exe", "ieexec.exe", "presentationhost.exe", "forfiles.exe"}
 WIN_SUSPICIOUS_CMD = re.compile(r"frombase64string|downloadstring|downloadfile|invoke-webrequest.*\|\s*iex|\biex\s*\("
-                                r"|-w(indowstyle)?\s+hidden|-ep\s+bypass|-executionpolicy\s+bypass|-nop\b.*-enc", re.IGNORECASE)
+                                r"|\s-e(nc|ncodedcommand)?\s+[A-Za-z0-9+/=]{20,}", re.IGNORECASE)
+# Common in legitimate installers and scheduled scripts (measured: tapwatch's own installer), so only "unclear".
+WIN_UNUSUAL_CMD = re.compile(r"-w(indowstyle)?\s+hidden|-(ep|executionpolicy)\s+bypass", re.IGNORECASE)
+WIN_PSEUDO = {"[system process]", "system", "registry", "memory compression"}  # not programs
 
 
 def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) -> None:
@@ -147,6 +150,12 @@ def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) 
     if o.signature in ("invalid", "distrusted", "untrusted"):
         bad.append(f"{o.name}'s code signature is {o.signature}")
     if bad:
+        return
+    if o.cmdline and WIN_UNUSUAL_CMD.search(o.cmdline):
+        unclear.append(f"{o.name} runs hidden or bypasses PowerShell's execution policy")
+        return
+    if not path:
+        unclear.append(f"couldn't see where {o.name} runs from (a system service; the agent's own log has it)")
         return
     if o.signature == "trusted":
         good.append(f"{o.name} is signed by {o.signer or 'a trusted publisher'}")
@@ -162,10 +171,15 @@ def assess(owners: list[Owner], who: str) -> tuple[str, list[str]]:
     """(assessment, signals): likely_benign / suspicious / unclear, from what ran on the PC."""
     if not owners:
         return "unclear", ["no program on the PC could be tied to the connection"]
+    owners = [o for o in owners if o.name.lower() not in WIN_PSEUDO]
+    with_path = {o.name for o in owners if o.path}
+    owners = [o for o in owners if o.path or o.name not in with_path]  # prefer the row that knows the path
+    if not owners:
+        return "unclear", ["only Windows pseudo-processes held the connection"]
     bad, good, bad_or_unclear = [], [], []
     for o in owners:
         path = o.path or ""
-        if re.match(r"^[a-z]:\\", path, re.IGNORECASE) or path.lower().endswith(".exe"):   # a Windows process
+        if re.match(r"^[a-z]:\\", path, re.IGNORECASE) or o.name.lower().endswith(".exe"):   # a Windows process
             ob, og = [], []
             _windows_signals(o, path.replace("\\", "/").lower(), ob, og, bad_or_unclear)
             bad += ob

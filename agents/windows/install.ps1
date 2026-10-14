@@ -14,9 +14,15 @@ param(
     [string]$EnrollSecret = "",
     [string]$FleetCert = "",
     [switch]$Standalone,
-    [switch]$NoSysmon
+    [switch]$NoSysmon,
+    [switch]$Window            # set by install.cmd: close the window on success, wait on failure
 )
 $ErrorActionPreference = "Stop"
+trap {
+    Write-Host "error: $_" -ForegroundColor Red
+    if ($Window) { Read-Host "Install failed. Press Enter to close" }
+    break
+}
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is very slow with the progress bar
 $Repo = Split-Path -Parent $PSScriptRoot
 
@@ -135,4 +141,9 @@ if ($Mode -eq "fleet") {
 if (-not $NoSysmon) {
     Write-Host "    Sysmon network history (osqueryi): SELECT datetime, data FROM windows_eventlog"
     Write-Host "      WHERE channel = 'Microsoft-Windows-Sysmon/Operational' AND eventid = 3 LIMIT 20;"
+}
+if ($Window) {
+    Write-Host ""
+    Write-Host "This window closes in 15 seconds."
+    Start-Sleep -Seconds 15
 }
