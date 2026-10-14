@@ -9,8 +9,9 @@ flowchart LR
     B["<b>v0.2</b> · next<br/>prove it outside one house:<br/>long-running test, clean installs"]
     C["<b>v0.3</b><br/>endpoint rules: living off the land,<br/>per OS, then installed software"]
     D["<b>Later</b><br/>Fleet, richer TLS and domain intel,<br/>packages and images"]
-    E["<b>v0.4</b><br/>learned triage: a judge trained on<br/>closed cases does tier 1"]
-    A --> B --> C --> D --> E
+    E["<b>v0.4</b><br/>learning from history: 30-day behavior,<br/>a judge that does tier-1 triage"]
+    F["<b>v0.5</b><br/>home XDR: email, DNS, identity<br/>and endpoint signals, one-tap response"]
+    A --> B --> C --> D --> E --> F
     style A fill:#2e7d32,color:#fff
     style B fill:#f9a825,color:#000
 ```
@@ -53,20 +54,27 @@ Host context grew from "which program" to "is that program OK", and the Windows 
 v0.1 is tuned on one network. v0.2 is about evidence that it holds up elsewhere and over time, and that
 someone else can install it without help.
 
-**Done when:** host context has a week of real data reviewed, the Windows path installs on a clean
-machine from the docs alone, and the README shows the case desk.
+**Next up is #15.** Host context names the program behind most PC cases but rarely settles them: once-a-minute
+osquery snapshots miss short connections, DNS cases can't be tied to a program at all, and no command lines are
+recorded. Sysmon, already installed by the agents, logs every process start (with its command line and parent),
+every connection and every DNS lookup with the program behind it. Reading it should turn most PC cases into
+"likely benign" or "suspicious" with a reason.
+
+**Done when:** host context has a week of real data reviewed, Windows cases carry the command line behind them,
+the Windows path installs on a clean machine from the docs alone, and the README shows the case desk.
 
 | Issue | What | Status |
 |---|---|---|
+| [#15](https://github.com/barnabys-drew/tapwatch/issues/15) | Windows endpoints: command lines, connections and DNS lookups from Sysmon | **next** |
 | [#4](https://github.com/barnabys-drew/tapwatch/issues/4) | Long-running test of host context on an installed osquery agent | **in progress**, started 2026-10-13 |
 | [#6](https://github.com/barnabys-drew/tapwatch/issues/6) | Clean-machine test of the Windows (WSL + Npcap) path | planned |
 | [#7](https://github.com/barnabys-drew/tapwatch/issues/7) | Check the UniFi admin-login mapping against real events | planned |
 | [#8](https://github.com/barnabys-drew/tapwatch/issues/8) | Router port-forward and UPnP events enrich internet-exposure cases | planned |
-| [#10](https://github.com/barnabys-drew/tapwatch/issues/10) | Measure Jev with `audience: home` wording vs `office` | planned |
+| [#10](https://github.com/barnabys-drew/tapwatch/issues/10) | Measure Jev with `audience: home` wording vs `office` | **done** |
 | [#12](https://github.com/barnabys-drew/tapwatch/issues/12) | Apply `tapwatch explain` suggestions from the case desk | planned |
 | [#9](https://github.com/barnabys-drew/tapwatch/issues/9) | Screenshots of the case desk on synthetic data | **done** |
-| [#11](https://github.com/barnabys-drew/tapwatch/issues/11) | Stats page refreshes itself | planned |
-| [#13](https://github.com/barnabys-drew/tapwatch/issues/13) | Test matrix: Python 3.10–3.13 in CI | planned |
+| [#11](https://github.com/barnabys-drew/tapwatch/issues/11) | Stats page refreshes itself | **done** |
+| [#13](https://github.com/barnabys-drew/tapwatch/issues/13) | Test matrix: Python 3.10–3.13 in CI | **done** |
 
 ## v0.3: endpoint rules ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/3))
 
@@ -96,8 +104,7 @@ Ordered by theme, not date.
 
 - **macOS**, once there's a Mac to test on: basic support for the tapwatch box ([#5](https://github.com/barnabys-drew/tapwatch/issues/5)) and
   macOS living-off-the-land rules ([#29](https://github.com/barnabys-drew/tapwatch/issues/29))
-- **More endpoints:** host context for other computers through a Fleet server ([#14](https://github.com/barnabys-drew/tapwatch/issues/14)); program
-  attribution from Sysmon network events on Windows ([#15](https://github.com/barnabys-drew/tapwatch/issues/15))
+- **More endpoints:** host context for other computers through a Fleet server ([#14](https://github.com/barnabys-drew/tapwatch/issues/14))
 - **Sharper detection:** JA4 TLS fingerprints ([#16](https://github.com/barnabys-drew/tapwatch/issues/16)), the Public Suffix List ([#17](https://github.com/barnabys-drew/tapwatch/issues/17)), a
   newly-registered-domains feed ([#18](https://github.com/barnabys-drew/tapwatch/issues/18)), IPv6 exposure ([#19](https://github.com/barnabys-drew/tapwatch/issues/19)), jitter-tolerant beacons
   ([#24](https://github.com/barnabys-drew/tapwatch/issues/24))
@@ -105,9 +112,15 @@ Ordered by theme, not date.
 - **Packaging and ops:** a container image and PyPI package ([#22](https://github.com/barnabys-drew/tapwatch/issues/22)), a watchdog for every capture
   path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)), TCP/TLS syslog ([#25](https://github.com/barnabys-drew/tapwatch/issues/25)), a same-switch VLAN guide ([#23](https://github.com/barnabys-drew/tapwatch/issues/23))
 
-## v0.4: learned triage ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/4))
+## v0.4: learning from history ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/4))
 
-The end goal. In a SOC, tier 1 reads every alert and closes the routine ones, and tier 2 handles what's left.
+**Long-horizon behavior.** Today's rules decide within minutes to an hour, with short learned baselines (hourly
+profiles keep 14 days). Some attacker behavior only shows over weeks: a beacon that checks in once a day,
+exfiltration a little at a time, a device quiet for a month that wakes up talking somewhere new. Nightly
+per-device summaries of the last 30 days let code flag what's unusual *for that device* and its peers.
+These cases default to the digest unless another signal on the same device backs them up.
+
+**Learned triage.** In a SOC, tier 1 reads every alert and closes the routine ones, and tier 2 handles what's left.
 In tapwatch the owner is still tier 1: every case waits for a human disposition. Every closed case is also a
 labelled example, though: a disposition, notes, suppressions and their reasons, next to the code facts and
 Jev's verdict at the time.
@@ -123,7 +136,24 @@ true positives auto-closed.
 
 | Issue | What | Status |
 |---|---|---|
+| [#52](https://github.com/barnabys-drew/tapwatch/issues/52) | Long-horizon behavioral detections: 30 days of per-device history | planned |
 | [#37](https://github.com/barnabys-drew/tapwatch/issues/37) | Learned judge: automate tier-1 triage from the owner's closed cases | planned |
+
+## v0.5: home XDR ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/5))
+
+The end goal: one story per device from every signal a home has, not just the wire. Each source is something a
+household already uses, and each mainly adds *correlation*: a phishing link in the mailbox and the laptop
+resolving it three minutes later is a far stronger case than either alone. Response stays owner-approved: one tap,
+shown before it runs, recorded, and undoable.
+
+| Issue | What | Status |
+|---|---|---|
+| [#53](https://github.com/barnabys-drew/tapwatch/issues/53) | Email: correlate phishing in the mailbox with clicks on the network (read-only, no mail gateway) | planned |
+| [#54](https://github.com/barnabys-drew/tapwatch/issues/54) | DNS resolver logs and blocking (AdGuard Home or Pi-hole), for devices that can't run agents | planned |
+| [#55](https://github.com/barnabys-drew/tapwatch/issues/55) | Response actions: one-tap quarantine and block, always owner-approved | planned |
+| [#56](https://github.com/barnabys-drew/tapwatch/issues/56) | Canary tokens: fake credentials and files that alert when touched | planned |
+| [#57](https://github.com/barnabys-drew/tapwatch/issues/57) | Identity signals: account sign-ins from new devices or places | planned |
+| [#58](https://github.com/barnabys-drew/tapwatch/issues/58) | Vulnerable software: installed programs checked against known vulnerabilities | planned |
 
 ## Not planned
 
