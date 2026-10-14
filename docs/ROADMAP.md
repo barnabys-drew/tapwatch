@@ -1,12 +1,119 @@
-# tapwatch: road to a public release
+# Roadmap
 
-_v0.1.0 released 2026-10-13. Goal: something friends and co-workers can install on their own home
-networks, on **both** a small Linux box and a Windows PC. Work goes `dev` → PR → `main`; each
-item lands as its own PR with tests and the personal-data check._
+_Where tapwatch is, and where it's going. The [GitHub milestones](https://github.com/barnabys-drew/tapwatch/milestones) are the source
+of truth for individual items; this page is the why and the order._
 
-Each milestone ends in something usable. Tick items as their PRs merge.
+```mermaid
+flowchart LR
+    A["<b>v0.1</b> · shipped 2026-10-13<br/>network detection, guardrailed AI triage,<br/>case desk, Linux + Windows install"]
+    B["<b>v0.2</b> · next<br/>prove it outside one house:<br/>long-running test, clean installs, macOS"]
+    C["<b>v0.3</b><br/>endpoint rules: osquery process events,<br/>living-off-the-land detection"]
+    D["<b>Later</b><br/>Fleet, richer TLS and domain intel,<br/>packages and images"]
+    A --> B --> C --> D
+    style A fill:#2e7d32,color:#fff
+    style B fill:#f9a825,color:#000
+```
 
-## M1 Foundation: trustworthy main
+## Where we are
+
+**v0.1.0** has been running on a real home network since it shipped. It watches a mirror
+port with Zeek, runs 21 case types from 19 plain-code detectors, and asks a small AI model (Jev) for
+triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
+the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.md](ARCHITECTURE.md).
+
+| Area | State |
+|---|---|
+| Network detection | **Solid.** 21 case types, baselines that survive restarts. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
+| AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
+| Linux install | **Solid.** `docker compose up`, verified end to end on a live interface |
+| Windows install | **Works on one PC.** WSL + Npcap services; a clean-machine test is still to do |
+| Host context (who on the PC made this traffic) | **Experimental, under test.** osquery on Linux/WSL and Windows, plus agent-session awareness. Measuring it over days of real traffic before trusting it to lower alerts |
+| Router syslog | **Partial.** IPS verdicts work; admin-login mapping still needs real samples |
+| macOS | **Not started** |
+
+### Since v0.1.0 (on `main`, not yet tagged)
+
+Host context grew from "which program" to "is that program OK", and the Windows endpoint agent works:
+
+- An assessment per case (suspicious, likely benign or unclear) from what ran on the PC, and
+  `tapwatch explain`, which suggests program-scoped suppressions for repeat cases host context
+  explains ([#2](https://github.com/barnabys-drew/tapwatch/pull/2))
+- Container processes are no longer mistaken for deleted binaries
+  ([#3](https://github.com/barnabys-drew/tapwatch/pull/3))
+- Windows awareness: Authenticode signatures, Windows paths, living-off-the-land binaries, and a
+  one-click osquery + Sysmon installer ([#31](https://github.com/barnabys-drew/tapwatch/pull/31),
+  [#32](https://github.com/barnabys-drew/tapwatch/pull/32))
+- The AI can't call the owner's own agent work "misused" unless code saw a risk
+  ([#33](https://github.com/barnabys-drew/tapwatch/pull/33)), and Windows signatures osquery can't read
+  are checked by Windows itself ([#34](https://github.com/barnabys-drew/tapwatch/pull/34))
+
+## v0.2: prove it outside one house ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/1))
+
+v0.1 is tuned on one network. v0.2 is about evidence that it holds up elsewhere and over time, and that
+someone else can install it without help.
+
+**Done when:** host context has a week of real data reviewed, the Windows path installs on a clean
+machine from the docs alone, and the README shows the case desk.
+
+| Issue | What | Status |
+|---|---|---|
+| [#4](https://github.com/barnabys-drew/tapwatch/issues/4) | Long-running test of host context on an installed osquery agent | **in progress**, started 2026-10-13 |
+| [#6](https://github.com/barnabys-drew/tapwatch/issues/6) | Clean-machine test of the Windows (WSL + Npcap) path | planned |
+| [#5](https://github.com/barnabys-drew/tapwatch/issues/5) | Basic macOS support for the tapwatch box | planned |
+| [#7](https://github.com/barnabys-drew/tapwatch/issues/7) | Check the UniFi admin-login mapping against real events | planned |
+| [#8](https://github.com/barnabys-drew/tapwatch/issues/8) | Router port-forward and UPnP events enrich internet-exposure cases | planned |
+| [#10](https://github.com/barnabys-drew/tapwatch/issues/10) | Measure Jev with `audience: home` wording vs `office` | planned |
+| [#12](https://github.com/barnabys-drew/tapwatch/issues/12) | Apply `tapwatch explain` suggestions from the case desk | planned |
+| [#9](https://github.com/barnabys-drew/tapwatch/issues/9) | Screenshots of the case desk on synthetic data | planned |
+| [#11](https://github.com/barnabys-drew/tapwatch/issues/11) | Stats page refreshes itself | planned |
+| [#13](https://github.com/barnabys-drew/tapwatch/issues/13) | Test matrix: Python 3.10–3.13 in CI | planned |
+
+## v0.3: endpoint rules ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/3))
+
+Some attacks never look odd on the wire: a script that lives off built-in tools, a new scheduled task,
+a credential file read. With osquery on the PCs, tapwatch can raise its own **host** cases and tie them
+to network cases on the same device ("`certutil` downloaded something, then a new domain started
+beaconing").
+
+**Done when:** one rule per OS runs end to end, from an installed agent to a routed case, with the
+agent's log locked down.
+
+| Issue | What | Status |
+|---|---|---|
+| [#26](https://github.com/barnabys-drew/tapwatch/issues/26) | Framework: osquery process events, host detectors, network correlation | planned |
+| [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | planned |
+| [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | planned |
+| [#29](https://github.com/barnabys-drew/tapwatch/issues/29) | macOS living-off-the-land rules (osquery + EndpointSecurity) | planned |
+
+## Later ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/2))
+
+Ordered by theme, not date.
+
+- **More endpoints:** host context for other computers through a Fleet server ([#14](https://github.com/barnabys-drew/tapwatch/issues/14)); program
+  attribution from Sysmon network events on Windows ([#15](https://github.com/barnabys-drew/tapwatch/issues/15))
+- **Sharper detection:** JA4 TLS fingerprints ([#16](https://github.com/barnabys-drew/tapwatch/issues/16)), the Public Suffix List ([#17](https://github.com/barnabys-drew/tapwatch/issues/17)), a
+  newly-registered-domains feed ([#18](https://github.com/barnabys-drew/tapwatch/issues/18)), IPv6 exposure ([#19](https://github.com/barnabys-drew/tapwatch/issues/19)), jitter-tolerant beacons
+  ([#24](https://github.com/barnabys-drew/tapwatch/issues/24))
+- **AI triage:** majority vote for borderline calls ([#21](https://github.com/barnabys-drew/tapwatch/issues/21))
+- **Packaging and ops:** a container image and PyPI package ([#22](https://github.com/barnabys-drew/tapwatch/issues/22)), a watchdog for every capture
+  path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)), TCP/TLS syslog ([#25](https://github.com/barnabys-drew/tapwatch/issues/25)), a same-switch VLAN guide ([#23](https://github.com/barnabys-drew/tapwatch/issues/23))
+
+## Not planned
+
+Cloud hosting, multi-site management, a mobile app, or a SIEM. tapwatch stays one small box that keeps
+data at home and stays quiet unless something matters.
+
+## How work lands
+
+Every item is a GitHub issue in a milestone. Work goes `dev` → PR → `main`, and lands only when tests,
+Semgrep, Trivy and the personal-data gate pass. A milestone ships as a tagged release with notes.
+
+## History: the road to v0.1
+
+<details>
+<summary>The v0.1 plan, milestone by milestone (all shipped except the items carried into v0.2)</summary>
+
+### M1 Foundation: trustworthy main
 
 - [x] Fix the UI login crash. Two UI changes collided when merged: one checked `app.sessions`, the other had removed it.
 - [x] CI runs `ruff` and `pytest` on every push to `dev` and every PR into `main` (`.github/workflows/tests.yml`)
@@ -14,7 +121,7 @@ Each milestone ends in something usable. Tick items as their PRs merge.
 - [x] Zeek log rotation on both capture paths (`deploy/zeek/tapwatch-live.zeek`, hourly), the follower survives it, evidence and replay read rotated files, and `zeek_retention_days` prunes old ones
 - [x] "Small business, one IT person" wording becomes a config `audience: office | home`. Summaries and Jev's questions follow it; the default stays `office` (the measured wording) until M5
 
-## M2 Detections: the rules people will judge it by
+### M2 Detections: the rules people will judge it by
 
 Specs are in `detections/DESIGN.md` and `detections/rules/`. Built: R01–R07, R09, R10, R12–R16, plus host context. R08 is `new_domain` (code-routed); R11 (`udm_admin`) landed with the syslog input in M3.
 
@@ -28,14 +135,14 @@ Specs are in `detections/DESIGN.md` and `detections/rules/`. Built: R01–R07, R
 - [x] R02 IoT egress drift, using an offline ASN/country table (`tapwatch update-feeds`, download only)
 - [x] R10 TLS weak-signal stack (JA4 left for later: needs a Zeek package)
 
-## M3 Inputs beyond the mirror
+### M3 Inputs beyond the mirror
 
 - [x] Syslog listener (UDP) with a CEF parser, sender allow-list and hourly rotation (`tapwatch syslog`)
 - [x] UniFi parser: IPS alerts (`udm_ips`) and admin logins (**R11** `udm_admin`). Admin mapping still to check against real events
 - [ ] Port-forward and UPnP change events enrich R01 (needs real UDM samples)
 - [x] Suricata stays optional: `docs/setup/router-syslog.md` says when it adds anything
 
-## M4 Install and notify: someone else can set it up in an evening
+### M4 Install and notify: someone else can set it up in an evening
 
 - [x] `tapwatch init`: detects gateway, this machine, timezone and capture path; asks a few questions; writes `config.yaml`, `assets.yaml` and `.env` (600), never overwriting without `--force`
 - [x] Notifiers: **ntfy**, **Discord**, generic webhook, alongside Teams, email and Herdr. Network strings are defanged; Discord mentions are off
@@ -44,14 +151,14 @@ Specs are in `detections/DESIGN.md` and `detections/rules/`. Built: R01–R07, R
 - [ ] Clean-machine test of the Windows path (a friend's PC, or a fresh Windows VM)
 - [x] Services on both paths: compose restart policies (Linux + Docker); systemd user units for alerter, case desk, watchdog, capture, syslog (Linux without Docker, and WSL), checked with `systemd-analyze verify`
 
-## M5 Proof: numbers for the README
+### M5 Proof: numbers for the README
 
 - [x] Jev go/no-go on 6 public Stratosphere captures (`eval/public_captures.sh`), replayed in the network-less container: GO on promotion, 4/7 infected hosts alerted vs 2/7 rules-only
 - [x] Benign noise from a home network, aggregates only: 14 h → 8 digest items, 0 alerts (was 26 and 4 before tuning)
 - [x] `eval/RESULTS.md`: alerts and noise in rules-only vs Jev mode, cost, and caveats
 - [ ] Jev with `audience: home` vs `office` wording on the same cases. Switch the default to `home` if it's no worse
 
-## M6 Release
+### M6 Release
 
 - [x] Personal-data gate: `tools/check_personal_data.py` (generic patterns in CI, plus a gitignored local denylist of household specifics). It caught a real household MAC in the tests
 - [x] Public repo from a clean snapshot (the development history held household specifics, so it stays private)
@@ -61,18 +168,4 @@ Specs are in `detections/DESIGN.md` and `detections/rules/`. Built: R01–R07, R
 - [x] SAST, Trivy, tests and the personal-data gate on every PR; Dependabot to `dev`; private vulnerability reporting
 - [x] Tagged `v0.1.0` with release notes
 
-## Not in scope for v0.1
-
-Fleet server, cloud hosting, multi-site, a mobile app.
-
-## Next
-
-The backlog lives in [GitHub issues](https://github.com/barnabys-drew/tapwatch/issues), by milestone:
-
-- [v0.2](https://github.com/barnabys-drew/tapwatch/milestone/1): validate 0.1's experimental parts (long-running
-  host-context test, Windows clean-machine test, real UniFi admin events), basic macOS support, case-desk
-  screenshots, home vs office wording, CI on Python 3.10–3.13
-- [v0.3: endpoint rules](https://github.com/barnabys-drew/tapwatch/milestone/3): osquery process events and
-  living-off-the-land rules for Windows, Linux and macOS, correlated with network cases
-- [Later](https://github.com/barnabys-drew/tapwatch/milestone/2): Fleet, Sysmon attribution, JA4, Public Suffix
-  List, newly registered domains, IPv6 exposure, published image and package, and more
+</details>
