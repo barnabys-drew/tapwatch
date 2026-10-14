@@ -88,8 +88,18 @@ class Owner:
     end: float | None = None
 
 
+VERSION_NAME = re.compile(r"^\d+(\.\d+)+$")
+
+
+def _name(c: dict) -> str:
+    name, path = c.get("name") or "?", (c.get("path") or "").replace("\\", "/")
+    if VERSION_NAME.match(name) and "/claude/versions/" in path:
+        return "claude"  # Claude Code's binary is named after its version
+    return name
+
+
 def _owner(c: dict, start: float = 0.0) -> Owner:
-    return Owner(name=c.get("name") or "?", path=c.get("path") or "", session=c.get("claude_session") or "",
+    return Owner(name=_name(c), path=c.get("path") or "", session=c.get("claude_session") or "",
                  attended=str(c.get("claude_attended") or ""), entrypoint=c.get("claude_entrypoint") or "",
                  in_herdr=str(c.get("in_herdr") or "0") not in ("0", ""),
                  via_ssh=str(c.get("via_ssh") or "0") not in ("0", ""), cmdline=redact(c.get("cmdline") or ""),

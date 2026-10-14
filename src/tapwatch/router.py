@@ -103,15 +103,34 @@ def _route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
     return Route.DIGEST, f"AI: {verdict.category}"
 
 
+STALE_PROMPT_MIN = 30
+
+
 def agent_misused(case: Case) -> bool:
     """Code saw an unattended/SSH-driven agent or web-content-then-action, or Jev judged it so (>= 0.6).
     Jev's call only counts when code tied the connection to an agent session (process proof): a
     transcript that merely mentions the destination is context, never routing. Case #63
-    (2026-10-13) was a voice call escalated on transcript-only facts."""
+    (2026-10-13) was a voice call escalated on transcript-only facts.
+    Jev also needs a risk that code saw: it only reads code's facts, so with none it's guessing. Case
+    #64 (2026-10-13) was the owner's own git push, attended, right after a prompt, called misused at 0.93."""
     f = case.facts
     return f.get("host_who") == "agent_misused" or (
         bool(f.get("host_agent_session")) and f.get("host_jev_who") == "agent_misused"
-        and f.get("host_jev_conf", 0) >= 0.6)
+        and f.get("host_jev_conf", 0) >= 0.6 and bool(agent_risks(f)))
+
+
+def agent_risks(f: dict) -> list[str]:
+    """Facts that make an agent-made connection worth a second look, short of code's own 'misused'."""
+    risks = []
+    if not f.get("host_attended"):
+        risks.append("no one was attending the session")
+    if not f.get("host_in_terminal"):
+        risks.append("the session wasn't in the owner's terminal")
+    if f.get("host_minutes_since_prompt", 0) >= STALE_PROMPT_MIN:
+        risks.append("the owner's last prompt was long before")
+    if f.get("host_outside_content"):
+        risks.append("the agent read outside content first")
+    return risks
 
 
 def owner_confirmed(case: Case) -> bool:

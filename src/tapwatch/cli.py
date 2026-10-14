@@ -164,6 +164,7 @@ def cmd_who(args, cfg) -> int:
     case = Case(row["detector"], row["host"], row["first_ts"], row["title"], json.loads(row["facts"]),
                 json.loads(row["indicators"]))
     ev = evidence.lookup(args.zeek_dir, case.host, case.ts, window=180)
+    case.facts = {k: v for k, v in case.facts.items() if not k.startswith("host_")}  # stored ones are stale
     case.facts.update(hc.collect(case, ev["conn"]["rows"], ev["dns"]["rows"]))
     for k, v in case.facts.items():
         if k.startswith("host_"):
