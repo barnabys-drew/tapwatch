@@ -65,12 +65,14 @@ Specs are in `detections/DESIGN.md` and `detections/rules/`. Built: R01–R07, R
 
 Fleet server, cloud hosting, multi-site, a mobile app.
 
-## Next (after 0.1)
+## Next
 
-- [x] Host context assesses what ran (suspicious / likely benign / unclear) and `tapwatch explain` proposes program-scoped suppressions
-- [ ] Long-running test of host context on an installed agent: how many cases get explained, how often `explain` suggests suppressions, any wrong calls
-- [ ] Clean-machine test of the Windows path
-- [ ] Check the UniFi admin-login mapping against real events; port-forward and UPnP change events
-- [ ] Screenshots of the case desk on synthetic data
-- [ ] Jev with `audience: home` wording vs `office`
-- [ ] Stats page that refreshes itself
+The backlog lives in [GitHub issues](https://github.com/barnabys-drew/tapwatch/issues), by milestone:
+
+- [v0.2](https://github.com/barnabys-drew/tapwatch/milestone/1): validate 0.1's experimental parts (long-running
+  host-context test, Windows clean-machine test, real UniFi admin events), basic macOS support, case-desk
+  screenshots, home vs office wording, CI on Python 3.10–3.13
+- [v0.3: endpoint rules](https://github.com/barnabys-drew/tapwatch/milestone/3): osquery process events and
+  living-off-the-land rules for Windows, Linux and macOS, correlated with network cases
+- [Later](https://github.com/barnabys-drew/tapwatch/milestone/2): Fleet, Sysmon attribution, JA4, Public Suffix
+  List, newly registered domains, IPv6 exposure, published image and package, and more
