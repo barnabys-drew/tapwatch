@@ -403,3 +403,53 @@ def test_owner_reads_container_from_cgroup_path():
     assert _owner({"name": "java", "cgroup_path": "/system.slice/docker-72ab.scope"}).container is True
     assert _owner({"name": "curl", "cgroup_path": "/user.slice/user-1000.slice/app.slice/x.service"}).container is False
     assert _owner({"name": "curl"}).container is None
+
+
+# ------------------------------------------------------------------ Windows processes
+
+def win(name, path, **kw):
+    return Owner(name=name, path=path, **kw)
+
+
+def test_windows_signed_and_installed_programs_are_likely_benign():
+    discord = win("Discord.exe", r"C:\Users\<user>\AppData\Local\Discord\app-1.0\Discord.exe", signature="trusted",
+                  signer="Discord Inc.")
+    a, s = assess([discord], "other_program")
+    assert a == "likely_benign" and "signed by Discord Inc." in s[0]
+    assert assess([win("svchost.exe", r"C:\Windows\System32\svchost.exe")], "other_program")[0] == "likely_benign"
+    assert assess([win("steam.exe", r"C:\Program Files (x86)\Steam\steam.exe")], "other_program")[0] == "likely_benign"
+
+
+def test_windows_suspicious_signs():
+    cases = [
+        win("upd.exe", r"C:\Users\<user>\AppData\Local\Temp\upd.exe"),
+        win("x.exe", r"C:\Users\Public\x.exe"),
+        win("rundll32.exe", r"C:\Windows\System32\rundll32.exe", signature="trusted", signer="Microsoft Windows"),
+        win("powershell.exe", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            cmdline="powershell -nop -w hidden -enc SQBFAFgA"),
+        win("app.exe", r"C:\Program Files\App\app.exe", signature="invalid"),
+    ]
+    for o in cases:
+        a, s = assess([o], "other_program")
+        assert a == "suspicious", (o.name, s)
+
+
+def test_windows_unsigned_or_downloads_is_unclear():
+    assert assess([win("tool.exe", r"C:\Users\<user>\Downloads\tool.exe")], "other_program")[0] == "unclear"
+    assert assess([win("thing.exe", r"D:\apps\thing.exe", signature="missing")], "other_program")[0] == "unclear"
+
+
+def test_live_runs_both_linux_and_windows_osquery():
+    calls = []
+
+    def runner(cmd, **kw):
+        import subprocess
+        calls.append(cmd)
+        row = {"name": "Discord.exe", "path": r"C:\x\Discord.exe", "remote_address": DST, "remote_port": "443",
+               "signature": "trusted"} if cmd[0].endswith(".exe") else socket_row()
+        return subprocess.CompletedProcess(cmd, 0, json.dumps([row]), "")
+
+    hc = HostContext(PC, ["/usr/bin/osqueryi", "/mnt/c/Program Files/osquery/osqueryi.exe"], [], None, runner=runner)
+    rows = hc.live()
+    assert len(rows) == 2 and "process_envs" in calls[0][-1] and "authenticode" in calls[1][-1]
+    assert "process_envs" not in calls[1][-1]

@@ -72,6 +72,13 @@ For each case on a machine with the agent, `tapwatch` assesses what ran:
 | **likely benign** | an installed program (system or app folder) or a known user-installed tool, with none of the above, or your own agent work you asked for | capped at digest |
 | **unclear** | anything else | normal routing |
 
+On **Windows** there are no Claude Code markers, but osquery checks each program's code signature
+(authenticode): signed by a trusted publisher, or installed under `Program Files`/`System32`, counts as likely
+benign. Suspicious signs: running from `AppData\Local\Temp`, `Windows\Temp`, `Users\Public` or the Recycle Bin;
+an invalid signature; a built-in tool attackers abuse (`rundll32`, `regsvr32`, `mshta`, `certutil`, `bitsadmin`,
+`msbuild`...) connecting out; encoded or hidden PowerShell. On a Windows PC running tapwatch in WSL, the live check
+asks both osquery installs, because Windows apps and WSL share one IP address.
+
 Command lines are read only by the live check, as your user, and redacted in memory. They are never
 written to the world-readable results log, and never sent to Jev (it reads the assessment only).
 
@@ -79,6 +86,19 @@ written to the world-readable results log, and never sent to Jev (it reads the a
 case was assessed likely benign, it proposes a **program-scoped suppression** with the reason. A
 different program talking to the same place still alerts. `--apply` creates it (30-day expiry) and
 closes those cases as `benign_expected` with the explanation, all in the audit trail.
+
+## Installing on someone else's computer
+
+The agent records which programs run and what they connect to, including work apps and personal activity. On a
+computer that isn't yours:
+
+1. **Ask first**, and explain what it records: programs, their connections and, on Windows, Sysmon's process
+   history. In standalone mode nothing leaves that computer.
+2. **Check it isn't employer-managed.** Windows: Settings → Accounts → *Access work or school* shows no MDM or
+   Intune connection, and `dsregcmd /status` doesn't say `AzureAdJoined : YES`. macOS: System Settings →
+   *Profiles* is empty. A company security agent (Defender for Endpoint, CrowdStrike, SentinelOne...) is another
+   sign. If it's managed, don't install: the employer decides what runs on it.
+3. Show them how to remove it: `uninstall.cmd` (Windows) or `./uninstall.sh`.
 
 ## Useful queries
 

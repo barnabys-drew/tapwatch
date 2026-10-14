@@ -132,9 +132,13 @@ def hostctx(cfg: dict) -> HostContext | None:
     osq = h.get("osquery_bin") or shutil.which("osqueryi") or shutil.which("osqueryd")
     if not osq and Path("/opt/osquery/bin/osqueryd").exists():
         osq = "/opt/osquery/bin/osqueryd"
+    bins = osq if isinstance(osq, list) else [osq] if osq else []
+    win = Path("/mnt/c/Program Files/osquery/osqueryi.exe")  # Windows PC running tapwatch in WSL
+    if not h.get("osquery_bin") and win.exists():
+        bins.append(str(win))
     logs = h.get("results_logs") or ["/var/log/osquery/osqueryd.results.log",
                                      "/mnt/c/Program Files/osquery/log/osqueryd.results.log"]
-    return HostContext(h["host"], osq, logs, h.get("transcripts"))
+    return HostContext(h["host"], bins, logs, h.get("transcripts"))
 
 
 def thresholds(cfg: dict) -> Thresholds:
