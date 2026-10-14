@@ -512,3 +512,12 @@ def test_queue_names_the_severity_level_next_to_the_score(tmp_path):
                                      "critical", "–"]
     _, body = ui.render_queue(store, Assets(), {"status": ["all"]}, "x")
     assert "<th>severity</th><th>label</th>" in body and "<td>high</td>" in body
+
+
+def test_only_the_stats_page_refreshes_itself(server):
+    app, _ = server()
+    for path in ("/", "/case/1", "/suppressions", "/stats"):
+        _, text = request(app, "GET", path)
+        assert ('http-equiv="refresh"' in text) == (path == "/stats"), path   # forms must never reload
+    _, text = request(app, "GET", "/stats")
+    assert f'<meta http-equiv="refresh" content="{ui.STATS_REFRESH_S}">' in text
