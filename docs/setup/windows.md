@@ -47,6 +47,32 @@ powershell -ExecutionPolicy Bypass -File \\wsl$\<distro>\home\<you>\tapwatch\dep
 It registers a logon task that blocks idle sleep and keeps WSL up. If Windows refuses with
 "access denied", run that one command in an elevated PowerShell. `-Uninstall` removes it.
 
+**Survive Windows Update restarts.** A logon task only starts once someone signs in, so after an
+overnight update restart nothing runs until morning. From an **elevated** PowerShell, once:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File \\wsl$\<distro>\home\<you>\tapwatch\deploy\windows\keep-alive.ps1 -Install -AtStartup -Distro <distro>
+```
+
+This replaces the logon task with a boot task that runs whether or not anyone signs in. It uses
+an S4U logon, so Windows stores no password. It copies the script to `%LOCALAPPDATA%\tapwatch`,
+because `\\wsl$` isn't readable before WSL starts.
+
+## Know when the whole PC is down
+
+The watchdog emails you when capture or the alerter stops, but it runs in WSL, so it can't report
+the PC itself being off. For that, create a check at a dead man's switch service such as
+[healthchecks.io](https://healthchecks.io) (period 5 minutes, grace 10), and put its ping URL in
+`.env`:
+
+```
+TAPWATCH_HEARTBEAT_URL=https://hc-ping.com/<your-check-uuid>
+```
+
+Then `systemctl --user restart tapwatch-watchdog`. Each healthy check pings it, and unhealthy
+ones report to `<url>/fail`. When the pings stop, the service emails you. Treat the URL like a
+password: anyone holding it can report "healthy".
+
 ## Reaching it from your phone or the router
 
 The case desk listens on this PC only (127.0.0.1:8765). Mirrored WSL networking needs a Hyper-V
