@@ -1,6 +1,7 @@
 """Host context: which program on the tapwatch PC made a case's traffic, and was it the owner's agent."""
 
 import json
+import subprocess
 from datetime import datetime, timezone
 
 import pytest
@@ -490,3 +491,31 @@ def test_windows_service_without_a_path_and_pseudo_processes():
                                          signer="Microsoft Windows Publisher")]
     assert assess(both, "other_program")[0] == "likely_benign"
     assert assess([win("[System Process]", "")], "other_program")[0] == "unclear"
+
+
+def test_windows_signature_osquery_couldnt_read_is_asked_of_powershell():
+    """Signal Desktop (2026-10-13): osquery's authenticode gave nothing; Windows said Valid."""
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(kw["env"]["TAPWATCH_SIG_PATHS"])
+        assert kw["env"]["TAPWATCH_SIG_PATHS"] not in " ".join(cmd)       # paths never in the command text
+        out = json.dumps({"path": "C:\\Users\\<user>\\AppData\\Local\\Programs\\app\\App.exe", "status": "Valid",
+                          "signer": "App Maker"})
+        return subprocess.CompletedProcess(cmd, 0, out + "\n", "")
+
+    hc = HostContext(PC, runner=run, powershell="powershell.exe")
+    path = "C:\\Users\\<user>\\AppData\\Local\\Programs\\app\\App.exe"
+    o = Owner(name="App.exe", path=path)
+    assert assess([Owner(name="App.exe", path=path)], "other_program")[0] == "unclear"
+    hc.check_signatures([o])
+    assert (o.signature, o.signer) == ("trusted", "App Maker")
+    assert assess([o], "other_program") == ("likely_benign", ["App.exe is signed by App Maker"])
+    hc.check_signatures([Owner(name="App.exe", path=path)])
+    assert len(calls) == 1                                               # cached per path
+
+
+def test_user_install_folder_still_needs_a_signature():
+    path = "C:\\Users\\<user>\\AppData\\Local\\Programs\\app\\App.exe"
+    r = assess([Owner(name="App.exe", path=path, signature="missing")], "other_program")
+    assert r == ("unclear", ["App.exe is installed for one user, but isn't code-signed"])

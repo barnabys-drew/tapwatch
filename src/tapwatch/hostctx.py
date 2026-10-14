@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import glob
 import json
+import os
 import re
 import subprocess
 import time
@@ -137,6 +138,7 @@ USER_TOOL_DIRS = ("/.local/share/claude/", "/.local/bin/", "/.nvm/", "/.vscode-s
 WIN_SUSPICIOUS_DIRS = ("/appdata/local/temp/", "c:/windows/temp/", "c:/users/public/", "/$recycle.bin/", "c:/perflogs/")
 WIN_INSTALLED_DIRS = ("c:/windows/system32/", "c:/windows/syswow64/", "c:/program files/", "c:/program files (x86)/",
                       "c:/windows/systemapps/", "c:/program files/windowsapps/")
+WIN_USER_INSTALL_DIRS = ("/appdata/local/programs/",)  # per-user installs (Signal, VS Code, ...): need a signature
 # Built-in Windows tools attackers use to download, proxy-execute or bypass controls (LOLBins). A browser
 # or app connecting out is normal; these connecting out on their own is not.
 WIN_LOLBINS = {"rundll32.exe", "regsvr32.exe", "mshta.exe", "certutil.exe", "bitsadmin.exe", "msbuild.exe",
@@ -171,6 +173,9 @@ def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) 
         good.append(f"{o.name} is signed by {o.signer or 'a trusted publisher'}")
     elif path.startswith(WIN_INSTALLED_DIRS):
         good.append(f"{o.name} is an installed program ({path.rsplit('/', 1)[0]})")
+    elif any(d in path for d in WIN_USER_INSTALL_DIRS):
+        unclear.append(f"{o.name} is installed for one user, but its signature couldn't be checked" if not o.signature
+                       else f"{o.name} is installed for one user, but isn't code-signed")
     elif "/downloads/" in path:
         unclear.append(f"{o.name} runs from a Downloads folder")
     elif o.signature == "missing":
@@ -365,9 +370,20 @@ def verdict(owners: list[Owner], tf: dict) -> tuple[str, bool]:
     return "agent_unconfirmed", False
 
 
+# osquery's authenticode table can't read some valid signatures ("The publisher information could not be
+# found"; measured 2026-10-13 on Signal Desktop, which Windows reports as Valid). Ask Windows itself. Paths go
+# in through an environment variable, never the command text, so a crafted file name can't inject PowerShell.
+WIN_SIG_PS = (
+    "foreach ($p in $env:TAPWATCH_SIG_PATHS -split '\\|') { $s = Get-AuthenticodeSignature -LiteralPath $p; "
+    "$n = if ($s.SignerCertificate) { $s.SignerCertificate.GetNameInfo('SimpleName', $false) } else { '' }; "
+    "[pscustomobject]@{path=$p; status=[string]$s.Status; signer=$n} | ConvertTo-Json -Compress }")
+WIN_SIG_STATUS = {"Valid": "trusted", "NotSigned": "missing", "HashMismatch": "invalid", "NotTrusted": "untrusted"}
+WIN_SIG_MAX = 8  # paths per case
+
+
 class HostContext:
     def __init__(self, host: str, osquery_bin=None, results_logs=(), transcripts: str | None = None,
-                 runner=subprocess.run, timeout: float = 20.0):
+                 runner=subprocess.run, timeout: float = 20.0, powershell: str | None = None):
         # One binary or several: on a Windows PC with WSL, both osqueryi (Linux processes) and
         # osqueryi.exe (Windows processes) answer for the same IP address.
         bins = osquery_bin if isinstance(osquery_bin, (list, tuple)) else [osquery_bin] if osquery_bin else []
@@ -376,6 +392,29 @@ class HostContext:
         self.host, self.results_logs = host, [Path(p) for p in results_logs]
         self.transcripts = Path(transcripts).expanduser() if transcripts else Path.home() / ".claude/projects"
         self.runner, self.timeout = runner, timeout
+        self.powershell, self._sigs = powershell, {}
+
+    def check_signatures(self, owners: list[Owner]) -> None:
+        """Fill in Windows signatures osquery left empty, from PowerShell (cached per path)."""
+        if not self.powershell:
+            return
+        todo = sorted({o.path for o in owners if not o.signature and re.match(r"^[a-z]:\\", o.path, re.IGNORECASE)}
+                      - set(self._sigs))[:WIN_SIG_MAX]
+        if todo:
+            env = {**os.environ, "TAPWATCH_SIG_PATHS": "|".join(todo), "WSLENV": "TAPWATCH_SIG_PATHS"}
+            try:
+                res = self.runner([self.powershell, "-NoProfile", "-NonInteractive", "-Command", WIN_SIG_PS],
+                                  capture_output=True, text=True, timeout=self.timeout, env=env)
+                for line in res.stdout.splitlines():
+                    r = json.loads(line)
+                    self._sigs[r["path"]] = (WIN_SIG_STATUS.get(r.get("status"), ""), r.get("signer") or "")
+            except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+                pass
+            for p in todo:
+                self._sigs.setdefault(p, ("", ""))  # don't ask again for a file Windows couldn't answer for
+        for o in owners:
+            if not o.signature and o.path in self._sigs:
+                o.signature, o.signer = self._sigs[o.path]
 
     def live(self) -> list[dict]:
         rows: list[dict] = []
@@ -440,6 +479,7 @@ class HostContext:
                  "host_via_ssh": any(o.via_ssh for o in owners), "host_in_terminal": any(o.in_herdr for o in owners),
                  "host_transcript_only": transcript_only}
         facts.update({f"host_{k}": v for k, v in tf.items()})
+        self.check_signatures(owners)
         assessment, signals = assess(owners, who)
         facts["host_assessment"], facts["host_signals"] = assessment, signals[:4]
         paths = sorted({o.path for o in owners if o.path})
