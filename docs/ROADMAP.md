@@ -7,7 +7,7 @@ of truth for individual items; this page is the why and the order._
 flowchart LR
     A["<b>v0.1</b> · shipped 2026-10-13<br/>network detection, guardrailed AI triage,<br/>case desk, Linux + Windows install"]
     B["<b>v0.2</b> · next<br/>prove it outside one house:<br/>long-running test, clean installs, macOS"]
-    C["<b>v0.3</b><br/>endpoint rules: osquery process events,<br/>living-off-the-land detection"]
+    C["<b>v0.3</b><br/>endpoint rules: living off the land,<br/>per OS, then installed software"]
     D["<b>Later</b><br/>Fleet, richer TLS and domain intel,<br/>packages and images"]
     E["<b>v0.4</b><br/>learned triage: a judge trained on<br/>closed cases does tier 1"]
     A --> B --> C --> D --> E
@@ -76,6 +76,11 @@ a credential file read. With osquery on the PCs, tapwatch can raise its own **ho
 to network cases on the same device ("`certutil` downloaded something, then a new domain started
 beaconing").
 
+The rules come in two passes. First **per OS**, for the tools each operating system ships with (Windows
+LOLBins, Linux shells and GTFOBins, macOS `osascript` and LOOBins). Then **installed software**, the less
+common but harder case: signed, trusted third-party programs such as remote-management tools, tunnels, sync
+and cloud CLIs, vulnerable drivers and DLL hijacks. Most of those work on every OS, so they're written once.
+
 **Done when:** one rule per OS runs end to end, from an installed agent to a routed case, with the
 agent's log locked down.
 
@@ -85,6 +90,7 @@ agent's log locked down.
 | [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | planned |
 | [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | planned |
 | [#29](https://github.com/barnabys-drew/tapwatch/issues/29) | macOS living-off-the-land rules (osquery + EndpointSecurity) | planned |
+| [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools, drivers) | planned |
 
 ## Later ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/2))
 
