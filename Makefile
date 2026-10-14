@@ -4,7 +4,7 @@ test:
 	python3 -m pytest -q
 
 lint:
-	ruff check src tests
+	ruff check src tests tools
 
 # Usage: make eval ZEEK_DIR=eval/out/sample LABELS=eval/labels.example.yaml
 eval:

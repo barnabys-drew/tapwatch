@@ -13,7 +13,7 @@ from enum import Enum
 
 
 class Route(str, Enum):
-    ALERT = "alert"    # post to Teams now
+    ALERT = "alert"    # notify now (ntfy, Discord, Teams, email, webhook)
     DIGEST = "digest"  # include in the daily summary
     LOG = "log"        # keep in the database only
 
