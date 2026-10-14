@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Checks that the whole-house capture and the live alerter are both working, and
 # emails (via `tapwatch notify`) when that changes: once on failure, once on recovery.
+#
+# It can't report its own death, or the whole machine being off (a Windows Update restart, a
+# power cut). For that, set TAPWATCH_HEARTBEAT_URL in .env to a dead man's switch such as a
+# healthchecks.io check: every healthy round pings it, and the service emails you when pings
+# stop. Unhealthy rounds report to <url>/fail (healthchecks.io's failure endpoint) instead.
 #   eval/watchdog.sh <zeek-log-dir> [interval-seconds]      loop
 #   eval/watchdog.sh <zeek-log-dir> --once                  print status and exit
 set -uo pipefail
@@ -9,6 +14,18 @@ cd "${TAPWATCH_HOME:-$(dirname "$0")/..}"
 tw=${TAPWATCH_CMD:-.venv/bin/tapwatch}
 dir=${1:?usage: watchdog.sh <zeek-log-dir> [interval|--once]}; interval=${2:-300}
 stale=600   # conn.log untouched this long = capture stalled (a busy house writes every few seconds)
+# The heartbeat URL is a secret (anyone holding it can fake "healthy"), so it lives in .env, not config.
+hb=${TAPWATCH_HEARTBEAT_URL:-$(sed -n 's/^TAPWATCH_HEARTBEAT_URL=//p' .env 2>/dev/null | tr -d '"' | tail -1)}
+case "$hb" in ""|https://*) ;; *) echo "TAPWATCH_HEARTBEAT_URL must be https; heartbeat off" >&2; hb="" ;; esac
+
+heartbeat() {  # heartbeat <problems>: empty = healthy
+  [ -n "$hb" ] || return 0
+  if [ -z "$1" ]; then
+    curl -fsS -m 10 --retry 2 -o /dev/null "$hb" || echo "heartbeat ping failed" >&2
+  else
+    curl -fsS -m 10 --retry 2 -o /dev/null --data-raw "$1" "${hb%/}/fail" || echo "heartbeat ping failed" >&2
+  fi
+}
 
 check() {
   local problems=()
@@ -37,6 +54,7 @@ while true; do
   elif [ -z "$out" ] && [ "$last" = down ]; then
     $tw -c config.yaml notify "tapwatch: monitoring recovered" "capture and alerter are running again" && last=ok
   fi
+  heartbeat "$out"
   echo "$(date '+%F %T') ${out:-ok}" | tr '\n' ' '; echo
   sleep "$interval"
 done
