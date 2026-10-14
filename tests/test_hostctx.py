@@ -607,3 +607,80 @@ def test_command_line_signals_without_raw_text(tmp_path):
     assert assess([enc], "other_program") == ("suspicious", ["powershell.exe's command line has an encoded payload"])
     (hidden,) = idx.who(DST, 8443, T0)
     assert assess([hidden], "other_program")[0] == "unclear"
+
+
+# ----------------------------------------------------------- the PC's own addresses (DHCP moves it)
+
+def addr_snap(ts, *addrs):
+    return json.dumps({"name": "host_addresses", "action": "snapshot", "unixTime": int(ts),
+                       "snapshot": [{"address": a} for a in addrs]}) + "\n"
+
+
+NEW_IP = "192.168.50.77"
+
+
+def test_agent_reported_addresses_beat_the_configured_ip(tmp_path):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(addr_snap(T0 - 300, NEW_IP, "100.64.0.5") + addr_snap(T0, NEW_IP))
+    hc = HostContext(PC, None, [log])
+    assert hc.is_this_pc(NEW_IP, T0 + 60)
+    assert not hc.is_this_pc(PC, T0 + 60)              # the configured IP moved on: maybe another device now
+    assert hc.is_this_pc(PC, T0 - 86400)               # no reports back then: the configured IP still counts
+    assert "192.168.50.77" in hc.config_mismatch(T0) and PC in hc.config_mismatch(T0)
+    with log.open("a") as fh:                          # appended later: read incrementally
+        fh.write(addr_snap(T0 + 3600, PC))
+    assert hc.is_this_pc(PC, T0 + 3600) and hc.config_mismatch(T0 + 3600) is None
+
+
+def test_half_written_and_rotated_logs(tmp_path):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(addr_snap(T0, NEW_IP) + addr_snap(T0 + 300, NEW_IP)[:20])
+    hc = HostContext(PC, None, [log, tmp_path / "missing.log"])
+    assert hc.addresses_near(T0 + 300) == {NEW_IP}
+    with log.open("a") as fh:                          # the rest of that line arrives
+        fh.write(addr_snap(T0 + 300, NEW_IP)[20:])
+    assert len(hc._snaps) == 1 and hc.addresses_near(T0 + 300) == {NEW_IP}
+    hc._read_addresses()
+    assert len(hc._snaps) == 2
+    log.write_text(addr_snap(T0 + 600, PC))            # rotated: smaller than what was read
+    assert PC in hc.addresses_near(T0 + 600)
+
+
+def test_case_on_the_pcs_new_address_gets_host_context(tmp_path):
+    from conftest import dns, write_logs
+
+    from tapwatch.detectors import TakeoverChannel
+    from tapwatch.pipeline import Pipeline
+    from tapwatch.store import Store
+
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(addr_snap(T0, NEW_IP))
+    zeek = write_logs(tmp_path, conn=[dict(out_conn(T0), _type="conn", **{"id.orig_h": NEW_IP})])
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    p = Pipeline([TakeoverChannel()], Assets(), Store(":memory:"), hostctx=hc, zeek_dirs=[str(zeek)])
+    (_, c, _, _), = p.process(dns(T0, "abc.ngrok.io", src=NEW_IP))
+    assert c.facts["host_conns"] == 1
+
+
+def test_follow_this_pc_moves_admin_and_dev_rules(tmp_path, caplog):
+    from tapwatch import detectors as det
+    from tapwatch.pipeline import Pipeline
+    from tapwatch.store import Store
+
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(addr_snap(T0, NEW_IP))
+    dev = det.DevProfile([PC])
+    w = det.Warmup(0)
+    mgmt = det.ManagementAccess(w, admin_devices={PC, "192.168.50.2"})
+    other = det.DevProfile(["192.168.50.3"])          # names another device: left alone
+    p = Pipeline([det.SuspiciousDNS(dev=dev), det.OddPort(dev=dev), det.NewExternalDomain(w, dev=other), mgmt],
+                 Assets(), Store(":memory:"), hostctx=HostContext(PC, None, [log]))
+    assert p.follow_this_pc(T0) == {NEW_IP}
+    assert dev.hosts == {PC, NEW_IP} and mgmt.admins == {PC, "192.168.50.2", NEW_IP}
+    assert other.hosts == {"192.168.50.3"}
+    assert "host_context.host is 192.168.50.10" in caplog.text
+    with log.open("a") as fh:
+        fh.write(addr_snap(T0 + 3600, "192.168.50.88"))
+    p.follow_this_pc(T0 + 3600)
+    assert dev.hosts == {PC, "192.168.50.88"}          # the old lease is dropped
+    assert p.follow_this_pc(T0 + 90 * 86400) is None and dev.hosts == {PC, "192.168.50.88"}

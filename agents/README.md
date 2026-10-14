@@ -69,6 +69,8 @@ decoding, download-and-run, Invoke-Expression, a hidden window, an execution-pol
 raw text **only when a suspicious one fires**: encoded, base64, download-and-run or Invoke-Expression. tapwatch
 redacts what it does get before storing it, and Jev never sees command lines, only facts such as "a document
 app started PowerShell".
+The agent also reports the PC's own addresses every 5 minutes (`host_addresses`). When DHCP gives the PC a new
+IP, tapwatch follows it, so cases on the new address still get host context.
 See `tapwatch who <case>` and `host_context` in `config.example.yaml`.
 
 ### What tapwatch does with it

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from . import detectors as det
@@ -51,6 +52,8 @@ class Pipeline:
         self.hostctx, self.zeek_dirs = hostctx, zeek_dirs  # "who on the PC did this", for the tapwatch PC
         self.thresholds, self.dedupe_seconds = thresholds or Thresholds(), dedupe_seconds
         self.input_tokens = 0
+        self._pc_base: dict[int, set] = {}   # "this PC" address sets as configured, before follow_this_pc
+        self._pc_warned: str | None = None
 
     def process(self, rec: dict) -> list[tuple[int, Case, Verdict | None, Route]]:
         out = []
@@ -136,13 +139,35 @@ class Pipeline:
 
     def add_host_context(self, case: Case) -> None:
         """For a case on the tapwatch PC: which program, and was it the owner's coding agent (hostctx.py)."""
-        if not (self.hostctx and self.zeek_dirs and case.host == self.hostctx.host):
+        if not (self.hostctx and self.zeek_dirs and self.hostctx.is_this_pc(case.host, case.ts)):
             return
         try:
             ev = evidence.lookup(self.zeek_dirs, case.host, case.ts, window=180)
             case.facts.update(self.hostctx.collect(case, ev["conn"]["rows"], ev["dns"]["rows"]))
         except Exception as e:  # noqa: BLE001 - context is a bonus; never lose the case over it
             log.warning("host context failed for %s: %s", case.detector, e)
+
+    def follow_this_pc(self, now: float | None = None) -> set[str] | None:
+        """Keep rules that name the tapwatch PC by its configured IP (admin_devices, dev_profile.hosts) on the
+        addresses its agents report now, since DHCP moves it. Returns those addresses (None: no reports)."""
+        if not self.hostctx:
+            return None
+        now = now or time.time()
+        current = self.hostctx.addresses_near(now)
+        warning = self.hostctx.config_mismatch(now)
+        if warning and warning != self._pc_warned:
+            log.warning("%s", warning)
+        self._pc_warned = warning
+        if current is None:
+            return None
+        sets = [d.dev.hosts for d in self.detectors if isinstance(getattr(d, "dev", None), det.DevProfile)]
+        sets += [d.admins for d in self.detectors if isinstance(d, det.ManagementAccess)]
+        for s in {id(s): s for s in sets}.values():
+            base = self._pc_base.setdefault(id(s), set(s))
+            if self.hostctx.host in base:
+                s.clear()
+                s |= base | current
+        return current
 
     def send_digest(self) -> int:
         rows = self.store.pending_digest()

@@ -52,7 +52,8 @@ herdr:                               # pop critical cases up in the Herdr termin
   position: top-right
 
 host_context:                        # "who on this PC did it?" for cases on the tapwatch PC itself
-  host: ""                           # this PC's IP as Zeek sees it; empty = off
+  host: ""                           # this PC's IP as Zeek sees it; empty = off. If DHCP moves the PC, tapwatch
+                                     # follows the addresses its agent reports (and warns): still, fix the IP in the router
   # osquery_bin: /opt/osquery/bin/osqueryd   # default: osqueryi/osqueryd on PATH (live check)
   # results_logs: [/var/log/osquery/osqueryd.results.log, "/mnt/c/Program Files/osquery/log/osqueryd.results.log"]
   # transcripts: ~/.claude/projects  # Claude Code session logs, read locally, never sent anywhere
