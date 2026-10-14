@@ -40,6 +40,10 @@ ui:                                  # `tapwatch ui` (case queue in the browser)
   zeek_dirs: [/logs]                 # where case pages read evidence from; globs like eval/data/home-mirror-* work
   # host: 0.0.0.0                    # LAN access: also set TAPWATCH_UI_TOKEN (16+ chars) in .env
   token_env: TAPWATCH_UI_TOKEN
+  # Or reach it over Tailscale with no token: keep host 127.0.0.1, run
+  # `tailscale serve --bg --https=10000 http://127.0.0.1:8765`, set base_url to
+  # https://<machine>.<tailnet>.ts.net:10000 and list who may use it:
+  # tailscale_users: [you@example.com]
 
 herdr:                               # pop critical cases up in the Herdr terminal workspace
   enabled: false                     # `tapwatch test-alert --herdr` to try it

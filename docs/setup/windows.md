@@ -77,5 +77,25 @@ password: anyone holding it can report "healthy".
 
 The case desk listens on this PC only (127.0.0.1:8765). Mirrored WSL networking needs a Hyper-V
 firewall rule before other devices can reach a port in WSL. That needs admin, so it's your call
-whether to open it. For router syslog see [router-syslog.md](router-syslog.md). For the case
-desk, a VPN like Tailscale on the PC and phone avoids opening it to the whole LAN.
+whether to open it. For router syslog see [router-syslog.md](router-syslog.md).
+
+**The case desk over Tailscale (recommended).** With Tailscale on the PC and your phone, the desk
+stays on 127.0.0.1 and Tailscale does the sign-in, so there's no token to type. From Windows:
+
+```powershell
+tailscale serve --bg --https=10000 http://127.0.0.1:8765
+```
+
+Then in `config.yaml`:
+
+```yaml
+ui:
+  host: 127.0.0.1
+  base_url: https://<machine>.<tailnet>.ts.net:10000   # links in alerts and digests
+  tailscale_users: [you@example.com]                   # your Tailscale login(s)
+```
+
+and `systemctl --user restart tapwatch-ui`. Open the `base_url` from any of your tailnet devices,
+including this PC. Requests without a listed Tailscale login get a 403, even ones sent straight to
+port 8765. Use `serve`, not `funnel`, which would put the desk on the public internet. Any HTTPS
+port that's free on the PC works; 443 is fine if nothing else uses it.
