@@ -221,6 +221,20 @@ def cmd_syslog(args, cfg) -> int:
     return 0
 
 
+def cmd_explain(args, cfg) -> int:
+    from . import explain
+
+    store = Store(cfg.get("db_path", "tapwatch.db"))
+    gs = explain.groups(store, time.time() - args.since_days * 86400)
+    print(explain.report(gs, args.min_cases))
+    if args.apply:
+        for g in gs:
+            if g["explained"] and g["cases"] >= args.min_cases:
+                rule, closed = explain.apply(store, g, days=args.expire_days)
+                print(f"applied: suppression #{rule}; closed cases {closed or 'none open'}")
+    return 0
+
+
 def cmd_update_feeds(args, cfg) -> int:
     from . import feeds
 
@@ -309,6 +323,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--out", help="log dir to write udm.log into; give `run` the same dir as a --zeek-dir")
     s.add_argument("--allow", action="append", help="sender IP to accept (repeat; default: network.gateways)")
     s.set_defaults(fn=cmd_syslog)
+
+    s = sub.add_parser("explain", help="why rules keep firing on PCs with host context; suggest or apply suppressions")
+    s.add_argument("--since-days", type=float, default=7)
+    s.add_argument("--min-cases", type=int, default=3, help="repeats needed before suggesting a suppression")
+    s.add_argument("--expire-days", type=float, default=30)
+    s.add_argument("--apply", action="store_true", help="create the suggested suppressions and close those cases")
+    s.set_defaults(fn=cmd_explain)
 
     s = sub.add_parser("update-feeds", help="download Tranco, IEEE MAC vendors and IP-to-ASN lists (no data sent)")
     s.add_argument("--dir", help="where to save them (default: feeds_dir, or ./feeds)")

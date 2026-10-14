@@ -86,7 +86,7 @@ STATUSES = ("new", "investigating", "closed")
 # Where each status may go next. Closed cases can be reopened into investigating.
 TRANSITIONS = {"new": {"investigating", "closed"}, "investigating": {"closed"}, "closed": {"investigating"}}
 DISPOSITIONS = ("true_positive", "false_positive", "benign_expected")
-SCOPES = ("device_indicator", "indicator", "port")
+SCOPES = ("device_indicator", "indicator", "port", "device_program")  # device_program: needs host context
 
 # `tapwatch mark` labels and the old feedback column, mapped onto dispositions.
 FEEDBACK_TO_DISPOSITION = {"fp": "false_positive", "tp": "true_positive"}
@@ -104,6 +104,8 @@ def describe_rule(rule) -> str:
         what = f"any device, port {rule['port']}"
     elif rule["scope"] == "indicator":
         what = f"any device, {rule['indicator']}"
+    elif rule["scope"] == "device_program":
+        what = f"{rule['host']}, program {rule['indicator']}"
     else:
         what = f"{rule['host']}, {rule['indicator']}"
     return f"#{rule['id']} {rule['detector']} ({what})"
@@ -265,10 +267,13 @@ class Store:
         port = facts.get("port")
         if scope == "port" and not isinstance(port, int):
             raise WorkflowError("this case has no port to suppress on")
-        if scope != "port" and not indicator:
+        program = facts.get("host_program_path") or ""
+        if scope == "device_program" and not program:
+            raise WorkflowError("no single program on the device explains this case (needs host context)")
+        if scope not in ("port", "device_program") and not indicator:
             raise WorkflowError("this case has no indicator to suppress on")
         values = {"device_indicator": (row["host"], indicator, None), "indicator": (None, indicator, None),
-                  "port": (None, None, port)}[scope]
+                  "port": (None, None, port), "device_program": (row["host"], program, None)}[scope]
         now = time.time()
         with self.db:
             cur = self.db.execute(
@@ -303,9 +308,10 @@ class Store:
             "SELECT * FROM suppressions WHERE detector=? AND (expires_ts IS NULL OR expires_ts>?) AND ("
             " (scope='device_indicator' AND host=? AND indicator=?)"
             " OR (scope='indicator' AND indicator=?)"
-            " OR (scope='port' AND port=?)) ORDER BY id LIMIT 1",
+            " OR (scope='port' AND port=?)"
+            " OR (scope='device_program' AND host=? AND indicator=?)) ORDER BY id LIMIT 1",
             (case.detector, now, case.host, case.indicator, case.indicator,
-             port if isinstance(port, int) else None)).fetchone()
+             port if isinstance(port, int) else None, case.host, case.facts.get("host_program_path") or "\0")).fetchone()
         if rule is None:
             return None
         self.db.execute("UPDATE suppressions SET hits=hits+1, last_hit_ts=? WHERE id=?", (now, rule["id"]))

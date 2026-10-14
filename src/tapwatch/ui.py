@@ -489,6 +489,9 @@ def _suppress_form(r, facts: dict, indicators: list, csrf: str) -> str:
     ind = main_indicator(indicators, facts)
     port = facts.get("port")
     choices = []
+    if facts.get("host_program_path"):  # host context tied every connection to one program
+        label = f"{r['detector']} + this device ({r['host']}) + program {facts['host_program_path']}"
+        choices.append(("device_program", label))
     if ind:
         choices.append(("device_indicator", f"{r['detector']} + this device ({r['host']}) + {ind}"))
         choices.append(("indicator", f"{r['detector']} + {ind}, any device"))

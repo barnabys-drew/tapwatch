@@ -239,6 +239,12 @@ def _on_the_pc(f: dict) -> str:
                 parts.append("Between the owner's message and the command, the agent read content from the web.")
     else:
         parts.append("No coding-agent session started it.")
+    verdict = {"likely_benign": "Checks of the program on the PC found nothing suspicious.",
+               "suspicious": "Checks of the program on the PC found warning signs: "
+                             + "; ".join(f.get("host_signals", [])[:2]) + ".",
+               }.get(f.get("host_assessment", ""))
+    if verdict:
+        parts.append(verdict)
     return " ".join(parts)
 
 
