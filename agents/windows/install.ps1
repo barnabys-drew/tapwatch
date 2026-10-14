@@ -46,7 +46,9 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     throw "winget isn't available. Install 'App Installer' from the Microsoft Store, then run this again."
 }
 Say "Installing osquery with winget"
-winget install --id osquery.osquery --exact --silent --scope machine --accept-package-agreements --accept-source-agreements
+# No --scope: osquery's winget package is a single per-machine MSI that declares no scope, and asking for
+# "--scope machine" filters it out ("No applicable installer found").
+winget install --id osquery.osquery --exact --silent --accept-package-agreements --accept-source-agreements
 # winget exits non-zero when the package is already installed and current; that's fine.
 
 $Root = Join-Path $env:ProgramFiles "osquery"
