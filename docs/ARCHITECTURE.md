@@ -92,7 +92,10 @@ a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwat
 1. **Dedupe.** If the same case key (detector + device + main indicator) was recorded within
    `dedupe_seconds` (default 1 h), bump its hit count and stop. Nothing is re-asked or re-sent.
 2. **Host context.** For a case on the tapwatch machine, attach `host_*` facts from osquery and
-   Claude Code transcripts.
+   Claude Code transcripts. "The tapwatch machine" means whatever addresses its agents reported around the case
+   time (`host_addresses`, every 5 minutes), since DHCP moves PCs; `host_context.host` counts only when no agent
+   reported. The alerter also keeps `admin_devices` and `dev_profile.hosts` entries for that IP on the PC's
+   current addresses, and logs a warning when the configured IP is out of date.
 3. **Summarize.** Turn the case into a short "state" in words for Jev.
 4. **Ask Jev**, if it's configured and the case is AI-eligible: who on the PC did it (only with
    host context), then the four triage questions.
@@ -220,6 +223,7 @@ When the case is on the tapwatch machine, `hostctx.py` asks the machine itself
 | Fact | Source | Kind |
 |---|---|---|
 | Program holding the connection, its path, parent, redacted command line, on-disk state, container | live osquery (cases under 10 min old) + the agent's 1-minute `outbound_connections_ctx` history | **process proof** |
+| Windows: the program behind every connection and DNS lookup, however short, with its parent and command-line signals (encoded, download-and-run...) | Sysmon events 1, 3 and 22, collected by the osquery service (`sysmon_events`) | **process proof** |
 | Started by a Claude Code session, attended, interactive entrypoint | `CLAUDE_CODE_*` environment markers on the process (they survive reparenting) | **process proof** |
 | Started from the owner's Herdr terminal, or from an SSH login | `HERDR_PANE_ID`, `SSH_CONNECTION` markers | **process proof** |
 | Agent ran a command naming the destination; minutes since the owner's prompt | that session's transcript | context |

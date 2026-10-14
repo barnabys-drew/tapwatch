@@ -71,13 +71,17 @@ def cmd_run(args, cfg) -> int:
 
 
 STATE_SAVE_EVERY = 600  # seconds
+FOLLOW_PC_EVERY = 300    # seconds: the agents report the PC's addresses every 5 minutes
 
 
 def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
     digest = DigestClock(cfg.get("digest_hour_utc", 13))
     keep_days, next_prune = cfg.get("zeek_retention_days", 30), 0.0
-    next_save = time.time() + STATE_SAVE_EVERY
+    next_save, next_follow = time.time() + STATE_SAVE_EVERY, 0.0
     for rec in zeek.Follower(args.zeek_dir).follow(idle_ticks=True):
+        if time.time() >= next_follow:  # DHCP moves the PC: keep its rules on the address it has now
+            p.follow_this_pc()
+            next_follow = time.time() + FOLLOW_PC_EVERY
         if time.time() >= next_save:
             p.save_state()
             next_save = time.time() + STATE_SAVE_EVERY
@@ -157,10 +161,12 @@ def cmd_who(args, cfg) -> int:
     if row is None:
         print(f"no case #{args.case_id}", file=sys.stderr)
         return 1
-    if row["host"] != hc.host:
-        print(f"case #{args.case_id} is on {row['host']}, not this PC ({hc.host}); other devices need Fleet",
+    if not hc.is_this_pc(row["host"], row["first_ts"]):
+        print(f"case #{args.case_id} is on {row['host']}, which wasn't this PC then; other devices need Fleet",
               file=sys.stderr)
         return 1
+    if hc.config_mismatch():
+        print(hc.config_mismatch(), file=sys.stderr)
     case = Case(row["detector"], row["host"], row["first_ts"], row["title"], json.loads(row["facts"]),
                 json.loads(row["indicators"]))
     ev = evidence.lookup(args.zeek_dir, case.host, case.ts, window=180)

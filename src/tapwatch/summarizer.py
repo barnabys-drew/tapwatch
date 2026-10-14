@@ -208,7 +208,7 @@ def _new_domains(f: dict) -> str:
 
 def _on_the_pc(f: dict) -> str:
     """Host context facts (hostctx.py) as plain sentences. Program names are untrusted (a binary can be named anything)."""
-    if not f.get("host_matched"):
+    if not f.get("host_matched") and not f.get("host_lookups_matched"):
         text = "On the PC itself, the connection could not be tied to a program (it may have been too short to see)."
         if f.get("host_transcript_only"):
             text += (" But a coding-agent session on the PC ran a command naming this destination"
@@ -216,7 +216,8 @@ def _on_the_pc(f: dict) -> str:
                         else "; the owner's message did not name it."))
         return text
     progs = ", ".join(json.dumps(clean_untrusted(p)) for p in f.get("host_programs", [])) or "unknown"
-    parts = [f"On the PC itself (checked locally): the program holding the connection was {progs}."]
+    what = "holding the connection" if f.get("host_matched") else "that made the DNS lookups"
+    parts = [f"On the PC itself (checked locally): the program {what} was {progs}."]
     if f.get("host_agent_session"):
         who = "a person was attending" if f.get("host_attended") else "nobody was attending"
         where = []

@@ -33,6 +33,7 @@ local logs, and you can ask it anything with `osqueryi`:
 | `outbound_connections` | 5 min | which process holds which outside connection |
 | `startup_items`, `launchd`, `crontab`, auto-start services, scheduled tasks | 1 h | persistence |
 | `chrome_extensions` | 1 day | browser add-ons |
+| `sysmon_events` (Windows) | 1 min | Sysmon, as it happens: every process start with its parent and **command-line signals**, every outgoing connection and every DNS lookup, each with the program behind it |
 | `logged_in_users`, `system_info`, `os_version` | 1 h – 1 day | inventory |
 
 Results go to `/var/log/osquery/osqueryd.results.log` (macOS and Linux) or
@@ -60,6 +61,16 @@ pane, or an SSH login. Markers survive reparenting, unlike the parent chain. Onl
 variables are read, never the rest of the environment (it holds tokens). Results are written
 `0644` (`--logger_mode`), so tapwatch can read them without root. On the PC that runs tapwatch, install the
 agent **inside WSL** too: Windows can't see Linux processes, and the coding agents run there.
+
+On Windows, command lines can hold passwords or tokens, and osquery's results log is readable by every local
+account (osquery sets the file's permissions itself, and tapwatch has to read it without admin rights). So
+`sysmon_events` turns each command line into yes/no signals inside osquery (an encoded payload, base64
+decoding, download-and-run, Invoke-Expression, a hidden window, an execution-policy bypass, a URL) and logs the
+raw text **only when a suspicious one fires**: encoded, base64, download-and-run or Invoke-Expression. tapwatch
+redacts what it does get before storing it, and Jev never sees command lines, only facts such as "a document
+app started PowerShell".
+The agent also reports the PC's own addresses every 5 minutes (`host_addresses`). When DHCP gives the PC a new
+IP, tapwatch follows it, so cases on the new address still get host context.
 See `tapwatch who <case>` and `host_context` in `config.example.yaml`.
 
 ### What tapwatch does with it
@@ -92,8 +103,8 @@ closes those cases as `benign_expected` with the explanation, all in the audit t
 The agent records which programs run and what they connect to, including work apps and personal activity. On a
 computer that isn't yours:
 
-1. **Ask first**, and explain what it records: programs, their connections and, on Windows, Sysmon's process
-   history. In standalone mode nothing leaves that computer.
+1. **Ask first**, and explain what it records: programs, their connections and DNS lookups and, on Windows, the
+   command line of every program started (Sysmon). In standalone mode nothing leaves that computer.
 2. **Check it isn't employer-managed.** Windows: Settings → Accounts → *Access work or school* shows no MDM or
    Intune connection, and `dsregcmd /status` doesn't say `AzureAdJoined : YES`. macOS: System Settings →
    *Profiles* is empty. A company security agent (Defender for Endpoint, CrowdStrike, SentinelOne...) is another

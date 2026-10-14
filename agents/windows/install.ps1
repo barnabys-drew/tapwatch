@@ -88,6 +88,7 @@ if ($Mode -eq "fleet") {
     $text = (Get-Content (Join-Path $Repo "config\standalone.flags") -Raw).
         Replace("@CONF_PATH@", $conf).Replace("@LOG_PATH@", $logs).Replace("@DB_PATH@", $db)
 }
+$text = $text.TrimEnd() + "`n" + (Get-Content (Join-Path $Repo "config\windows.flags") -Raw)   # Sysmon events
 [System.IO.File]::WriteAllText($flags, ($text -replace "`r`n", "`n"))   # LF only, so no stray \r ends up in a flag value
 
 Say "Starting the osqueryd service"

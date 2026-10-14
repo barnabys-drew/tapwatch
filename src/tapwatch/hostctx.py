@@ -32,7 +32,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .detectors import base_domain, is_internal
@@ -59,7 +59,20 @@ WIN_LIVE_SQL = (
     "FROM process_open_sockets s JOIN processes p USING (pid) "
     "WHERE s.remote_address NOT IN ('', '0.0.0.0', '::', '127.0.0.1', '::1') AND s.remote_port != 0;"
 )
-QUERIES = ("outbound_connections", "outbound_connections_ctx")
+QUERIES = ("outbound_connections", "outbound_connections_ctx", "sysmon_events")
+QUERY_KEYS = tuple(f'"{q}"'.encode() for q in QUERIES)
+SYSMON = "sysmon_events"   # Windows: Sysmon process starts (1), connections (3) and DNS lookups (22), as they happen
+# Command-line signals the sysmon_events query computes (agents/config/osquery.conf), so benign command lines never
+# reach the results log, which every local account can read. Raw text is logged only when a suspicious one fires.
+CMD_SUSPICIOUS = {"enc": "an encoded payload", "b64": "base64 decoding", "dl": "a download-and-run",
+                  "iex": "Invoke-Expression"}
+CMD_UNUSUAL = {"hidden": "a hidden window", "bypass": "an execution-policy bypass"}
+# The PC's own addresses (agents/config/osquery.conf `host_addresses`, a snapshot every 5 minutes). DHCP moves the
+# PC, so the configured IP is only a fallback for when no agent reports them.
+ADDRS = "host_addresses"
+ADDR_KEY = f'"{ADDRS}"'.encode()
+ADDR_WINDOW = 900             # an address is the PC's for cases within 15 minutes of a snapshot that holds it
+ADDR_KEEP = 6000              # snapshots kept in memory: about 8 days from two agents
 SLACK = 90                    # snapshot interval plus splay
 LIVE_WINDOW = 600             # a live osquery check only counts for cases this recent
 LOG_TAIL = 50_000_000         # bytes of a results log to read at most
@@ -87,6 +100,8 @@ class Owner:
     signer: str = ""
     start: float = 0.0       # first seen (log rows); 0 for live rows
     end: float | None = None
+    guid: str = ""           # Sysmon ProcessGuid: joins a connection or lookup to its process start (command line)
+    cmd_flags: tuple = ()    # Sysmon: command-line signals osquery computed (raw text is only logged when suspicious)
 
 
 VERSION_NAME = re.compile(r"^\d+(\.\d+)+$")
@@ -148,6 +163,10 @@ WIN_SUSPICIOUS_CMD = re.compile(r"frombase64string|downloadstring|downloadfile|i
                                 r"|\s-e(nc|ncodedcommand)?\s+[A-Za-z0-9+/=]{20,}", re.IGNORECASE)
 # Common in legitimate installers and scheduled scripts (measured: tapwatch's own installer), so only "unclear".
 WIN_UNUSUAL_CMD = re.compile(r"-w(indowstyle)?\s+hidden|-(ep|executionpolicy)\s+bypass", re.IGNORECASE)
+WIN_SHELLS = {"powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe",
+              "regsvr32.exe", "bitsadmin.exe", "certutil.exe"}
+WIN_DOC_APPS = {"winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "onenote.exe", "msaccess.exe",
+                "mspub.exe", "acrord32.exe", "acrobat.exe", "foxitpdfreader.exe", "hxoutlook.exe", "olk.exe"}
 WIN_PSEUDO = {"[system process]", "system", "registry", "memory compression"}  # not programs
 
 
@@ -159,11 +178,15 @@ def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) 
         bad.append(f"{o.name} is a built-in Windows tool often abused to download or run code, and it connected out")
     if o.cmdline and WIN_SUSPICIOUS_CMD.search(o.cmdline):
         bad.append(f"{o.name}'s command line is encoded, hidden or downloads-and-runs")
+    if sus := [CMD_SUSPICIOUS[f] for f in o.cmd_flags if f in CMD_SUSPICIOUS]:
+        bad.append(f"{o.name}'s command line has " + " and ".join(sus))
     if o.signature in ("invalid", "distrusted", "untrusted"):
         bad.append(f"{o.name}'s code signature is {o.signature}")
+    if name in WIN_SHELLS and o.parent.lower() in WIN_DOC_APPS:
+        bad.append(f"{o.name} was started by {o.parent}, a document or mail app")
     if bad:
         return
-    if o.cmdline and WIN_UNUSUAL_CMD.search(o.cmdline):
+    if (o.cmdline and WIN_UNUSUAL_CMD.search(o.cmdline)) or any(f in CMD_UNUSUAL for f in o.cmd_flags):
         unclear.append(f"{o.name} runs hidden or bypasses PowerShell's execution policy")
         return
     if not path:
@@ -233,6 +256,33 @@ class OwnerIndex:
 
     by_remote: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    lookups: dict = field(default_factory=dict)   # Sysmon 22: query name -> [Owner]
+    procs: dict = field(default_factory=dict)     # Sysmon 1: ProcessGuid -> (command line, parent path)
+
+    def who_dns(self, query: str, ts: float) -> list[Owner]:
+        """Programs that looked up `query` around `ts` (Sysmon event 22)."""
+        return [o for o in self.lookups.get(query.lower().rstrip("."), ()) if abs(o.start - ts) <= SLACK]
+
+    def _sysmon(self, c: dict, fallback_ts: float) -> None:
+        eid, guid, path = str(c.get("eventid", "")), c.get("guid") or "", c.get("path") or ""
+        ts = _sysmon_ts(c.get("utc")) or fallback_ts
+        if eid == "1":
+            flags = tuple(k for k in (*CMD_SUSPICIOUS, *CMD_UNUSUAL, "url") if str(c.get(f"cmd_{k}", "0")) == "1")
+            self.procs[guid] = (c.get("cmdline") or "", c.get("parent_path") or "", flags)
+            return
+        o = Owner(name=_basename(path) or "?", path=path, start=ts, end=ts, guid=guid)
+        if eid == "3":
+            self.add(c.get("remote_address", ""), c.get("remote_port"), o)
+        elif eid == "22" and c.get("query"):
+            self.lookups.setdefault(str(c["query"]).lower().rstrip("."), []).append(o)
+
+    def resolve(self) -> None:
+        """Give Sysmon-attributed owners their command line and parent from the process-start event."""
+        for owners in (*self.by_remote.values(), *self.lookups.values()):
+            for o in owners:
+                if o.guid and o.guid in self.procs and not o.cmdline:
+                    cmdline, parent, flags = self.procs[o.guid]
+                    o.cmdline, o.parent, o.cmd_flags = redact(cmdline), _basename(parent), flags
 
     def add(self, remote: str, port, owner: Owner) -> None:
         try:
@@ -264,6 +314,8 @@ class OwnerIndex:
                 fh.seek(size - LOG_TAIL)
                 fh.readline()
             for line in fh:
+                if not any(q in line for q in QUERY_KEYS):  # skip other queries' rows without parsing them
+                    continue
                 try:
                     rec = json.loads(line)
                 except ValueError:
@@ -274,6 +326,10 @@ class OwnerIndex:
                 if ts < since:
                     continue
                 rows = rec.get("snapshot") if rec.get("action") == "snapshot" else [rec.get("columns") or {}]
+                if rec["name"] == SYSMON:
+                    for c in rows or ():
+                        self._sysmon(c, ts)
+                    continue
                 for c in rows or ():
                     key = (c.get("remote_address"), c.get("remote_port"), c.get("pid"), c.get("name"))
                     if rec.get("action") == "removed":
@@ -282,6 +338,18 @@ class OwnerIndex:
                     elif key not in live:
                         live[key] = o = _owner(c, ts)
                         self.add(c.get("remote_address", ""), c.get("remote_port"), o)
+
+
+def _basename(path: str) -> str:
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _sysmon_ts(utc) -> float:
+    """Sysmon's UtcTime ("2026-10-14 11:22:33.123") as epoch seconds; 0 if missing or malformed."""
+    try:
+        return datetime.fromisoformat(str(utc)).replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def _epoch(stamp: str) -> float:
@@ -393,6 +461,60 @@ class HostContext:
         self.transcripts = Path(transcripts).expanduser() if transcripts else Path.home() / ".claude/projects"
         self.runner, self.timeout = runner, timeout
         self.powershell, self._sigs = powershell, {}
+        self._snaps: list[tuple[float, frozenset]] = []   # (time, addresses) from the agents' host_addresses
+        self._addr_pos: dict[str, tuple[int, int]] = {}   # results log -> (inode, bytes read)
+
+    def _read_addresses(self) -> None:
+        """Pick up new host_addresses snapshots from the results logs, reading only what was appended since."""
+        for p in self.results_logs:
+            try:
+                st = p.stat()
+                fh = p.open("rb")
+            except OSError:
+                continue
+            ino, pos = self._addr_pos.get(str(p), (None, 0))
+            fresh = ino != st.st_ino or st.st_size < pos  # first read, or the log was rotated
+            if fresh:
+                pos = max(0, st.st_size - LOG_TAIL)
+            with fh:
+                fh.seek(pos)
+                data = fh.read(max(0, st.st_size - pos))
+            end = data.rfind(b"\n") + 1  # leave a half-written last line for next time
+            start = data.find(b"\n") + 1 if fresh and pos else 0  # seeked into the middle of a line
+            self._addr_pos[str(p)] = (st.st_ino, pos + end)
+            for line in data[start:end].splitlines():
+                if ADDR_KEY not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    rows = rec["snapshot"] if rec.get("name") == ADDRS else None
+                    ts = float(rec.get("unixTime") or 0)
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                if isinstance(rows, list) and ts:
+                    self._snaps.append((ts, frozenset(r["address"] for r in rows
+                                                      if isinstance(r, dict) and r.get("address"))))
+        del self._snaps[:-ADDR_KEEP]
+
+    def addresses_near(self, ts: float) -> set[str] | None:
+        """The PC's addresses around `ts`, as its agents reported them; None when no agent reported then."""
+        self._read_addresses()
+        near = [a for t, a in self._snaps if abs(t - ts) <= ADDR_WINDOW]
+        return set().union(*near) if near else None
+
+    def is_this_pc(self, ip: str, ts: float) -> bool:
+        """Was `ip` this PC at `ts`? The agents' reports win; the configured IP counts only without them."""
+        near = self.addresses_near(ts)
+        return ip in near if near is not None else ip == self.host
+
+    def config_mismatch(self, now: float | None = None) -> str | None:
+        """A warning when the configured IP isn't one of the PC's addresses any more (DHCP moved it)."""
+        near = self.addresses_near(now or time.time())
+        if near is None or self.host in near:
+            return None
+        lan = sorted(a for a in near if is_internal(a) and ":" not in a) or sorted(near)
+        return (f"host_context.host is {self.host}, but this PC is now {', '.join(lan[:4])}: tapwatch follows "
+                "the PC's reported addresses, but set a fixed IP for it in the router and update config.yaml")
 
     def check_signatures(self, owners: list[Owner]) -> None:
         """Fill in Windows signatures osquery left empty, from PowerShell (cached per path)."""
@@ -433,22 +555,30 @@ class HostContext:
         idx = OwnerIndex()
         for p in self.results_logs:
             idx.read_log(p, since)
+        idx.resolve()
         for c in self.live() if live else ():
             idx.add(c.get("remote_address", ""), c.get("remote_port"), _owner(c))
         return idx
 
     def collect(self, case, conn_rows: list[dict], dns_rows: list[dict], now: float | None = None) -> dict:
-        """host_* facts for a case on this PC, from its Zeek conn/dns rows around the case time."""
+        """host_* facts for a case on this PC (check is_this_pc first), from its Zeek conn/dns rows around the case time."""
         now = now or time.time()
         # Live sockets only describe "now": use them for fresh cases, never for a replay of old traffic.
         idx = self.index(since=case.ts - BEFORE - 3600, live=now - case.ts < LIVE_WINDOW)
-        outbound = [r for r in conn_rows if r.get("id.orig_h") == self.host and not is_internal(r.get("id.resp_h", ""))
+        outbound = [r for r in conn_rows if r.get("id.orig_h") == case.host and not is_internal(r.get("id.resp_h", ""))
                     and isinstance(r.get("id.resp_p"), int)]
         owners: list[Owner] = []
         matched = 0
         for r in outbound:
             found = idx.who(r["id.resp_h"], r["id.resp_p"], r["ts"], float(r.get("duration") or 0))
             matched += bool(found)
+            owners += found
+        # DNS lookups the PC made, tied to the program that asked (Sysmon 22): what DNS-anomaly cases need.
+        lookups = [r for r in dns_rows if r.get("id.orig_h") == case.host and r.get("query")]
+        lookups_matched = 0
+        for r in lookups:
+            found = idx.who_dns(r["query"], r["ts"])
+            lookups_matched += bool(found)
             owners += found
         ips = {r["id.resp_h"] for r in outbound}
         names = {n.lower().rstrip(".") for n in case.indicators}
@@ -471,9 +601,11 @@ class HostContext:
                     tf, transcript_only = found, True
                     break
         who, corroborated = verdict(owners, {} if transcript_only else tf)
-        programs = sorted({o.name for o in owners}, key=lambda n: -sum(o.name == n for o in owners))
+        named = [o for o in owners if o.name.lower() not in WIN_PSEUDO]  # [System Process] etc. aren't programs
+        programs = sorted({o.name for o in named}, key=lambda n: -sum(o.name == n for o in named))
         facts = {"host_who": who, "host_corroborated": corroborated, "host_conns": len(outbound),
-                 "host_matched": matched, "host_programs": programs[:3],
+                 "host_matched": matched, "host_lookups": len(lookups), "host_lookups_matched": lookups_matched,
+                 "host_programs": programs[:3],
                  "host_agent_session": bool(sessions), "host_session": sessions[0] if sessions else "",
                  "host_attended": any(o.attended == "1" for o in owners if o.session),
                  "host_via_ssh": any(o.via_ssh for o in owners), "host_in_terminal": any(o.in_herdr for o in owners),
