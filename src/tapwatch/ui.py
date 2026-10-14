@@ -417,7 +417,11 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
                      f'<div class="tiles">{tiles}</div><div class="pills">{pills}</div>{filters}{table}')
 
 
-def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str) -> tuple[str, str] | None:
+NOTE_ORDERS = {"oldest": "Oldest first", "newest": "Newest first"}
+
+
+def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str,
+                params: dict | None = None) -> tuple[str, str] | None:
     r = store.get(case_id)
     if r is None:
         return None
@@ -478,14 +482,21 @@ def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str
 <p><label class="f">Note<textarea name="note" maxlength="{MAX_NOTE}" placeholder="What did you find?"></textarea></label></p>
 <button>Save</button></form></div>"""
 
+    order = (params or {}).get("notes", ["oldest"])[0]
+    order = order if order in NOTE_ORDERS else "oldest"
     notes = store.notes(case_id)
+    if order == "newest":
+        notes = notes[::-1]
+    note_pills = '<div class="pills">' + "".join(
+        f'<a class="pill{" on" if k == order else ""}" href="/case/{r["id"]}?notes={k}#notes">{v}</a>'
+        for k, v in NOTE_ORDERS.items()) + "</div>" if len(notes) > 1 else ""  # only worth it with two or more
     notes_html = "".join(f'<div class="card note"><div class="faint">{e(when(n["ts"]))} · {e(n["actor"])}</div>'
                          f'<pre>{e(n["text"])}</pre></div>' for n in notes) or '<div class="card empty">No notes yet.</div>'
 
     return f"Case #{r['id']}", (
         f'<p class="sub"><a href="/">← Cases</a></p>{hero}<div class="tiles">{tiles}</div>{jev}'
         f'<div class="grid2"><div>{workflow}{_suppress_form(r, facts, indicators, csrf)}</div>'
-        f'<div><h2>Notes</h2>{notes_html}</div></div>'
+        f'<div><h2 id="notes">Notes</h2>{note_pills}{notes_html}</div></div>'
         f'{_evidence(r, zeek_dirs)}{_audit(store.audit_trail(case_id))}')
 
 
@@ -914,7 +925,7 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/suppressions":
                 title, body = render_suppressions(store, csrf)
             elif (m := CASE_PATH.match(url.path)) and not m.group(2):
-                found = render_case(store, self.app.assets, int(m.group(1)), self.app.zeek_dirs, csrf)
+                found = render_case(store, self.app.assets, int(m.group(1)), self.app.zeek_dirs, csrf, params)
                 if found is None:
                     return self._error(404, "No such case.", sid)
                 title, body = found
