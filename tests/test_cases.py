@@ -521,3 +521,20 @@ def test_only_the_stats_page_refreshes_itself(server):
         assert ('http-equiv="refresh"' in text) == (path == "/stats"), path   # forms must never reload
     _, text = request(app, "GET", "/stats")
     assert f'<meta http-equiv="refresh" content="{ui.STATS_REFRESH_S}">' in text
+
+
+def test_case_page_notes_order_toggle(server):
+    app, db = server()
+    store = Store(db)
+    store.update_case(1, "t", note="first look")
+    store.update_case(1, "t", note="follow-up")
+    store.db.close()
+    sid, _ = session(app)
+    _, text = request(app, "GET", "/case/1", cookie=sid)              # default: oldest first, as written
+    assert text.index("first look") < text.index("follow-up")
+    assert 'class="pill on" href="/case/1?notes=oldest#notes"' in text
+    _, text = request(app, "GET", "/case/1?notes=newest", cookie=sid)
+    assert text.index("follow-up") < text.index("first look")
+    assert 'class="pill on" href="/case/1?notes=newest#notes"' in text
+    _, text = request(app, "GET", "/case/1?notes=<script>", cookie=sid)  # unknown value: default order
+    assert text.index("first look") < text.index("follow-up") and "<script>" not in text
