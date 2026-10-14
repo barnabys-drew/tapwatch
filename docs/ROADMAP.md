@@ -65,7 +65,7 @@ machine from the docs alone, and the README shows the case desk.
 | [#8](https://github.com/barnabys-drew/tapwatch/issues/8) | Router port-forward and UPnP events enrich internet-exposure cases | planned |
 | [#10](https://github.com/barnabys-drew/tapwatch/issues/10) | Measure Jev with `audience: home` wording vs `office` | planned |
 | [#12](https://github.com/barnabys-drew/tapwatch/issues/12) | Apply `tapwatch explain` suggestions from the case desk | planned |
-| [#9](https://github.com/barnabys-drew/tapwatch/issues/9) | Screenshots of the case desk on synthetic data | planned |
+| [#9](https://github.com/barnabys-drew/tapwatch/issues/9) | Screenshots of the case desk on synthetic data | **done** |
 | [#11](https://github.com/barnabys-drew/tapwatch/issues/11) | Stats page refreshes itself | planned |
 | [#13](https://github.com/barnabys-drew/tapwatch/issues/13) | Test matrix: Python 3.10–3.13 in CI | planned |
 
@@ -190,7 +190,7 @@ Specs are in `detections/DESIGN.md` and `detections/rules/`. Built: R01–R07, R
 - [x] Personal-data gate: `tools/check_personal_data.py` (generic patterns in CI, plus a gitignored local denylist of household specifics). It caught a real household MAC in the tests
 - [x] Public repo from a clean snapshot (the development history held household specifics, so it stays private)
 - [x] README rewrite: what it is, what it catches, setup for each path, the case desk, AI triage and its guardrails, what leaves the network
-- [ ] Screenshots of the case desk on synthetic data
+- [x] Screenshots of the case desk on synthetic data (v0.2, `tools/demo_desk.py`)
 - [x] LICENSE (MIT), CONTRIBUTING, SECURITY (private reporting), CODE_OF_CONDUCT, issue templates, package metadata
 - [x] SAST, Trivy, tests and the personal-data gate on every PR; Dependabot to `dev`; private vulnerability reporting
 - [x] Tagged `v0.1.0` with release notes
