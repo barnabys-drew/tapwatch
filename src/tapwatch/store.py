@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 CREATE TABLE IF NOT EXISTS suppressions (
     id INTEGER PRIMARY KEY,
-    scope TEXT NOT NULL,        -- device_indicator | indicator | port
+    scope TEXT NOT NULL,        -- device_indicator | indicator | port | device_program
     detector TEXT NOT NULL,
     host TEXT,
     indicator TEXT,
