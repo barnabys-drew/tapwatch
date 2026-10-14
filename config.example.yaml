@@ -63,7 +63,8 @@ syslog:                              # `tapwatch syslog`: the router's CEF event
   allow: []                          # senders to accept; default network.gateways (UDP can be spoofed)
 timezone: America/Chicago            # for time-of-day rules (night joins, off-hours, business hours); default: local
 audience: office                     # office | home: how summaries and Jev's questions frame events.
-                                     # "office" is what Jev was measured with; "home" awaits the M5 eval
+                                     # Keep "office", even at home: "home" cost Jev both of its C2 alerts
+                                     # in eval/RESULTS.md ("Wording")
 zeek_retention_days: 30              # rotated Zeek logs older than this are deleted (0 = keep forever)
 digest_hour_utc: 13
 dedupe_seconds: 3600

@@ -1,7 +1,7 @@
 # Results
 
-_Measured 2026-10-13 with jev-1.13.0, `audience: office` wording. Reproduce the malware side with
-`eval/public_captures.sh` and `tapwatch eval`._
+_Measured 2026-10-13 with jev-1.13.0, `audience: office` wording (the default; see [Wording](#wording-office-vs-home)
+for why). Reproduce the malware side with `eval/public_captures.sh` and `tapwatch eval`._
 
 ## Summary
 
@@ -68,6 +68,35 @@ The last threshold comes from the data: real C2 scored 0.78–0.99 over three ru
 launcher's update check 0.60–0.61. The margin above FluBot (0.78) is thin; it's configurable as
 `thresholds.alert_confidence`.
 
+## Wording: office vs home
+
+`audience` frames the case summaries and Jev's questions for an office ("how urgent is this for
+the business?") or a home ("...for the household?"). Measured 2026-10-14: the six captures and
+the home night, three runs per wording, identical configs otherwise.
+
+| | `office` | `home` |
+|---|---|---|
+| Infected hosts **alerted** (of 7), each run | 4, 4, 4 | **2, 2, 2** |
+| Infected hosts surfaced (alert or digest) | 4, 4, 4 | 4, 4, 4 |
+| Home night: items to read | 8, 8, 8 | 7, 8, 8 |
+| False alerts, all datasets | 1, 1, 1 | 1, 1, 1 |
+
+`home` lost both of Jev's promotions in every run: FluBot and HtBot fell back to digest. Jev still
+named them C2 beaconing; the household framing made it less willing to interrupt. Two runs per
+case, FluBot / HtBot:
+
+| Jev's answer | `office` | `home` |
+|---|---|---|
+| category confidence (c2_beaconing) | 0.78–0.79 / 0.99 | 0.67–0.69 / 0.96–0.98 |
+| "page the owner now" | 0.78 / 0.85–0.87 | 0.55–0.57 / 0.64 |
+| "routine activity" | 0.27–0.28 / 0.21 | 0.52–0.53 / 0.37–0.39 |
+| route | alert / alert | digest / digest |
+
+So the default stays `office`, even on home networks, and `tapwatch init` no longer asks (a home
+user would answer "home"). The one false alert is a WannaCry-capture host that isn't in the
+dataset's infected list; the rules alert on it without Jev too, so wording can't change it. Lowering the alert thresholds to
+compensate for `home` would be tuning on two cases.
+
 ## What to keep in mind
 
 - **Small sample.** Six malware captures and one night at one home. Treat these as a sanity
@@ -77,4 +106,5 @@ launcher's update check 0.60–0.61. The margin above FluBot (0.78) is thin; it'
   under-represented here. In a real home the device is clean while tapwatch learns.
 - **Jev isn't deterministic.** Borderline cases move between digest and alert across runs; the
   figures above are single runs, with three-run checks where a threshold depends on them.
-- **Wording.** All Jev numbers use the `office` framing. `home` hasn't been measured yet.
+- **Wording.** All Jev numbers use the `office` framing, which measured better than `home`
+  (see [Wording](#wording-office-vs-home)).
