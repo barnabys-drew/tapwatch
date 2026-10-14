@@ -9,7 +9,8 @@ flowchart LR
     B["<b>v0.2</b> · next<br/>prove it outside one house:<br/>long-running test, clean installs, macOS"]
     C["<b>v0.3</b><br/>endpoint rules: osquery process events,<br/>living-off-the-land detection"]
     D["<b>Later</b><br/>Fleet, richer TLS and domain intel,<br/>packages and images"]
-    A --> B --> C --> D
+    E["<b>v0.4</b><br/>learned triage: a judge trained on<br/>closed cases does tier 1"]
+    A --> B --> C --> D --> E
     style A fill:#2e7d32,color:#fff
     style B fill:#f9a825,color:#000
 ```
@@ -97,6 +98,26 @@ Ordered by theme, not date.
 - **AI triage:** majority vote for borderline calls ([#21](https://github.com/barnabys-drew/tapwatch/issues/21))
 - **Packaging and ops:** a container image and PyPI package ([#22](https://github.com/barnabys-drew/tapwatch/issues/22)), a watchdog for every capture
   path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)), TCP/TLS syslog ([#25](https://github.com/barnabys-drew/tapwatch/issues/25)), a same-switch VLAN guide ([#23](https://github.com/barnabys-drew/tapwatch/issues/23))
+
+## v0.4: learned triage ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/4))
+
+The end goal. In a SOC, tier 1 reads every alert and closes the routine ones, and tier 2 handles what's left.
+In tapwatch the owner is still tier 1: every case waits for a human disposition. Every closed case is also a
+labelled example, though: a disposition, notes, suppressions and their reasons, next to the code facts and
+Jev's verdict at the time.
+
+A **learned judge** trained on those cases takes over tier 1. It closes the routine cases the owner has already
+taught it, says *why* ("closed like 14 earlier cases: same device, same program, all benign"), and leaves the
+human as tier 2 for the new, the rare and the risky. The router's rule still holds: it never auto-closes
+always-alert rules or code-floored cases, and it never suppresses. It runs in shadow mode for weeks before it
+closes anything, and the number that must stay at zero is true positives it would have closed.
+
+**Done when:** in a long-running test, the judge closes a measured share of routine cases on its own, with zero
+true positives auto-closed.
+
+| Issue | What | Status |
+|---|---|---|
+| [#37](https://github.com/barnabys-drew/tapwatch/issues/37) | Learned judge: automate tier-1 triage from the owner's closed cases | planned |
 
 ## Not planned
 
