@@ -198,9 +198,24 @@ def test_agent_misuse_alerts_past_suppressions_and_pops_up():
     r, reason = route(c, None, suppression="new_domain + this device")
     assert r is Route.ALERT and "without the owner asking" in reason
     assert critical(c, None, r)
-    jev_only = hc_case(host_who="agent_unconfirmed", host_corroborated=False,
+    jev_only = hc_case(host_who="agent_unconfirmed", host_corroborated=False, host_minutes_since_prompt=45,
                        host_jev_who="agent_misused", host_jev_conf=0.7)
     assert route(jev_only, None)[0] is Route.ALERT
+
+
+def test_jev_misuse_needs_a_risk_code_saw():
+    """Case #64: the owner's own git push, attended, right after a prompt; Jev said misused at 0.93."""
+    c = hc_case(host_who="agent_unconfirmed", host_corroborated=False, host_owner_named_dest=False,
+                host_minutes_since_prompt=0, host_jev_who="agent_misused", host_jev_conf=0.93)
+    r, reason = route(c, None)
+    assert r is not Route.ALERT or "without the owner asking" not in reason
+    assert route(hc_case(**{**c.facts, "host_in_terminal": False}), None)[0] is Route.ALERT
+
+
+def test_claude_versioned_binary_is_named_claude():
+    from tapwatch.hostctx import _owner
+    assert _owner({"name": "2.1.296", "path": "/home/u/.local/share/claude/versions/2.1.296"}).name == "claude"
+    assert _owner({"name": "2.1.296", "path": "/opt/x/2.1.296"}).name == "2.1.296"
 
 
 def test_transcript_only_context_never_escalates_through_jev():
