@@ -33,6 +33,7 @@ local logs, and you can ask it anything with `osqueryi`:
 | `outbound_connections` | 5 min | which process holds which outside connection |
 | `startup_items`, `launchd`, `crontab`, auto-start services, scheduled tasks | 1 h | persistence |
 | `chrome_extensions` | 1 day | browser add-ons |
+| `sysmon_events` (Windows) | 1 min | Sysmon, as it happens: every process start with its **command line** and parent, every outgoing connection and every DNS lookup, each with the program behind it |
 | `logged_in_users`, `system_info`, `os_version` | 1 h – 1 day | inventory |
 
 Results go to `/var/log/osquery/osqueryd.results.log` (macOS and Linux) or
@@ -60,6 +61,11 @@ pane, or an SSH login. Markers survive reparenting, unlike the parent chain. Onl
 variables are read, never the rest of the environment (it holds tokens). Results are written
 `0644` (`--logger_mode`), so tapwatch can read them without root. On the PC that runs tapwatch, install the
 agent **inside WSL** too: Windows can't see Linux processes, and the coding agents run there.
+
+On Windows, `sysmon_events` puts **command lines** in the results log, and command lines can hold passwords or
+tokens. The installer restricts the log folder to SYSTEM, Administrators and the person who installed it (who
+reads it from WSL for tapwatch), and tapwatch redacts command lines before storing them. They never go to Jev:
+it sees facts such as "a document app started PowerShell", not the text.
 See `tapwatch who <case>` and `host_context` in `config.example.yaml`.
 
 ### What tapwatch does with it
@@ -92,8 +98,8 @@ closes those cases as `benign_expected` with the explanation, all in the audit t
 The agent records which programs run and what they connect to, including work apps and personal activity. On a
 computer that isn't yours:
 
-1. **Ask first**, and explain what it records: programs, their connections and, on Windows, Sysmon's process
-   history. In standalone mode nothing leaves that computer.
+1. **Ask first**, and explain what it records: programs, their connections and DNS lookups and, on Windows, the
+   command line of every program started (Sysmon). In standalone mode nothing leaves that computer.
 2. **Check it isn't employer-managed.** Windows: Settings → Accounts → *Access work or school* shows no MDM or
    Intune connection, and `dsregcmd /status` doesn't say `AzureAdJoined : YES`. macOS: System Settings →
    *Profiles* is empty. A company security agent (Defender for Endpoint, CrowdStrike, SentinelOne...) is another

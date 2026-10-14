@@ -162,7 +162,9 @@ data at home and stays quiet unless something matters.
 
 ## How work lands
 
-Every item is a GitHub issue in a milestone. Work goes `dev` → PR → `main`, and lands only when tests,
+Every item is a GitHub issue in a milestone, labelled with its phase (`v0.2` … `v0.5`, `later`) and the goal it
+serves (`goal: endpoint attribution`, `goal: correlation`...), so the backlog can be filtered either way. Work
+goes `dev` → PR → `main`, and lands only when tests,
 Semgrep, Trivy and the personal-data gate pass. A milestone ships as a tagged release with notes.
 
 ## History: the road to v0.1

@@ -220,6 +220,7 @@ When the case is on the tapwatch machine, `hostctx.py` asks the machine itself
 | Fact | Source | Kind |
 |---|---|---|
 | Program holding the connection, its path, parent, redacted command line, on-disk state, container | live osquery (cases under 10 min old) + the agent's 1-minute `outbound_connections_ctx` history | **process proof** |
+| Windows: the program behind every connection and DNS lookup, however short, with its command line and parent | Sysmon events 1, 3 and 22, collected by the osquery service (`sysmon_events`) | **process proof** |
 | Started by a Claude Code session, attended, interactive entrypoint | `CLAUDE_CODE_*` environment markers on the process (they survive reparenting) | **process proof** |
 | Started from the owner's Herdr terminal, or from an SSH login | `HERDR_PANE_ID`, `SSH_CONNECTION` markers | **process proof** |
 | Agent ran a command naming the destination; minutes since the owner's prompt | that session's transcript | context |

