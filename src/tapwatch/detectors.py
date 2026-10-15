@@ -54,9 +54,20 @@ def is_internal(ip: str) -> bool:
     return any(addr in net for net in INTERNAL_NETS)
 
 
+# Two-label public suffixes, so bbc.co.uk is a registrable domain and co.uk is not. The common
+# ones only (stdlib, no public-suffix list dependency).
+PUBLIC_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "com.au", "net.au", "org.au", "edu.au", "gov.au", "co.nz",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "com.br", "net.br", "co.za", "com.mx", "com.ar", "co.in", "net.in",
+    "com.sg", "com.hk", "com.tw", "co.kr", "com.cn", "net.cn", "com.tr", "co.il", "com.sa", "com.eg", "com.my",
+    "co.th", "com.ph", "com.vn", "com.pk", "com.ua", "com.pl", "co.id", "com.co", "com.pe", "com.ve"})
+
+
 def base_domain(name: str) -> str:
-    """Rough registered domain: last two labels (good enough for 'first seen' tracking)."""
+    """Rough registered domain: the last two labels, or three under a two-label public suffix (bbc.co.uk)."""
     parts = [p for p in name.lower().rstrip(".").split(".") if p]
+    if len(parts) >= 3 and ".".join(parts[-2:]) in PUBLIC_SUFFIXES:
+        return ".".join(parts[-3:])
     return ".".join(parts[-2:]) if len(parts) >= 2 else name.lower()
 
 

@@ -11,6 +11,7 @@ import sqlite3
 import time
 from dataclasses import asdict
 
+from .detectors import base_domain, suffix_match
 from .models import Case, Route, Verdict, main_indicator
 
 SCHEMA = """
@@ -86,7 +87,9 @@ STATUSES = ("new", "investigating", "closed")
 # Where each status may go next. Closed cases can be reopened into investigating.
 TRANSITIONS = {"new": {"investigating", "closed"}, "investigating": {"closed"}, "closed": {"investigating"}}
 DISPOSITIONS = ("true_positive", "false_positive", "benign_expected")
-SCOPES = ("device_indicator", "indicator", "port", "device_program")  # device_program: needs host context
+# device_program needs host context; the domain scopes match any host under the indicator's registrable
+# domain (ch-tanzone-02 after ch-tanzone-01 was suppressed: a sibling host alerted again, 2026-10-15).
+SCOPES = ("device_indicator", "indicator", "device_domain", "domain", "port", "device_program")
 
 # `tapwatch mark` labels and the old feedback column, mapped onto dispositions.
 FEEDBACK_TO_DISPOSITION = {"fp": "false_positive", "tp": "true_positive"}
@@ -104,6 +107,10 @@ def describe_rule(rule) -> str:
         what = f"any device, port {rule['port']}"
     elif rule["scope"] == "indicator":
         what = f"any device, {rule['indicator']}"
+    elif rule["scope"] == "domain":
+        what = f"any device, any host under {rule['indicator']}"
+    elif rule["scope"] == "device_domain":
+        what = f"{rule['host']}, any host under {rule['indicator']}"
     elif rule["scope"] == "device_program":
         what = f"{rule['host']}, program {rule['indicator']}"
     else:
@@ -272,7 +279,11 @@ class Store:
             raise WorkflowError("no single program on the device explains this case (needs host context)")
         if scope not in ("port", "device_program") and not indicator:
             raise WorkflowError("this case has no indicator to suppress on")
+        if scope in ("device_domain", "domain") and "." not in indicator:
+            raise WorkflowError("this case's indicator isn't a domain name")
+        dom = base_domain(indicator) if indicator else ""
         values = {"device_indicator": (row["host"], indicator, None), "indicator": (None, indicator, None),
+                  "device_domain": (row["host"], dom, None), "domain": (None, dom, None),
                   "port": (None, None, port), "device_program": (row["host"], program, None)}[scope]
         now = time.time()
         with self.db:
@@ -303,15 +314,21 @@ class Store:
         if case.must_alert:
             return None
         now = time.time() if now is None else now
-        port = case.facts.get("port")
-        rule = self.db.execute(
-            "SELECT * FROM suppressions WHERE detector=? AND (expires_ts IS NULL OR expires_ts>?) AND ("
-            " (scope='device_indicator' AND host=? AND indicator=?)"
-            " OR (scope='indicator' AND indicator=?)"
-            " OR (scope='port' AND port=?)"
-            " OR (scope='device_program' AND host=? AND indicator=?)) ORDER BY id LIMIT 1",
-            (case.detector, now, case.host, case.indicator, case.indicator,
-             port if isinstance(port, int) else None, case.host, case.facts.get("host_program_path") or "\0")).fetchone()
+        port, program = case.facts.get("port"), case.facts.get("host_program_path") or ""
+        live = self.db.execute("SELECT * FROM suppressions WHERE detector=? AND (expires_ts IS NULL OR expires_ts>?)"
+                               " ORDER BY id", (case.detector, now)).fetchall()
+        rule = None
+        for r in live:
+            same_device = r["host"] == case.host
+            scope = r["scope"]
+            if (scope == "device_indicator" and same_device and r["indicator"] == case.indicator) \
+                    or (scope == "indicator" and r["indicator"] == case.indicator) \
+                    or (scope == "device_domain" and same_device and suffix_match(case.indicator, {r["indicator"]})) \
+                    or (scope == "domain" and suffix_match(case.indicator, {r["indicator"]})) \
+                    or (scope == "port" and isinstance(port, int) and r["port"] == port) \
+                    or (scope == "device_program" and same_device and program and r["indicator"] == program):
+                rule = r
+                break
         if rule is None:
             return None
         self.db.execute("UPDATE suppressions SET hits=hits+1, last_hit_ts=? WHERE id=?", (now, rule["id"]))
