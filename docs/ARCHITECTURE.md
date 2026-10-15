@@ -275,6 +275,13 @@ isn't proof.
 
 ## State and persistence
 
+Per-device baselines (known domains, admin-port pairs, odd ports, hourly profiles, IoT drift, TLS
+oddities, DNS bypass, beaconing's reported set) are keyed on the **device identity** from the
+`Identity` detector: `name:<DHCP hostname>`, else `mac:<address>`, else the IP. A laptop keeps its
+baselines across a dock swap or a DHCP change, and a different machine on that address doesn't
+inherit them. Entries recorded under an IP before its identity was known move under the identity
+when it is (`Detector.dev_key`). Cases still name the address the device was on.
+
 Everything lives in one SQLite file (`db_path`, default `tapwatch.db`):
 
 | Table | Holds |
