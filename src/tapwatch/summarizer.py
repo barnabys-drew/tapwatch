@@ -102,8 +102,11 @@ def _observed(c: Case, words: dict) -> str:
                 f"and {f['random_looking']} were random-looking names. {words['typical']} rarely has more than a few failures.")
     if c.detector == "scan":
         where = f"inside {words['network']}" if f["internal_targets"] else "including outside hosts"
-        return (f"In {f['window_s']} seconds it tried {f['targets']} host/port combinations ({f['hosts']} hosts, "
+        text = (f"In {f['window_s']} seconds it tried {f['targets']} host/port combinations ({f['hosts']} hosts, "
                 f"{f['ports']} ports) {where}; {f['failed_pct']}% of attempts were refused or unanswered.")
+        if f.get("all_failed"):
+            text += " Nothing else it tried in that time succeeded either, which is what a device losing its network looks like."
+        return text
     if c.detector == "upload_spike":
         text = (f"In one hour it uploaded about {f['mb']} MB to the internet, roughly {f['times_normal']} times "
                 f"its normal of {f['normal_mb']} MB (compared with {f.get('basis', 'recent hours')}).")

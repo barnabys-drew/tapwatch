@@ -19,6 +19,7 @@ import time
 from collections import defaultdict
 
 from .detectors import base_domain
+from .models import device_id
 from .store import Store, WorkflowError
 
 ACTOR = "tapwatch explain"
@@ -35,7 +36,8 @@ def groups(store: Store, since: float) -> list[dict]:
         facts = json.loads(r["facts"])
         if "host_assessment" not in facts:
             continue
-        key = (r["detector"], r["host"], facts.get("host_program_path") or "",
+        # Grouped by device identity, not address: the PC and a docked laptop shared .215 (2026-10-15).
+        key = (r["detector"], device_id(r["host"], facts), facts.get("host_program_path") or "",
                _destination(facts, json.loads(r["indicators"])))
         g = out[key]
         g["cases"].append(r)
@@ -91,7 +93,7 @@ def report(gs: list[dict], min_cases: int) -> str:
     lines.append(f"suggested suppressions (>= {min_cases} cases, all likely benign): {len(sugg)}")
     for g in gs:
         tag = "SUGGEST" if g in sugg else ("explained" if g["explained"] else "review")
-        lines.append(f"  [{tag:9s}] {g['detector']:13s} {g['host']:15s} {g['program'] or '(no single program)':35s} "
+        lines.append(f"  [{tag:9s}] {g['detector']:13s} {g['host']:22s} {g['program'] or '(no single program)':35s} "
                      f"-> {g['destination']:25s} {g['cases']} case(s) {dict(g['assessments'])}")
         if tag == "SUGGEST":
             lines.append(f"      reason: {reason(g)}")

@@ -628,22 +628,39 @@ class PortScan(Detector):
     (#73, and 4 more like it). So UDP to the discovery ports never counts, and other UDP counts
     only in a sweep shape: one host on many ports, or one port across many hosts. Many hosts
     on many ports (BitTorrent DHT, game peers) is how those protocols look when peers are gone.
+
+    A device losing its network fails every connection at once, which on one port to many hosts
+    is the sweep shape (a phone walking out of Wi-Fi range: 50 SYNs to 50 web servers in a minute,
+    alerted 2026-10-15 as #122). When nothing from the source has succeeded since its failures
+    began, the case carries `all_failed` and is capped at digest; a scanner's other traffic works.
     """
 
     name = "scan"
     FAILED: ClassVar[set[str]] = {"S0", "REJ", "RSTO", "RSTR", "RSTOS0", "SH", "OTH"}
+    # Answered, as a scanner would see it. ESTABLISHED (defined below) also holds RSTO/RSTR, but a reset
+    # right after the handshake is how tarpits and banner-grab refusals answer a probe: a failure here.
+    ANSWERED: ClassVar[set[str]] = {"SF", "S1", "S2", "S3"}
     # DNS, DHCP, NTP, NetBIOS, SSDP, WS-Discovery, mDNS, LLMNR, UniFi discovery
     DISCOVERY_UDP: ClassVar[set[int]] = {53, 67, 68, 123, 137, 138, 1900, 3702, 5353, 5355, 10001}
 
     def __init__(self, window: float = 60, threshold: int = 50):
         self.window, self.threshold = window, threshold
         self.events: dict[str, deque] = defaultdict(deque)
+        self.ok: dict[str, deque] = defaultdict(deque)  # source -> times of its answered connections
         self.cooldown: dict[str, float] = {}
 
     def feed(self, rec: dict) -> list[Case]:
-        if rec["_type"] != "conn" or rec.get("conn_state") not in self.FAILED:
+        if rec["_type"] != "conn":
             return []
         src, dst, ts = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec["ts"]
+        if rec.get("conn_state") in self.ANSWERED and is_internal(src):
+            ok = self.ok[src]
+            ok.append(ts)
+            while ok and ts - ok[0] > self.window:
+                ok.popleft()
+            return []
+        if rec.get("conn_state") not in self.FAILED:
+            return []
         proto, port = rec.get("proto") or "tcp", rec.get("id.resp_p")
         if not is_internal(src) or not unicast(dst) or (proto == "udp" and port in self.DISCOVERY_UDP):
             return []
@@ -656,11 +673,17 @@ class PortScan(Detector):
         self.cooldown[src] = ts + 10 * self.window
         targets, hosts, protos = {(e[1], e[2]) for e in ev}, {e[1] for e in ev}, {e[3] for e in ev}
         internal = sum(1 for h in hosts if is_internal(h))
-        return [Case(self.name, src, ts, "Possible port or host scan",
-                     {"targets": len(targets), "hosts": len(hosts), "ports": len({e[2] for e in ev}),
-                      "proto": protos.pop() if len(protos) == 1 else "mixed",
-                      "failed_pct": 100, "internal_targets": internal == len(hosts), "window_s": round(self.window)},
-                     base_severity=3)]
+        # A device losing its network fails every connection at once, which on one port to many
+        # hosts is the sweep shape (a phone walking out of Wi-Fi range: 50 SYNs to 50 web servers in
+        # a minute, alerted 2026-10-15 as #122). A scanner's other traffic keeps working.
+        okq = self.ok.get(src)
+        all_failed = not okq or okq[-1] < ev[0][0]  # nothing has succeeded since the failures began
+        facts = {"targets": len(targets), "hosts": len(hosts), "ports": len({e[2] for e in ev}),
+                 "proto": protos.pop() if len(protos) == 1 else "mixed", "all_failed": all_failed,
+                 "failed_pct": 100, "internal_targets": internal == len(hosts), "window_s": round(self.window)}
+        if all_failed:
+            facts["max_route"] = "digest"
+        return [Case(self.name, src, ts, "Possible port or host scan", facts, base_severity=3)]
 
     def _sweep(self, ev: deque) -> bool:
         """TCP: `threshold` distinct (host, port) targets. UDP: that many ports on one host or hosts on one port."""
