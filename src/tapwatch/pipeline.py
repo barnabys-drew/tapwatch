@@ -97,6 +97,11 @@ class Pipeline:
                 log.warning("AI triage failed, using rules only: %s", e)
         r, reason = route(case, verdict, self.thresholds, suppression, self.learning_label(case.ts))
         case_id = self.store.add(case, state, verdict, r, reason)
+        if suppression and r is not Route.ALERT:
+            # The owner already said this is expected: the case is kept for the stats and the audit
+            # trail, but arrives closed rather than as another "new" item to triage by hand.
+            self.store.update_case(case_id, "tapwatch", status="closed", disposition="benign_expected",
+                                   note=f"closed on arrival: matched suppression {suppression}")
         if self.herdr and critical(case, verdict, r, self.herdr_ai_severity):
             where = case_link(self.base_url, case_id) if self.base_url else f"case #{case_id}"
             try:

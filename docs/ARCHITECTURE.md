@@ -184,7 +184,7 @@ apply:
 |---|---|---|
 | 1 | `must_alert` | **ALERT** ("always-alert rule") |
 | 2 | Code says a coding agent was misused (see [host context](#host-context-and-agent-awareness)) | **ALERT**, checked *before* suppressions, so an attacker can't hide behind a pattern the owner muted |
-| 3 | A suppression rule matched | **LOG** |
+| 3 | A suppression rule matched | **LOG**, and the case is stored already closed as `benign_expected` with the rule in a note |
 | 4 | Code corroborates that it was the owner's own agent work, and Jev doesn't disagree | **LOG** |
 | 5 | No verdict (rules-only, or Jev failed) | base severity ≥ 4 → ALERT, ≥ 2 → DIGEST, else LOG |
 | 6 | Jev unsure (`unknown`, or category confidence < 0.6) | **DIGEST** ("needs a human look") |
@@ -216,7 +216,9 @@ at severity 4 or higher, and AI-routed alerts that Jev rates at least 3.5/4.
 Each case has a workflow status (`new` → `investigating` → `closed`, and it can be reopened) and a
 disposition (`true_positive`, `false_positive` or `benign_expected`). Every change is written to
 the audit trail. Suppressions are scoped to a device + indicator, an indicator on any device, a
-port, or a device + program (with host context). Each needs a reason and can expire.
+device + any host under the indicator's registrable domain, that domain on any device, a port, or a
+device + program (with host context). Each needs a reason and can expire. A case that matches a rule
+arrives closed as `benign_expected` (logged, counted in the stats, not queued).
 `match_suppression` never matches a `must_alert` case, and the router checks that too.
 
 ## Host context and agent-awareness

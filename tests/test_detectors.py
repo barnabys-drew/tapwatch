@@ -20,6 +20,7 @@ from tapwatch.detectors import (
     SuspiciousDNS,
     TakeoverChannel,
     Warmup,
+    base_domain,
     build,
     in_hours,
     is_internal,
@@ -939,3 +940,8 @@ def test_a_symmetric_hour_is_a_video_call_not_an_upload():
     call, exfil = hour(580_000_000), hour(20_000_000)
     assert call.facts["symmetric"] and call.facts["down_mb"] == 580 and call.facts["max_route"] == "digest"
     assert not exfil.facts["symmetric"] and "max_route" not in exfil.facts
+
+
+def test_base_domain_keeps_the_registrable_part_under_two_label_public_suffixes():
+    assert base_domain("www.bbc.co.uk") == "bbc.co.uk" and base_domain("co.uk") == "co.uk"
+    assert base_domain("a.b.example.com") == "example.com" and base_domain("localhost") == "localhost"

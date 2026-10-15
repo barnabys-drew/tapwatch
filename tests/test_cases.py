@@ -117,6 +117,20 @@ def test_suppression_scopes_match_what_they_say():
     assert store.match_suppression(Case("beaconing", "192.168.50.99", T0, "t", {"port": 443})) is None
     assert [s["hits"] for s in store.suppressions()] == [1, 1, 1]
 
+    # domain scopes: the registrable domain, so a sibling host (zone-02 after zone-01) matches too
+    did, _ = make_case(store, detector="odd_port", indicators=["ch-zone-01.mgmt.example.net"], facts={"port": 17472})
+    store.add_suppression(did, "device_domain", "zone servers, this laptop", "t")
+    assert store.suppressions()[0]["indicator"] == "example.net"
+    sibling = Case("odd_port", "192.168.50.10", T0, "t", {}, ["ch-zone-02.mgmt.example.net"])
+    assert store.match_suppression(sibling).startswith("#4 odd_port (192.168.50.10, any host under example.net)")
+    assert store.match_suppression(Case("odd_port", "192.168.50.11", T0, "t", {}, ["ch-zone-02.mgmt.example.net"])) is None
+    assert store.match_suppression(Case("odd_port", "192.168.50.10", T0, "t", {}, ["example.org"])) is None
+    uk, _ = make_case(store, detector="odd_port", indicators=["www.bbc.co.uk"], facts={"port": 1})
+    store.add_suppression(uk, "domain", "the BBC", "t")
+    assert store.suppressions()[0]["indicator"] == "bbc.co.uk"           # not co.uk
+    assert store.match_suppression(Case("odd_port", "192.168.50.99", T0, "t", {}, ["news.bbc.co.uk"])).startswith("#5")
+    assert store.match_suppression(Case("odd_port", "192.168.50.99", T0, "t", {}, ["itv.co.uk"])) is None
+
 
 def test_expired_suppressions_stop_matching():
     store = Store(":memory:")
@@ -175,6 +189,10 @@ def test_pipeline_logs_suppressed_cases_without_asking_ai_or_alerting(fake_jev):
     assert by_detector["ioc_match"][0] is Route.ALERT
     assert jev.states == []
     assert len(note.sent) == 1
+    sup_id = next(i for i, c, _, _ in out if c.detector == "beaconing")
+    row = store.get(sup_id)
+    assert (row["status"], row["disposition"]) == ("closed", "benign_expected")   # arrives closed, not queued
+    assert store.notes(sup_id)[0]["text"].startswith("closed on arrival: matched suppression #1")
 
 
 # ------------------------------------------------------------------ email links
@@ -375,6 +393,11 @@ def test_suppress_and_delete_through_the_ui(server):
     assert r.status == 303
     rule = Store(db).suppressions()[0]
     assert rule["port"] == 3478 and rule["expires_ts"] is not None
+    assert Store(db).get(1)["status"] == "new"                              # no "close" box ticked
+    request(app, "POST", "/case/1/suppress", {"csrf": csrf, "scope": "port", "reason": "STUN", "close": "1"}, cookie=sid)
+    closed = Store(db).get(1)
+    assert (closed["status"], closed["disposition"]) == ("closed", "benign_expected")
+    request(app, "POST", f"/suppressions/{Store(db).suppressions()[0]['id']}/delete", {"csrf": csrf}, cookie=sid)
     r, text = request(app, "POST", "/case/1/suppress", {"csrf": csrf, "scope": "port", "reason": ""}, cookie=sid)
     assert r.status == 400 and "reason" in text
     request(app, "POST", f"/suppressions/{rule['id']}/delete", {"csrf": csrf}, cookie=sid)

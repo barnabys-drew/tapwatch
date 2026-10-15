@@ -512,17 +512,23 @@ def _suppress_form(r, facts: dict, indicators: list, csrf: str) -> str:
     if r["must_alert"]:
         return ('<div class="card"><h2>Suppress similar</h2><p class="muted">Always-alert cases (threat-list hits, '
                 'IDS severity 1) can never be suppressed.</p></div>')
+    from .detectors import base_domain
     from .models import main_indicator
 
     ind = main_indicator(indicators, facts)
     port = facts.get("port")
+    dom = base_domain(ind) if ind and "." in ind else ""
     choices = []
     if facts.get("host_program_path"):  # host context tied every connection to one program
         label = f"{r['detector']} + this device ({r['host']}) + program {facts['host_program_path']}"
         choices.append(("device_program", label))
     if ind:
         choices.append(("device_indicator", f"{r['detector']} + this device ({r['host']}) + {ind}"))
+        if dom and dom != ind:  # a named host: offer its whole domain too (zone-02 after zone-01)
+            choices.append(("device_domain", f"{r['detector']} + this device ({r['host']}) + any host under {dom}"))
         choices.append(("indicator", f"{r['detector']} + {ind}, any device"))
+        if dom and dom != ind:
+            choices.append(("domain", f"{r['detector']} + any host under {dom}, any device"))
     if isinstance(port, int):
         choices.append(("port", f"{r['detector']} + port {port}, any device"))
     if not choices:
@@ -531,10 +537,11 @@ def _suppress_form(r, facts: dict, indicators: list, csrf: str) -> str:
                      f'<span class="mono">{e(text)}</span></label>' for i, (s, text) in enumerate(choices))
     return f"""<div class="card"><h2>Suppress similar</h2>
 <form method="post" action="/case/{r["id"]}/suppress">{csrf_field(csrf)}
-<p class="muted">Matching future cases go to log only, with the reason "suppressed: rule". Always-alert cases are never suppressed.</p>
+<p class="muted">Matching future cases are logged and arrive already closed as benign_expected, with the rule in a note. Always-alert cases are never suppressed.</p>
 {radios}
 <div class="filters"><label class="f">Reason (required)<input name="reason" required maxlength="500" size="30"></label>
 <label class="f">Expires in days<input name="days" type="number" min="0.01" max="3650" step="any" placeholder="never"></label>
+<label class="f"><input type="checkbox" name="close" value="1" checked> Close this case as benign_expected</label>
 <button>Create rule</button></div></form></div>"""
 
 
@@ -975,8 +982,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(303, location=f"/case/{case_id}")
             if m and m.group(2) == "/suppress":
                 case_id = int(m.group(1))
-                store.add_suppression(case_id, first.get("scope", ""), first.get("reason", "")[:500], actor,
-                                      _expiry(first.get("days", "")))
+                rid = store.add_suppression(case_id, first.get("scope", ""), first.get("reason", "")[:500], actor,
+                                            _expiry(first.get("days", "")))
+                if first.get("close"):  # one form: the rule and the case it came from, closed as expected
+                    store.update_case(case_id, actor, status="closed", disposition="benign_expected",
+                                      note=f"suppressed: rule #{rid}")
                 return self._send(303, location="/suppressions")
             if m := SUPPRESSION_DELETE.match(path):
                 store.delete_suppression(int(m.group(1)), actor)
