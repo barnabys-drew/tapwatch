@@ -729,7 +729,7 @@ class HourlyProfile(Detector):
     """
 
     name = "hourly"
-    PERSIST: ClassVar[tuple[str, ...]] = ("current", "dests", "history", "last_hour", "reported")
+    PERSIST: ClassVar[tuple[str, ...]] = ("current", "dests", "history", "last_hour", "reported", "names")
     DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("current", "dests", "history", "reported")
 
     def restore(self, data: dict) -> None:
@@ -743,7 +743,9 @@ class HourlyProfile(Detector):
         self.steady, self.stop_hours, self.busy_min = steady_mb * 1e6, stop_hours, busy_min
         self.current: dict[str, list] = {}                       # host -> [conns, upload bytes, download bytes] this hour
         self.dests: dict[str, Counter] = defaultdict(Counter)     # host -> upload bytes per destination name, this hour
-        self.names: dict[str, str] = {}                          # external IP -> name (DNS/TLS), not saved
+        # external IP -> name (DNS/TLS). Saved: a 2 GB iCloud upload right after a restart had no name, so
+        # the sync-service cap could not apply and it alerted (2026-10-15 07:59).
+        self.names: dict[str, str] = {}
         self.history: dict[str, deque] = defaultdict(lambda: deque(maxlen=14 * 24))  # host -> (hour, conns, up, down)
         self.last_hour: int | None = None
         self.reported: set[tuple] = set()
@@ -1129,7 +1131,7 @@ class Identity(Detector):
                     if len(self.mac) > 50_000:
                         self.mac.clear()
                     self.mac[ip] = mac
-                    self.last_ip[self.key(ip)] = ip
+                    self._note_ip(ip)
         elif kind == "dhcp":
             mac, name = (rec.get("mac") or "").lower(), (rec.get("host_name") or "").strip()
             if mac_ok(mac):
@@ -1140,8 +1142,15 @@ class Identity(Detector):
                 ip = rec.get("assigned_addr") or rec.get("client_addr") or ""
                 if is_unicast_lan(ip):
                     self.mac[ip] = mac
-                    self.last_ip[self.key(ip)] = ip
+                    self._note_ip(ip)
         return []
+
+    def _note_ip(self, ip: str) -> None:
+        """Remember the address a device is on, preferring IPv4: a link-local IPv6 address can't be the
+        one a case is about (it never reaches the internet), and it would mislabel a merged case."""
+        key = self.key(ip)
+        if ":" not in ip or (key not in self.last_ip and not ip.lower().startswith("fe80:")):
+            self.last_ip[key] = ip
 
     def key(self, ip: str) -> str:
         """The device key for an address: name:<hostname>, else mac:<address>, else the IP itself."""
@@ -1416,7 +1425,7 @@ class OddPort(Detector):
     """
 
     name = "odd_port"
-    PERSIST: ClassVar[tuple[str, ...]] = ("ports", "long_pairs", "services", "reported", "start")
+    PERSIST: ClassVar[tuple[str, ...]] = ("ports", "long_pairs", "services", "reported", "start", "names")
     DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("long_pairs", "services", "reported")
 
     def __init__(self, learn_days: float = 7, long_hours: float = 4, dev: DevProfile | None = None,
@@ -1428,7 +1437,7 @@ class OddPort(Detector):
         self.long_pairs: set[tuple] = set()     # (host, "tcp/5223") that normally runs for hours
         self.services: dict[str, set[str]] = defaultdict(set)  # host -> base domains it has connected to
         self.reported: dict[tuple, float] = {}  # (host, "tcp/4444", new_for_house) -> when reported
-        self.names: dict[str, str] = {}         # external IP -> name from DNS or TLS (not saved)
+        self.names: dict[str, str] = {}         # external IP -> name from DNS or TLS (saved, like hourly's)
 
     def restore(self, data: dict) -> None:
         super().restore(data)
@@ -1562,7 +1571,7 @@ class IotDrift(Detector):
     """
 
     name = "iot_drift"
-    PERSIST: ClassVar[tuple[str, ...]] = ("first", "asns", "countries", "ports", "services", "reported")
+    PERSIST: ClassVar[tuple[str, ...]] = ("first", "asns", "countries", "ports", "services", "reported", "names")
     DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("first", "asns", "countries", "ports", "services", "reported", "burst")
 
     def __init__(self, hosts: dict[str, str], asn=None, learn_days: float = 7, new_asns: int = 3):
