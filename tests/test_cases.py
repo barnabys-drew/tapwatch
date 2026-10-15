@@ -611,3 +611,25 @@ def test_device_scoped_rules_follow_the_device_across_addresses():
                      " VALUES ('device_indicator', 'beaconing', '192.168.50.7', 'x.example', 'old', 1)")
     assert store.match_suppression(Case("beaconing", "192.168.50.7", T0, "t", {"device_mac": "aa:bb:cc:dd:ee:07"},
                                         ["x.example"])).startswith("#2")
+
+
+def test_queue_shows_alerts_and_digest_items_by_default_and_log_cases_on_request(server):
+    app, db = server()
+    make_case(Store(db), detector="new_domain", host="192.168.50.44", indicators=["x.example"], facts={}, route_=Route.LOG)
+    sid, _ = session(app)
+    _, home = request(app, "GET", "/", cookie=sid)
+    assert 'href="/case/1"' in home and 'href="/case/2"' not in home        # the alert, not the log entry
+    _, everything = request(app, "GET", "/?route=all", cookie=sid)
+    assert 'href="/case/2"' in everything
+    _, logs = request(app, "GET", "/?route=log", cookie=sid)
+    assert 'href="/case/2"' in logs and 'href="/case/1"' not in logs
+
+
+def test_rules_made_from_the_old_port_indicator_still_match():
+    store = Store(":memory:")
+    store.db.execute("INSERT INTO suppressions (scope, detector, host, indicator, reason, created_ts)"
+                     " VALUES ('device_indicator', 'beaconing', '192.168.50.19', 'port:1883', 'frame keepalive', 1)")
+    frame = Case("beaconing", "192.168.50.19", T0, "t", {"port": 1883, "dedupe": "203.0.113.5:1883"}, [])
+    assert store.match_suppression(frame).startswith("#1 beaconing")
+    assert store.match_suppression(Case("beaconing", "192.168.50.19", T0, "t", {"port": 8883}, [])) is None
+    assert store.match_suppression(Case("beaconing", "192.168.50.20", T0, "t", {"port": 1883}, [])) is None

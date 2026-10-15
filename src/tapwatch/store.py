@@ -7,6 +7,7 @@ can keep writing to a database that a newer version has already migrated.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from dataclasses import asdict
@@ -323,8 +324,12 @@ class Store:
         for r in live:
             same_device = r["host"] in mine
             scope = r["scope"]
-            if (scope == "device_indicator" and same_device and r["indicator"] == case.indicator) \
-                    or (scope == "indicator" and r["indicator"] == case.indicator) \
+            # Beaconing cases carried the indicator "port:N" when the destination had no name until
+            # 2026-10-15 (now "<address>:N"); rules made from those keep matching by port.
+            legacy = re.fullmatch(r"port:(\d+)", r["indicator"] or "")
+            same_ind = r["indicator"] == case.indicator or bool(legacy and isinstance(port, int) and int(legacy[1]) == port)
+            if (scope == "device_indicator" and same_device and same_ind) \
+                    or (scope == "indicator" and same_ind) \
                     or (scope == "device_domain" and same_device and suffix_match(case.indicator, {r["indicator"]})) \
                     or (scope == "domain" and suffix_match(case.indicator, {r["indicator"]})) \
                     or (scope == "port" and isinstance(port, int) and r["port"] == port) \
