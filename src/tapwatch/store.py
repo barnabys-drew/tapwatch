@@ -12,7 +12,7 @@ import time
 from dataclasses import asdict
 
 from .detectors import base_domain, suffix_match
-from .models import Case, Route, Verdict, main_indicator
+from .models import Case, Route, Verdict, device_id, main_indicator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cases (
@@ -282,9 +282,10 @@ class Store:
         if scope in ("device_domain", "domain") and "." not in indicator:
             raise WorkflowError("this case's indicator isn't a domain name")
         dom = base_domain(indicator) if indicator else ""
-        values = {"device_indicator": (row["host"], indicator, None), "indicator": (None, indicator, None),
-                  "device_domain": (row["host"], dom, None), "domain": (None, dom, None),
-                  "port": (None, None, port), "device_program": (row["host"], program, None)}[scope]
+        dev = device_id(row["host"], facts)  # the rule follows the device, not the address it had that day
+        values = {"device_indicator": (dev, indicator, None), "indicator": (None, indicator, None),
+                  "device_domain": (dev, dom, None), "domain": (None, dom, None),
+                  "port": (None, None, port), "device_program": (dev, program, None)}[scope]
         now = time.time()
         with self.db:
             cur = self.db.execute(
@@ -318,8 +319,9 @@ class Store:
         live = self.db.execute("SELECT * FROM suppressions WHERE detector=? AND (expires_ts IS NULL OR expires_ts>?)"
                                " ORDER BY id", (case.detector, now)).fetchall()
         rule = None
+        mine = {device_id(case.host, case.facts), case.host}  # rules made before identities were keyed by IP
         for r in live:
-            same_device = r["host"] == case.host
+            same_device = r["host"] in mine
             scope = r["scope"]
             if (scope == "device_indicator" and same_device and r["indicator"] == case.indicator) \
                     or (scope == "indicator" and r["indicator"] == case.indicator) \

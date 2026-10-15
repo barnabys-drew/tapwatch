@@ -217,7 +217,10 @@ Each case has a workflow status (`new` → `investigating` → `closed`, and it 
 disposition (`true_positive`, `false_positive` or `benign_expected`). Every change is written to
 the audit trail. Suppressions are scoped to a device + indicator, an indicator on any device, a
 device + any host under the indicator's registrable domain, that domain on any device, a port, or a
-device + program (with host context). Each needs a reason and can expire. A case that matches a rule
+device + program (with host context). Each needs a reason and can expire. "Device" means the
+device identity (`name:<DHCP hostname>`, else `mac:<address>`, else the IP, from the Identity
+detector), so a rule follows a laptop between addresses; rules made before that are keyed by IP
+and still match it. A case that matches a rule
 arrives closed as `benign_expected` (logged, counted in the stats, not queued).
 `match_suppression` never matches a `must_alert` case, and the router checks that too.
 

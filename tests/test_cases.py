@@ -593,3 +593,21 @@ def test_learning_period_clock_is_the_warmup_start_and_survives_a_restart(fake_j
     for i in range(15):
         out += p2.process(conn(T0 + 2 * 86400 + i * 60, port=8443))
     assert [r for _, c, _, r in out if c.detector == "beaconing"] == [Route.ALERT] and len(note.sent) == 1
+
+
+def test_device_scoped_rules_follow_the_device_across_addresses():
+    store = Store(":memory:")
+    laptop = {"device_mac": "aa:bb:cc:dd:ee:01", "device_name": "ACCT-LAPTOP"}
+    cid, _ = make_case(store, detector="new_domain", host="192.168.50.102", indicators=["cdn.example.com"],
+                       facts={**laptop})
+    store.add_suppression(cid, "device_indicator", "the laptop's CDN", "t")
+    assert store.suppressions()[0]["host"] == "name:acct-laptop"                   # keyed on the identity
+    docked = Case("new_domain", "192.168.50.215", T0, "t", {**laptop}, ["cdn.example.com"])   # same laptop, new IP
+    other = Case("new_domain", "192.168.50.215", T0, "t", {"device_mac": "aa:bb:cc:dd:ee:02"}, ["cdn.example.com"])
+    assert store.match_suppression(docked).startswith("#1 new_domain (name:acct-laptop, cdn.example.com)")
+    assert store.match_suppression(other) is None                                   # a different machine on that IP
+    # a rule written before identities (host = IP) still matches that IP
+    store.db.execute("INSERT INTO suppressions (scope, detector, host, indicator, reason, created_ts)"
+                     " VALUES ('device_indicator', 'beaconing', '192.168.50.7', 'x.example', 'old', 1)")
+    assert store.match_suppression(Case("beaconing", "192.168.50.7", T0, "t", {"device_mac": "aa:bb:cc:dd:ee:07"},
+                                        ["x.example"])).startswith("#2")
