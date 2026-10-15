@@ -33,6 +33,7 @@ services:
       - suricata-logs:/suricata:ro
       - ../config.yaml:/data/config.yaml:ro
       - ../assets.yaml:/data/assets.yaml:ro
+      - ../feeds:/data/feeds:ro           # the public lists from `tapwatch update-feeds` (popularity guards)
       - tapwatch-data:/data
     restart: unless-stopped
 
@@ -45,6 +46,7 @@ services:
       - zeek-logs:/logs:ro
       - ../config.yaml:/data/config.yaml:ro
       - ../assets.yaml:/data/assets.yaml:ro
+      - ../feeds:/data/feeds:ro
       - tapwatch-data:/data
     restart: unless-stopped
 

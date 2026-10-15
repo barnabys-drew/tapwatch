@@ -335,8 +335,8 @@ def queue_filters(params: dict) -> dict:
     f = {k: params.get(k, [""])[0] for k in ("status", "route", "detector", "device", "sort")}
     if f["status"] not in (*STATUSES, "open", "all"):
         f["status"] = "open"
-    if f["route"] not in ROUTES:
-        f["route"] = ""
+    if f["route"] not in (*ROUTES, "all", "triage"):
+        f["route"] = "triage"  # alerts and digest items: log-only cases are for the record, not the queue
     if f["sort"] not in QUEUE_SORTS:
         f["sort"] = "newest"
     return f
@@ -350,10 +350,14 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
     elif f["status"] != "all":
         where.append("status = ?")
         args.append(f["status"])
-    for col in ("route", "detector"):
-        if f[col]:
-            where.append(f"{col} = ?")  # col is one of our two names, never user input
-            args.append(f[col])
+    if f["route"] == "triage":
+        where.append("route != 'log'")
+    elif f["route"] in ROUTES:
+        where.append("route = ?")
+        args.append(f["route"])
+    if f["detector"]:
+        where.append("detector = ?")
+        args.append(f["detector"])
     if f["device"]:
         where.append("host = ?")
         args.append(f["device"])
@@ -388,7 +392,7 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
     host_labels = {h: f"{assets.name(h)} ({h})" if assets.name(h) != h else h for h in hosts}
     filters = f"""<div class="card"><form class="filters" method="get" action="/">
 <input type="hidden" name="status" value="{e(f["status"])}">
-<label class="f">Route<select name="route"><option value="">any</option>{options(ROUTES, f["route"])}</select></label>
+<label class="f">Route<select name="route">{options(("triage", "all", *ROUTES), f["route"], {"triage": "alert + digest", "all": "any, including log"})}</select></label>
 <label class="f">Detector<select name="detector"><option value="">any</option>{options(detectors, f["detector"])}</select></label>
 <label class="f">Device<select name="device"><option value="">any</option>{options(hosts, f["device"], host_labels)}</select></label>
 <label class="f">Sort<select name="sort">{options(QUEUE_SORTS, f["sort"])}</select></label>
