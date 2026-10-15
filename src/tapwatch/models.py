@@ -23,6 +23,18 @@ def main_indicator(indicators: list[str], facts: dict) -> str:
     return indicators[0] if indicators else str(facts.get("dedupe", ""))
 
 
+def device_id(host: str, facts: dict) -> str:
+    """The stablest handle on the device behind a case: `name:<DHCP hostname>`, else `mac:<address>`,
+    else the IP. The hostname survives a dock swap and a DHCP change; the MAC a DHCP change (both
+    facts come from the Identity detector). Suppression rules are keyed on this, so a rule made
+    for a laptop follows it between addresses."""
+    if facts.get("device_name"):
+        return f"name:{str(facts['device_name']).lower()}"
+    if facts.get("device_mac"):
+        return f"mac:{str(facts['device_mac']).lower()}"
+    return host
+
+
 @dataclass
 class Case:
     detector: str            # which detector fired, e.g. "beaconing"
