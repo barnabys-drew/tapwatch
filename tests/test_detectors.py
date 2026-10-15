@@ -881,6 +881,11 @@ def test_beacon_to_a_service_other_devices_use_is_capped():
     assert niche.facts["shared_by"] == 1 and "max_route" not in niche.facts   # obscure + shared: could be a botnet
     lone = run(Beaconing(), [conn(T0 + i * 300, dst="203.0.113.7") for i in range(12)])[0]
     assert "max_route" not in lone.facts
+    # popular but used by this device only: digest, never log (Discord, Telegram, GitHub are C2 channels too)
+    solo = Beaconing(popular={"popular.example"})
+    run(solo, [ssl(T0 - 1, "gateway.popular.example", dst="203.0.113.8")])
+    only = run(solo, [conn(T0 + i * 300, dst="203.0.113.8") for i in range(12)])[0]
+    assert (only.facts["popular"], only.facts["shared_by"], only.facts["max_route"]) == (True, 0, "digest")
 
 
 def test_beacon_to_a_service_that_is_regular_by_design_is_capped_at_digest():
@@ -956,3 +961,31 @@ def test_a_symmetric_hour_is_a_video_call_not_an_upload():
 def test_base_domain_keeps_the_registrable_part_under_two_label_public_suffixes():
     assert base_domain("www.bbc.co.uk") == "bbc.co.uk" and base_domain("co.uk") == "co.uk"
     assert base_domain("a.b.example.com") == "example.com" and base_domain("localhost") == "localhost"
+
+
+def test_tls_odd_and_odd_port_report_again_after_reported_days_but_keep_warmup_learning():
+    from tapwatch.detectors import PERMANENT, OddPort, TlsOddities
+
+    def bare(ts, port=8443):  # no name, no DNS answer, odd port, self-signed: score 4
+        return {"_type": "ssl", "ts": ts, "id.orig_h": "192.168.50.10", "id.resp_h": "203.0.113.9", "id.resp_p": port,
+                "established": True, "validation_status": "self signed certificate"}
+    det = TlsOddities(Warmup(600), reported_days=7)
+    assert run(det, [bare(T0)]) == []                                        # warmup: learned for good
+    assert det.reported == {("192.168.50.10", 8443): PERMANENT}
+    assert run(det, [bare(T0 + 30 * 86400)]) == []                           # still learned a month later
+    assert len(run(det, [bare(T0 + 700, 9443)])) == 1                        # after warmup: reported
+    assert run(det, [bare(T0 + 700 + 86400, 9443)]) == []                    # a day later: silent
+    assert len(run(det, [bare(T0 + 700 + 8 * 86400, 9443)])) == 1            # 8 days later: reported again
+    old = TlsOddities(Warmup(600))
+    old.restore({"reported": {"$set": [{"$tuple": ["192.168.50.10", 1]}]}})  # the old set shape: kept, permanent
+    assert old.reported == {("192.168.50.10", 1): PERMANENT}
+    day = 86400
+    op = OddPort(learn_days=1, reported_days=7)
+    run(op, [conn(T0, port=443)])
+    assert len(run(op, [conn(T0 + day + 1, port=4444)])) == 1
+    assert run(op, [conn(T0 + 2 * day, port=4444)]) == []
+    assert len(run(op, [conn(T0 + 9 * day, port=4444)])) == 1
+    snap = op.snapshot()
+    fresh = OddPort(learn_days=1)
+    fresh.restore(snap)
+    assert fresh.reported == op.reported

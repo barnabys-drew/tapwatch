@@ -165,6 +165,22 @@ def decode(obj):
     raise ValueError(f"unknown state encoding: {sorted(obj)[:3]}")
 
 
+PERMANENT = -1.0  # a `reported` entry learned during warm-up: it never expires
+
+
+def still_reported(reported: dict, key, ts: float, ttl: float) -> bool:
+    """Was `key` reported within `ttl` seconds before `ts`, or learned for good (PERMANENT)?
+
+    Detectors used to keep a *set* of reported keys, which silenced a repeat forever (a C2 on a
+    port where something benign had once been reported). A dict of times lets it be raised again."""
+    t = reported.get(key)
+    return t is not None and (t == PERMANENT or ts - t < ttl)
+
+
+def prune_reported(reported: dict, now: float, ttl: float) -> dict:
+    return {k: t for k, t in reported.items() if t == PERMANENT or now - t < ttl}
+
+
 class Detector:
     name = "base"
     # Attributes that hold what the detector has learned (baselines, first-seen sets, things
@@ -422,13 +438,16 @@ class Beaconing(Detector):
         # one infected machine's IPv4 and IPv6 addresses made it look "shared" (HtBot capture).
         if shared_by and popular:
             facts["max_route"] = "log"
-        # A service that is regular by design (BEACON_CLASSES): digest at most. This is the only cap
-        # that can apply on a one-computer network, where nothing is ever "shared".
+        # A popular service nobody else here uses, or one that is regular by design (BEACON_CLASSES):
+        # digest at most. These are the only caps that can apply on a one-computer network, where
+        # nothing is ever "shared". Digest, not log, because popular services are also C2 channels
+        # (Discord, Telegram, GitHub), so the owner still sees it in the daily digest. the owner's call,
+        # 2026-10-15.
         cls = self.class_for(name)
         if cls:
             facts["known_class"] = cls
-            if facts.get("max_route") != "log":
-                facts["max_route"] = "digest"
+        if (cls or popular) and facts.get("max_route") != "log":
+            facts["max_route"] = "digest"
         return [Case(self.name, src, rec["ts"], "Regular repeating connection to an external host",
                      facts, indicators, base_severity=3)]
 
@@ -1213,19 +1232,31 @@ class OddPort(Detector):
       * a new port to a service the device already uses (a camera rotating vendor ports
         32301/32403 to its own cloud): not the reverse-shell pattern
       * named dev services of a dev workstation (DevProfile)
+    A (device, port, kind) is reported once every `reported_days`, not once forever.
     """
 
     name = "odd_port"
     PERSIST: ClassVar[tuple[str, ...]] = ("ports", "long_pairs", "services", "reported", "start")
 
-    def __init__(self, learn_days: float = 7, long_hours: float = 4, dev: DevProfile | None = None):
+    def __init__(self, learn_days: float = 7, long_hours: float = 4, dev: DevProfile | None = None,
+                 reported_days: float = 7):
         self.learn, self.long_s, self.dev = learn_days * 86400, long_hours * 3600, dev or DevProfile()
+        self.reported_s = reported_days * 86400
         self.start: float | None = None
         self.ports: set[str] = set()            # "tcp/443" used by any device
         self.long_pairs: set[tuple] = set()     # (host, "tcp/5223") that normally runs for hours
         self.services: dict[str, set[str]] = defaultdict(set)  # host -> base domains it has connected to
-        self.reported: set[tuple] = set()
+        self.reported: dict[tuple, float] = {}  # (host, "tcp/4444", new_for_house) -> when reported
         self.names: dict[str, str] = {}         # external IP -> name from DNS or TLS (not saved)
+
+    def restore(self, data: dict) -> None:
+        super().restore(data)
+        if isinstance(self.reported, set):  # the pre-2026-10-15 set: keep those silences, expire new ones
+            self.reported = dict.fromkeys(self.reported, PERMANENT)
+
+    def snapshot(self) -> dict:
+        self.reported = prune_reported(self.reported, max(self.reported.values(), default=0.0), self.reported_s)
+        return super().snapshot()
 
     def feed(self, rec: dict) -> list[Case]:
         kind = rec["_type"]
@@ -1260,9 +1291,9 @@ class OddPort(Detector):
             return []
         new_port = pp not in self.ports and not known_service
         long_new = dur > self.long_s and port != 443 and (src, pp) not in self.long_pairs
-        if not (new_port or long_new) or (src, pp, new_port) in self.reported:
+        if not (new_port or long_new) or still_reported(self.reported, (src, pp, new_port), rec["ts"], self.reported_s):
             return []
-        self.reported.add((src, pp, new_port))
+        self.reported[(src, pp, new_port)] = rec["ts"]
         return [Case(self.name, src, rec["ts"], "Connection on an unusual port" if new_port else "Unusually long connection",
                      {"proto": proto, "port": port, "service": rec.get("service") or "unknown",
                       "new_for_house": new_port, "minutes": round(dur / 60),
@@ -1434,7 +1465,8 @@ class TlsOddities(Detector):
 
     A device that already did this on the same port during warmup is learned: the home camera
     talks to its vendor with no name, hardcoded IPs and self-signed TLS on port 32403 (measured,
-    6 servers in one night). Reported once per (device, port), not per server.
+    6 servers in one night). Reported once per (device, port) every `reported_days`, not per
+    server; a pair learned during warmup is kept for good.
     """
 
     name = "tls_odd"
@@ -1442,10 +1474,19 @@ class TlsOddities(Detector):
     BAD_CERT: ClassVar[set[str]] = {"self signed certificate", "self signed certificate in certificate chain",
                                     "certificate has expired"}
 
-    def __init__(self, warmup: Warmup | None = None, threshold: int = 3):
-        self.warmup, self.threshold = warmup or Warmup(0), threshold
+    def __init__(self, warmup: Warmup | None = None, threshold: int = 3, reported_days: float = 7):
+        self.warmup, self.threshold, self.reported_s = warmup or Warmup(0), threshold, reported_days * 86400
         self.answered: dict[str, float] = {}   # IP -> last time a DNS answer named it
-        self.reported: set[tuple] = set()      # (device, port): learned in warmup or already reported
+        self.reported: dict[tuple, float] = {}  # (device, port) -> when reported, or PERMANENT (learned in warmup)
+
+    def restore(self, data: dict) -> None:
+        super().restore(data)
+        if isinstance(self.reported, set):  # the pre-2026-10-15 set: can't tell learned from reported, keep all
+            self.reported = dict.fromkeys(self.reported, PERMANENT)
+
+    def snapshot(self) -> dict:
+        self.reported = prune_reported(self.reported, max(self.reported.values(), default=0.0), self.reported_s)
+        return super().snapshot()
 
     def feed(self, rec: dict) -> list[Case]:
         kind, ts = rec["_type"], rec.get("ts", 0.0)
@@ -1458,7 +1499,7 @@ class TlsOddities(Detector):
         if kind != "ssl" or not rec.get("established"):
             return []
         src, dst, port = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec.get("id.resp_p")
-        if not is_internal(src) or is_internal(dst) or (src, port) in self.reported:
+        if not is_internal(src) or is_internal(dst) or still_reported(self.reported, (src, port), ts, self.reported_s):
             return []
         signs = {"no_name": not rec.get("server_name"),
                  "unexplained_ip": ts - self.answered.get(dst, -1e18) > 3600,
@@ -1467,8 +1508,9 @@ class TlsOddities(Detector):
         score = sum(signs.values())
         if score < self.threshold:
             return []
-        self.reported.add((src, port))
-        if self.warmup.learning(ts):
+        learning = self.warmup.learning(ts)
+        self.reported[(src, port)] = PERMANENT if learning else ts
+        if learning:
             return []
         return [Case(self.name, src, ts, "Unusual encrypted connection",
                      {**signs, "score": score, "port": port, "dedupe": f"{dst}:{port}"},
