@@ -61,6 +61,8 @@ def cmd_run(args, cfg) -> int:
     log = logging.getLogger("tapwatch")
     log.info("watching %s (AI triage: %s, notifications: %s)", args.zeek_dir,
              "on" if p.client else "OFF - rules only", "on" if p.notifier else "OFF")
+    if config.missing_feeds(cfg):
+        log.warning(config.missing_feeds(cfg))
     log.info("restored learned state for %d detector(s)", p.restore_state())
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # so `kill` still saves state below
     try:
@@ -213,7 +215,19 @@ def cmd_init(args, cfg) -> int:
     except FileExistsError as e:
         print(e, file=sys.stderr)
         return 1
-    print("\nWrote: " + ", ".join(written) + "\n\nNext:")
+    print("\nWrote: " + ", ".join(written))
+    # The popular-domains list is what keeps the first day quiet (config.missing_feeds), so offer it
+    # here rather than leave it to a note. --yes skips the download: it may be running offline.
+    if not args.yes and ask("Download the public lists now (popular domains, MAC vendors, IP-to-network)?",
+                            "yes", ["yes", "no"]) == "yes":
+        from . import feeds
+
+        report = feeds.update(str(Path(args.dir) / conf.get("feeds_dir", "feeds")))
+        for name, result in report.items():
+            print(f"  {name:20s} {result}")
+        if all(r.startswith("ok") for r in report.values()):
+            notes = [n for n in notes if "update-feeds" not in n]
+    print("\nNext:")
     for n in notes:
         print(f"  - {n}")
     return 0
