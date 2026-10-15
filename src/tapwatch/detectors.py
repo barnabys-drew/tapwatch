@@ -508,10 +508,19 @@ class PortScan(Detector):
     Only *failed* attempts count: a PC or phone opening 50 normal HTTPS connections a
     minute is browsing, not scanning (measured 2026-10-12: 10-13% failure, 3 false alerts).
     Multicast/broadcast discovery (SSDP, mDNS) is ignored.
+
+    UDP is different: Zeek never sees a UDP "refused", so an unanswered datagram is S0 whether
+    it was a probe or a normal NBSTAT, LLMNR, SSDP or QUIC attempt. Measured 2026-10-14: 63
+    udp/137 S0 to public addresses was the main PC's NetBIOS name fallback, alerted as a scan
+    (#73, and 4 more like it). So UDP to the discovery ports never counts, and other UDP counts
+    only in a sweep shape: one host on many ports, or one port across many hosts. Many hosts
+    on many ports (BitTorrent DHT, game peers) is how those protocols look when peers are gone.
     """
 
     name = "scan"
     FAILED: ClassVar[set[str]] = {"S0", "REJ", "RSTO", "RSTR", "RSTOS0", "SH", "OTH"}
+    # DNS, DHCP, NTP, NetBIOS, SSDP, WS-Discovery, mDNS, LLMNR, UniFi discovery
+    DISCOVERY_UDP: ClassVar[set[int]] = {53, 67, 68, 123, 137, 138, 1900, 3702, 5353, 5355, 10001}
 
     def __init__(self, window: float = 60, threshold: int = 50):
         self.window, self.threshold = window, threshold
@@ -522,24 +531,34 @@ class PortScan(Detector):
         if rec["_type"] != "conn" or rec.get("conn_state") not in self.FAILED:
             return []
         src, dst, ts = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec["ts"]
-        if not is_internal(src) or not unicast(dst):
+        proto, port = rec.get("proto") or "tcp", rec.get("id.resp_p")
+        if not is_internal(src) or not unicast(dst) or (proto == "udp" and port in self.DISCOVERY_UDP):
             return []
         ev = self.events[src]
-        ev.append((ts, dst, rec.get("id.resp_p")))
+        ev.append((ts, dst, port, proto))
         while ev and ts - ev[0][0] > self.window:
             ev.popleft()
-        if ts < self.cooldown.get(src, 0):
-            return []
-        targets = {(e[1], e[2]) for e in ev}
-        if len(targets) < self.threshold:
+        if ts < self.cooldown.get(src, 0) or not self._sweep(ev):
             return []
         self.cooldown[src] = ts + 10 * self.window
-        hosts = {e[1] for e in ev}
+        targets, hosts, protos = {(e[1], e[2]) for e in ev}, {e[1] for e in ev}, {e[3] for e in ev}
         internal = sum(1 for h in hosts if is_internal(h))
         return [Case(self.name, src, ts, "Possible port or host scan",
                      {"targets": len(targets), "hosts": len(hosts), "ports": len({e[2] for e in ev}),
+                      "proto": protos.pop() if len(protos) == 1 else "mixed",
                       "failed_pct": 100, "internal_targets": internal == len(hosts), "window_s": round(self.window)},
                      base_severity=3)]
+
+    def _sweep(self, ev: deque) -> bool:
+        """TCP: `threshold` distinct (host, port) targets. UDP: that many ports on one host or hosts on one port."""
+        if len({(h, p) for _, h, p, pr in ev if pr != "udp"}) >= self.threshold:
+            return True
+        ports_by_host, hosts_by_port = defaultdict(set), defaultdict(set)
+        for _, h, p, pr in ev:
+            if pr == "udp":
+                ports_by_host[h].add(p)
+                hosts_by_port[p].add(h)
+        return any(len(v) >= self.threshold for v in (*ports_by_host.values(), *hosts_by_port.values()))
 
 
 # ---------------------------------------------------------------------- Volume
