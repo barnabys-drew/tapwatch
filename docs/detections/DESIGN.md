@@ -367,7 +367,10 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   any fixed threshold), the next device at 23 MB/h, and most devices ≈ 0.
 - **Dedupe:** `upload|host|hour`.
 - **FPs:** phone photo backup, PC cloud sync and game uploads. Code tags the destination as "known
-  sync service" from a curated map. That's a lookup, not Jev's guess. Video calls: the hour is
+  sync service" from a curated map. That's a lookup, not Jev's guess.
+  When no name was visible (Apple relays, ECH), the destination's network owner from the offline ASN
+  table stands in: Apple, Microsoft, Dropbox or Backblaze address space is `to_sync_network` and
+  capped the same way (an iPhone's 2 GB to Apple's ASN, 2026-10-15; AWS/Google host everyone, so not them). Video calls: the hour is
   `symmetric` (upload 35-65% of the total) and capped at digest when mostly to one destination;
   measured 2026-10-14, an all-day Meet (2.17 GB up, about the same down) alerted as #82.
 - **Route:** Jev-routed. A camera stop → DIGEST (code-only).

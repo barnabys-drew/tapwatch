@@ -736,9 +736,15 @@ class HourlyProfile(Detector):
         super().restore(data)  # dests comes back as plain dicts: make them Counters again
         self.dests = defaultdict(Counter, {k: Counter(v) for k, v in self.dests.items()})
 
+    # Networks whose own address space a device uploads to only for that company's cloud: an iPhone's
+    # 2 GB to Apple's ASN is an iCloud backup even when no DNS or TLS name was visible (Apple relays
+    # and ECH hide them; measured 2026-10-15). AWS, Google and Cloudflare host everyone, so not them.
+    SYNC_ASNS: ClassVar[dict[int, str]] = {714: "Apple", 8075: "Microsoft", 19679: "Dropbox", 40401: "Backblaze"}
+
     def __init__(self, multiple: float = 10, floor_bytes: int = 500_000_000, min_hours: int = 6,
-                 steady_mb: float = 50, stop_hours: int = 2, busy_min: int = 200, timezone: str | None = None):
-        self.multiple, self.floor, self.min_hours = multiple, floor_bytes, min_hours
+                 steady_mb: float = 50, stop_hours: int = 2, busy_min: int = 200, timezone: str | None = None,
+                 asn: AsnTable | None = None):
+        self.multiple, self.floor, self.min_hours, self.asn = multiple, floor_bytes, min_hours, asn
         self.tz = ZoneInfo(timezone) if timezone else None  # None = this machine's local time
         self.steady, self.stop_hours, self.busy_min = steady_mb * 1e6, stop_hours, busy_min
         self.current: dict[str, list] = {}                       # host -> [conns, upload bytes, download bytes] this hour
@@ -776,7 +782,7 @@ class HourlyProfile(Detector):
             cur[1] += int(rec.get("orig_bytes") or 0)
             cur[2] += int(rec.get("resp_bytes") or 0)
             if rec.get("orig_bytes"):
-                self.dests[src][self.names.get(dst, "")] += int(rec["orig_bytes"])
+                self.dests[src][self.names.get(dst) or dst] += int(rec["orig_bytes"])  # unnamed: by address
         return out
 
     def flush(self) -> list[Case]:
@@ -814,6 +820,8 @@ class HourlyProfile(Detector):
         if normal is not None and up > self.floor and up > self.multiple * max(normal, 1):
             top, top_bytes = (self.dests.get(host) or Counter({"": 0})).most_common(1)[0]
             share = top_bytes / up if up else 0
+            owner = self.asn.lookup(top) if self.asn and top and _is_ip(top) else None
+            sync_network = self.SYNC_ASNS.get(owner[0], "") if owner else ""
             # A video call is symmetric (measured 2026-10-14: an all-day Google Meet, ~0.8 Mbit/s each
             # way, 2.17 GB up, alerted as #82). Exfiltration is lopsided: the data goes one way.
             symmetric = 0.35 <= up / (up + down) <= 0.65 if down else False
@@ -821,8 +829,9 @@ class HourlyProfile(Detector):
                      "times_normal": round(up / max(normal, 1)), "basis": basis, "down_mb": round(down / 1e6),
                      "symmetric": symmetric,
                      "top_share_pct": round(100 * share), "to_sync_service": bool(top) and sync_service(top),
-                     "to_security_vendor": bool(top) and suffix_match(top, SECURITY_TELEMETRY) is not None}
-            if (facts["to_sync_service"] or facts["to_security_vendor"] or symmetric) and share >= 0.6:
+                     "to_security_vendor": bool(top) and suffix_match(top, SECURITY_TELEMETRY) is not None,
+                     "to_sync_network": sync_network}
+            if (facts["to_sync_service"] or facts["to_security_vendor"] or sync_network or symmetric) and share >= 0.6:
                 facts["max_route"] = "digest"  # home eval: a 700 MB OneDrive hour was Jev's "exfiltration 1.00"
             out.append(Case("upload_spike", ip, ts, "Unusually large upload", facts,
                             [top] if top else [], base_severity=3))
@@ -2016,6 +2025,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
     gateways = Gateways(set(net.get("gateways") or ()))  # learned from the logs when not configured
     identity = Identity()
+    asn_table = AsnTable.load(cfg.get("asn_file"))  # IP -> (ASN, country), offline
     admins = set(net.get("admin_devices") or ())
     devp = cfg.get("dev_profile", {})
     dev = DevProfile(devp.get("hosts") or (), devp.get("domains") or ())
@@ -2029,7 +2039,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
                   **d.get("beaconing", {})),
         SuspiciousDNS(popular=popular, dev=dev, **d.get("dns_anomaly", {})),
         PortScan(**d.get("scan", {})),
-        HourlyProfile(**{"timezone": tz, **d.get("upload_spike", {}), **d.get("hourly", {})}),
+        HourlyProfile(**{"timezone": tz, "asn": asn_table, **d.get("upload_spike", {}), **d.get("hourly", {})}),
         NewExternalDomain(warmup, popular=popular, dev=dev, **d.get("new_domain", {})),
         NewDevice(warmup, load_oui(cfg.get("oui_file")), timezone=tz),
         InternetExposure(warmup, **d.get("exposure", {})),
@@ -2039,7 +2049,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
         TakeoverChannel(**{"timezone": tz, **d.get("takeover", {})}),
         OddPort(dev=dev, **d.get("odd_port", {})),
         DnsBypass(warmup),
-        IotDrift(fixed_function_hosts(assets_table), AsnTable.load(cfg.get("asn_file")), **d.get("iot_drift", {})),
+        IotDrift(fixed_function_hosts(assets_table), asn_table, **d.get("iot_drift", {})),
         TlsOddities(warmup, **d.get("tls_odd", {})),
         UdmIps(),
         UdmAdmin(warmup, **d.get("udm_admin", {})),
