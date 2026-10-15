@@ -48,7 +48,13 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
 ## Highlights
 
 - **21 case types from 19 detectors** tuned for homes (table below). Each is plain Python with
-  tests and a written spec. Learned baselines survive restarts.
+  tests and a written spec. Learned baselines survive restarts and follow the *device* (DHCP
+  hostname, then MAC, then IP), so a laptop keeps its history when it moves between addresses.
+- **Quiet by design.** A 3-day learning period sends the AI's alerts to the digest. Code-proven
+  ceilings keep known shapes out of your phone: heartbeats to push, EDR, NTP and STUN services,
+  popular destinations, uploads to sync services or a sync company's own network, symmetric
+  video-call hours. "Suppress similar" rules can cover a whole domain, and cases they match
+  arrive already closed.
 - **Guardrailed AI triage.** Always-alert rules never reach the model and can't be suppressed.
   "Is this domain normal?" is never asked (it's the model's measured weak spot). The model needs
   0.75 confidence to alert on its own. Without an API key, it runs rules-only.
@@ -89,26 +95,30 @@ of a real ~20-device home network.
 | | Rules only | With Jev |
 |---|---|---|
 | Infected hosts surfaced (alert or digest) | 4 / 7 | 4 / 7 |
-| Infected hosts **alerted** | 2 / 7 | **4 / 7** |
-| Home night: items to read | 8 | 8 |
-| Home night: false alerts | 0 | **0** |
+| Infected hosts **alerted** | 1 / 7 | **2 / 7** |
+| Home night: items to read | 10 | 10 |
+| Home night: false alerts | 1 | 2 |
+| WannaCry: cases raised for one worm | 10 | 10 |
 | Jev cost for everything above | | $0.0008 |
 
-Jev's measured value is **promotion**: it turned two real infections (HtBot, FluBot) from digest
-items into alerts without adding false alerts. Tuning took the home night from 26 items and 4 false
-alerts down to 8 and 0. The sample is small, so treat it as a sanity check, not a benchmark.
+Measured 2026-10-15 after the noise review. Jev's value is **promotion**: it turned HtBot's C2 from
+a digest item into an alert without losing anything. The home night's one rules-only "false alert" is
+a remote-control tool found on a work laptop, which the labels call benign and the detector is right
+about; two of its items are a phone's iCloud backup and a work laptop's EDR upload. The earlier run
+(2026-10-13) and what changed are in [eval/RESULTS.md](eval/RESULTS.md). The sample is small, so
+treat it as a sanity check, not a benchmark.
 
 ## What it catches
 
 | Detector | Finds |
 |---|---|
 | `new_device` | a device never seen before joins, keyed on its MAC (vendor, randomized MAC, night-time) |
-| `beaconing` | very regular repeat connections to one outside host (command-and-control heartbeat) |
+| `beaconing` | very regular repeat connections to one outside host (command-and-control heartbeat); push, EDR, NTP, STUN and popular services are capped at digest |
 | `dns_anomaly` | bursts of failed or random-looking lookups (DGA), and DNS tunnelling |
 | `exposure` | a device answers a connection from the internet: port forward, UPnP (**always alerts**) |
-| `mgmt_access` | a device tries the router's admin page, or SSH/RDP/SMB/VNC/telnet on another device |
+| `mgmt_access` | a device tries the router's admin page, or SSH/RDP/SMB/VNC/telnet on another device; a sweep across 5+ devices in 10 minutes is one alert (worm shape) |
 | `rogue_dhcp` | a DHCP server other than the router (**always alerts**) |
-| `takeover` | webhook/callback catchers, paste and file-drop sites (**always alert**), tunnels and remote-control tools |
+| `takeover` | webhook/callback catchers, paste and file-drop sites (**always alert**), tunnels and remote-control tools (contact, not just a lookup) |
 | `iot_drift` | a camera, TV, hub or other fixed-function device talks to new networks, countries or ports |
 | `odd_port` | outbound on a port no device in the house uses, or an unusually long connection |
 | `dns_bypass` | a device starts resolving names outside your resolver (plain, DoT, DoQ, DoH) |
@@ -117,7 +127,7 @@ alerts down to 8 and 0. The sample is small, so treat it as a sanity check, not 
 | `off_hours` | a device busy at an hour it's normally idle |
 | `tls_odd` | encrypted sessions stacking weak oddities (no name, unexplained IP, odd port, bad cert) |
 | `cleartext_auth` | HTTP basic auth, FTP logins, telnet, POP3/IMAP or MQTT without encryption |
-| `new_domain` | first contact with a rarely used domain (code-routed; mostly log-only) |
+| `new_domain` | first contact with a rarely used domain (code-routed; log-only, kept out of the queue by default) |
 | `scan` | one host probing many hosts or ports |
 | `udm_ips`, `udm_admin` | the router's own IPS verdicts, and admin logins (new source or repeated failures **always alert**), from its syslog |
 | `ioc_match`, `ids_alert` | your threat lists (**always alert**), and Suricata alerts if you run it |
@@ -145,9 +155,11 @@ Add `--profile syslog` for the router syslog listener, or `--profile ids` for Su
 `tapwatch service install --zeek-dir <dir>`. On Windows, Npcap captures and everything else runs
 in WSL (`--capture-iface` adds the capture service). See [docs/setup/windows.md](docs/setup/windows.md).
 
-`init` writes `config.yaml`, `assets.yaml` and `.env` (secrets live only in `.env`). Alerts can go
-to **ntfy** (phone push; `init` makes a private topic), **Discord**, **Teams**, **email** or any
-**webhook**. The first 3 days are a learning period: the AI's alerts go to the daily digest instead of
+`init` writes `config.yaml`, `assets.yaml` and `.env` (secrets live only in `.env`), offers to
+download the public lists, and lists every VLAN's gateway you tell it about (one is strict, the
+rest are learned). If your LAN has a public IPv6 prefix, put it in `network.local_nets` so that
+traffic is watched too. Alerts can go to **ntfy** (phone push; `init` makes a private topic),
+**Discord**, **Teams**, **email** or any **webhook**. The first 3 days are a learning period: the AI's alerts go to the daily digest instead of
 your phone while the baselines fill (always-alert rules still interrupt), so expect it to be quiet before it settles.
 
 **Try it without a network** (synthetic capture, no real hosts, no malware):
@@ -242,10 +254,11 @@ on PRs into `main`.
 
 ## Status
 
-**v0.1.1**, running on a real home network, so expect rough edges. Next up, per the
-[roadmap](docs/ROADMAP.md): a long-running test of host context (in progress), a clean-machine
-Windows test, and endpoint rules from osquery process events. macOS waits until there's a Mac to
-test on.
+**v0.1.1**, running on a real home network, so expect rough edges. The Linux paths (a bare
+container following this README, and the Compose stack) were installed from scratch and run on
+2026-10-15. Next up, per the [roadmap](docs/ROADMAP.md): a long-running test of host context (in
+progress), a clean-machine Windows test, and endpoint rules from osquery process events. macOS
+waits until there's a Mac to test on.
 
 ## License
 
