@@ -58,3 +58,13 @@ def test_config_points_unset_lists_at_feeds_dir(tmp_path):
     cfg = config.with_feeds({"feeds_dir": str(tmp_path), "popular_domains_file": "/mine.csv"})
     assert cfg["oui_file"] == str(tmp_path / "oui.csv") and cfg["popular_domains_file"] == "/mine.csv"
     assert "asn_file" not in cfg
+
+
+def test_missing_feeds_names_what_the_detectors_lose(tmp_path):
+    msg = config.missing_feeds(config.with_feeds({"feeds_dir": str(tmp_path)}))
+    assert msg.startswith("public lists not downloaded, run `tapwatch update-feeds`")
+    assert "popular domains" in msg and "MAC vendors" in msg and "IP-to-network" in msg
+    (tmp_path / "top-100k.csv").write_text("x")
+    assert "popular domains" not in config.missing_feeds(config.with_feeds({"feeds_dir": str(tmp_path)}))
+    full = {"popular_domains_file": "a", "oui_file": "b", "asn_file": "c"}
+    assert config.missing_feeds(full) == ""

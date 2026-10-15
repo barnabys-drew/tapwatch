@@ -33,6 +33,24 @@ def with_feeds(cfg: dict) -> dict:
     return cfg
 
 
+def missing_feeds(cfg: dict) -> str:
+    """What's lost without the downloaded lists: a warning line for the log, or "" when all are set.
+
+    The popular-domains list is the one that matters: without it the beaconing cap never applies,
+    every numbered CDN host counts as random to dns_anomaly and new_domain, and the "popular"
+    fact is always false. That is a much noisier first day, and nothing else says why."""
+    lost = []
+    if not cfg.get("popular_domains_file"):
+        lost.append("popular domains (beaconing and DNS detectors treat every CDN host as unknown)")
+    if not cfg.get("oui_file"):
+        lost.append("MAC vendors (new devices have no maker)")
+    if not cfg.get("asn_file"):
+        lost.append("IP-to-network (destinations have no owner)")
+    if not lost:
+        return ""
+    return "public lists not downloaded, run `tapwatch update-feeds`: missing " + "; ".join(lost)
+
+
 def assets(cfg: dict) -> Assets:
     p = cfg.get("assets_file")
     table = yaml.safe_load(Path(p).read_text()) if p and Path(p).exists() else {}
