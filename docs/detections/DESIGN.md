@@ -255,6 +255,9 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **FPs:** the camera's vendor-port keepalive, UniFi inform, push services (5223/5228),
   NTP, the hub's MQTT keepalive. Suppress when SNI or base domain is popular **and**
   shared, or the role is fixed-function **and** the destination is in the device's 14-day set.
+  A popular destination (Tranco) that no other household device uses is capped at digest, never
+  log: popular services are C2 channels too (Discord, Telegram, GitHub), so it stays in the daily
+  digest (owner decision, 2026-10-15).
   Services that are regular by design (`BEACON_CLASSES`: push notification, endpoint security
   agent, time sync, STUN/VPN relay; `detectors.beaconing.benign_classes` extends it) carry
   `known_class` and are capped at digest, never log: on a one-computer network nothing is ever
@@ -296,6 +299,7 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Baseline:** 14 days. Measured: **14 proto/port pairs house-wide**, p99 duration 610 s,
   and **0 connections over 1 h**.
 - **Dedupe:** `odd_port|host|proto/port`, 7 days.
+  A (device, port, kind) is reported once every `reported_days` (7), not once forever (fixed 2026-10-15).
 - **FPs:** new games or voice chat (udp ephemeral), work VPN (the work laptop's IPsec/WireGuard),
   Steam downloads. Allowlist per device. Zeek `service` lets "ssl on 4443" be treated as softer than "unknown on 4444".
 - **Route:** Jev-routed. A floor of DIGEST for `service` unknown on fixed-function devices.
@@ -376,6 +380,9 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Baseline:** 7 days for household JA4 prevalence. Measured: 22% no-SNI but only 43 established,
   0.7% bare-IP TCP, and 49 "invalid cert" rows that were all Zeek missing intermediates.
 - **Dedupe:** `tls_odd|host|dst`.
+  Reported once per (device, port) every `reported_days` (7); a pair learned in warmup is kept for
+  good. Until 2026-10-15 it was once forever, so a C2 on a port where the camera had once been
+  learned was invisible.
 - **FPs:** Windows CDN validation noise (ignore `unable to get local issuer` alone), UniFi gear's
   self-signed certs (internal; skip internal destinations), and Chrome/ECH no-SNI.
 - **Route:** score 3 → DIGEST, ≥4 → Jev-routed.
