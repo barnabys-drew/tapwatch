@@ -282,8 +282,12 @@ def options(values, selected, labels: dict | None = None) -> str:
     return "".join(out)
 
 
-def device(assets: Assets, host: str) -> str:
-    name = assets.name(host)
+def device(assets: Assets, host: str, facts: dict | None = None) -> str:
+    """The device label: the assets.yaml name (by DHCP hostname, MAC or IP), else the DHCP hostname
+    the device claimed (network data, escaped), else the bare address."""
+    name = assets.name(host, facts)
+    if name == host and facts and facts.get("device_name"):
+        name = f"{facts['device_name']} (DHCP name)"
     if name == host:
         return f'<span class="mono">{e(host)}</span>'
     return f'<span class="dev">{e(name)}<small class="mono">{e(host)}</small></span>'
@@ -400,7 +404,7 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
             f'<td>{badge(sev_cls, sev)}</td><td>{e(severity_label(r))}</td>'
             f'<td><a class="title" href="/case/{r["id"]}">{e(r["title"])}</a>'
             f'<div class="faint mono">{e(r["detector"])}</div></td>'
-            f'<td>{device(assets, r["host"])}</td>'
+            f'<td>{device(assets, r["host"], json.loads(r["facts"] or "{}"))}</td>'
             f'<td class="hide-sm">{badge(r["route"])}</td><td>{badge(r["status"])}</td>'
             f'<td class="hide-sm">{badge(r["disposition"]) if r["disposition"] else ""}</td>'
             f'<td class="num">{r["hits"]}</td><td class="faint hide-sm tnum">{e(when(r["last_ts"]))}</td></tr>')
@@ -446,7 +450,7 @@ def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str
              + (tile(_pct(conf), "Jev confidence", "amber", verdict.get("category", "")) if verdict
                 else tile("–", "Jev", "green", "not asked")))
     summary = f"""<div class="card"><h2>Details</h2><dl>
-<dt>Device</dt><dd>{device(assets, r["host"])}</dd>
+<dt>Device</dt><dd>{device(assets, r["host"], facts)}</dd>
 <dt>Detector</dt><dd class="mono">{e(r["detector"])}</dd>
 <dt>Route</dt><dd>{badge(r["route"])} {e(r["reason"])}</dd>
 <dt>First seen</dt><dd class="tnum">{e(when(r["first_ts"]))}</dd>

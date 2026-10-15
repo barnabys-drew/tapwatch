@@ -145,7 +145,8 @@ HEADER = ("# Written by `tapwatch init`. Every option, with comments: config.exa
 def write(directory: str, cfg: dict, assets: dict, env: dict, force: bool = False) -> list[str]:
     d = Path(directory)
     targets = {d / "config.yaml": HEADER + yaml.safe_dump(cfg, sort_keys=False),
-               d / "assets.yaml": "# Device IP -> name and role. Jev sees names, never IPs.\n"
+               d / "assets.yaml": "# Device -> name and role. Keys: an IP, mac:<address> or name:<DHCP hostname>.\n"
+                                  "# Jev sees names, never IPs, MACs or DHCP hostnames.\n"
                                   + yaml.safe_dump(assets, sort_keys=False)}
     clash = [str(p) for p in targets if p.exists()]
     if clash and not force:
