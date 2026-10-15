@@ -1003,6 +1003,8 @@ def test_identity_learns_mac_from_conn_and_hostname_from_dhcp():
     assert ident.facts_for("192.168.50.10") == {"device_mac": mac, "device_name": "ACCT-LAPTOP"}
     run(ident, [dict(dhcp(T0 + 2, mac=mac), host_name="ACCT-LAPTOP", assigned_addr="192.168.50.77")])
     assert ident.hostname_for("192.168.50.77") == "ACCT-LAPTOP"                        # follows the lease
+    run(ident, [dict(conn(T0 + 2.5, src="fe80::1:2:3:4"), orig_l2_addr=mac)])
+    assert ident.ip_for("name:acct-laptop") == "192.168.50.77"                          # link-local never wins
     run(ident, [dict(conn(T0 + 3, src="192.168.50.10"), orig_l2_addr="ff:ff:ff:ff:ff:ff")])
     assert ident.mac_for("192.168.50.10") == mac                                          # broadcast MAC ignored
     again = Identity()

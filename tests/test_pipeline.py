@@ -363,6 +363,11 @@ def test_restart_keeps_what_the_detectors_learned(tmp_path):
     h3 = next(d for d in p3.detectors if d.name == "hourly")
     assert "192.168.50.11" in b3.users["shared.example"]
     assert h3.dests["192.168.50.10"].most_common(1)[0][1] == 5_000   # a Counter again, not a plain dict
+    h1.feed(dict(dns(T0 + 901, "backup.example"), answers=["203.0.113.77"]))
+    p1.save_state()
+    p4 = fresh()
+    p4.restore_state()
+    assert next(d for d in p4.detectors if d.name == "hourly").names["203.0.113.77"] == "backup.example"
 
 
 def test_unreadable_saved_state_is_discarded_not_fatal(tmp_path):
