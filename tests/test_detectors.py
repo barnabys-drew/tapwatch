@@ -826,6 +826,22 @@ def test_beacon_to_a_service_other_devices_use_is_capped():
     assert "max_route" not in lone.facts
 
 
+def test_beacon_to_a_service_that_is_regular_by_design_is_capped_at_digest():
+    # One computer, nothing shared: push notifications, EDR check-ins, NTP and STUN are the heartbeats
+    # every such network has, and the class is a code fact for the summary.
+    beats = [conn(T0 + i * 300) for i in range(12)]
+    push = run(Beaconing(), [ssl(T0 - 1, "client.wns.windows.com")] + beats)[0]
+    assert (push.facts["known_class"], push.facts["max_route"]) == ("push notification", "digest")
+    edr = run(Beaconing(benign_classes={"endpoint security agent": ["edr.example"]}),
+              [ssl(T0 - 1, "zone-01.edr.example")] + beats)[0]
+    assert push.facts["shared_by"] == 0 and edr.facts["known_class"] == "endpoint security agent"
+    assert "known_class" not in run(Beaconing(), [ssl(T0 - 1, "c2.example")] + beats)[0].facts
+    # popular and shared stays log (the stricter cap), even for a classed service
+    b = Beaconing(popular={"windows.com"})
+    run(b, [ssl(T0 - 2, "client.wns.windows.com", src="192.168.50.11"), ssl(T0 - 1, "client.wns.windows.com")])
+    assert run(b, beats)[0].facts["max_route"] == "log"
+
+
 def test_beacon_to_an_expected_tool_is_skipped():
     b = Beaconing(expected={"192.168.50.10": {"teamviewer.com"}})
     recs = [ssl(T0 - 1, "hapi.teamviewer.com")] + [conn(T0 + i * 3600) for i in range(12)]

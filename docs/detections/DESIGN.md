@@ -245,6 +245,11 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **FPs:** the camera's vendor-port keepalive, UniFi inform, push services (5223/5228),
   NTP, the hub's MQTT keepalive. Suppress when SNI or base domain is popular **and**
   shared, or the role is fixed-function **and** the destination is in the device's 14-day set.
+  Services that are regular by design (`BEACON_CLASSES`: push notification, endpoint security
+  agent, time sync, STUN/VPN relay; `detectors.beaconing.benign_classes` extends it) carry
+  `known_class` and are capped at digest, never log: on a one-computer network nothing is ever
+  "shared", so this is the only cap that can apply there. Measured 2026-10-15: a work laptop's
+  Tanium check-in every 75 s, Jev c2 0.99, alerted.
 - **Route:** Jev-routed (unchanged).
 - **Jev:** **yes, its proven strength.** It alerted the synthetic C2 at 1.00 where rules-only
   only digested it. Questions: `Q-cat`, `Q-sev`, `Q-routine`, `Q-wake`, plus `Q-role-fit`.

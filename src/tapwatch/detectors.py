@@ -14,6 +14,7 @@ import math
 import re
 import statistics
 from collections import Counter, defaultdict, deque
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
@@ -272,10 +273,14 @@ class Beaconing(Detector):
 
     def __init__(self, min_count: int = 10, min_span: float = 600, max_cv: float = 0.15, min_interval: float = 5,
                  ignore_udp_ports: set[int] | None = None, dev: DevProfile | None = None, burst: float = 10,
-                 popular: set[str] | None = None, expected: dict[str, set[str]] | None = None):
+                 popular: set[str] | None = None, expected: dict[str, set[str]] | None = None,
+                 benign_classes: dict[str, Iterable[str]] | None = None):
         self.min_count, self.min_span, self.max_cv, self.min_interval = min_count, min_span, max_cv, min_interval
         self.burst, self.popular = burst, popular or set()
         self.expected = expected or {}             # host -> services it's expected to poll (takeover.expected)
+        self.classes = {k: set(v) for k, v in BEACON_CLASSES.items()}  # class -> domains (config adds to it)
+        for cls, domains in (benign_classes or {}).items():
+            self.classes.setdefault(cls, set()).update(domains or ())
         self.users: dict[str, set[str]] = defaultdict(set)   # base domain -> household devices that used it
         self.device: dict[str, str] = {}                      # IP -> MAC, so one device's IPv4 and IPv6 count once
         self.dev = dev or DevProfile()
@@ -294,6 +299,10 @@ class Beaconing(Detector):
         mapping a beaconing case had no destination at all (case #54 was Claude's
         s-cdn.anthropic.com, #58 was Windows push at client.wns.windows.com)."""
         return self.sni.get(ip) or self.dns.get(ip)
+
+    def class_for(self, name: str | None) -> str | None:
+        """The benign beacon class the destination belongs to (push, EDR, NTP, STUN), if any."""
+        return next((cls for cls, domains in self.classes.items() if suffix_match(name, domains)), None) if name else None
 
     def feed(self, rec: dict) -> list[Case]:
         if rec["_type"] == "conn" and mac_ok(rec.get("orig_l2_addr")) and is_internal(rec.get("id.orig_h", "")):
@@ -364,6 +373,13 @@ class Beaconing(Detector):
         # one infected machine's IPv4 and IPv6 addresses made it look "shared" (HtBot capture).
         if shared_by and popular:
             facts["max_route"] = "log"
+        # A service that is regular by design (BEACON_CLASSES): digest at most. This is the only cap
+        # that can apply on a one-computer network, where nothing is ever "shared".
+        cls = self.class_for(name)
+        if cls:
+            facts["known_class"] = cls
+            if facts.get("max_route") != "log":
+                facts["max_route"] = "digest"
         return [Case(self.name, src, rec["ts"], "Regular repeating connection to an external host",
                      facts, indicators, base_severity=3)]
 
@@ -513,6 +529,21 @@ SYNC_DOMAINS = frozenset({"onedrive.com", "sharepoint.com", "icloud.com", "iclou
 SECURITY_TELEMETRY = frozenset({"cloudsink.net", "crowdstrike.com", "sentinelone.net", "endpoint.security.microsoft.com",
                                 "securitycenter.windows.com", "sophos.com", "sophosupd.com", "eset.com",
                                 "bitdefender.net", "tanium.com", "cybereason.net", "carbonblack.io"})
+
+# Services whose clients are regular by design, so a heartbeat to them is expected, not a C2 sign:
+# a code-proven ceiling (digest, never log: a C2 hiding under a push service's domain should still
+# show up in the digest). Vendor-level public domains only; a site extends it with
+# detectors.beaconing.benign_classes. Measured 2026-10-15: a work laptop's endpoint-management
+# check-in every 75 s was scored c2 0.99 by Jev because the summary said only "same server, port
+# 17472, every 75 s"; the class is the fact the summary was missing.
+BEACON_CLASSES: dict[str, frozenset[str]] = {
+    "push notification": frozenset({"push.apple.com", "wns.windows.com", "notify.windows.com", "mtalk.google.com",
+                                    "gcm.googleapis.com", "fcm.googleapis.com", "push.services.mozilla.com"}),
+    "endpoint security agent": SECURITY_TELEMETRY,
+    "time sync": frozenset({"ntp.org", "time.apple.com", "time.windows.com", "time.google.com",
+                            "time.cloudflare.com", "time.nist.gov"}),
+    "NAT traversal / VPN relay": frozenset({"stun.l.google.com", "stun.cloudflare.com", "tailscale.com"}),
+}
 
 
 def sync_service(name: str) -> bool:
