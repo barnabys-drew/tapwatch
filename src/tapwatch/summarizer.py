@@ -112,6 +112,9 @@ def _observed(c: Case, words: dict) -> str:
         elif f.get("to_security_vendor"):
             text += (f" {f.get('top_share_pct', 0)}% went to an endpoint-security vendor's cloud, as managed "
                      "work computers' security agents do.")
+        elif f.get("to_sync_network"):
+            text += (f" {f.get('top_share_pct', 0)}% went to {f['to_sync_network']}'s own network, where that "
+                     "company's cloud backup and sync services live.")
         if f.get("symmetric"):
             text += (f" It also downloaded about {f.get('down_mb', 0)} MB in the same hour, the shape of a video "
                      "call rather than an upload.")

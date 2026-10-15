@@ -1107,3 +1107,19 @@ def test_admin_port_sweep_is_one_alert_not_eighty_digest_items():
     slow = ManagementAccess(Warmup(0), gateways=Gateways({GW}))
     spread = [conn(T0 + i * 3600, src="192.168.50.20", dst=f"192.168.50.{100 + i}", port=3389) for i in range(6)]
     assert all(not c.facts.get("sweep") for c in run(slow, spread))
+
+
+def test_upload_to_a_sync_companys_own_network_is_capped_when_no_name_was_seen():
+    class Table:
+        def lookup(self, ip):
+            return (714, "US") if ip.startswith("17.") else (16509, "US") if ip.startswith("54.") else None
+
+    def spike(dst):
+        det = HourlyProfile(asn=Table())
+        recs = [conn(T0 + h * 3600, orig_bytes=5_000_000) for h in range(8)]
+        recs += [conn(T0 + 8 * 3600 + 60, dst=dst, orig_bytes=2_000_000_000), conn(T0 + 9 * 3600)]
+        return next(x for x in run(det, recs) if x.detector == "upload_spike")
+    apple, aws = spike("17.250.103.75"), spike("54.67.92.206")
+    assert apple.facts["to_sync_network"] == "Apple" and apple.facts["max_route"] == "digest"
+    assert apple.indicators == ["17.250.103.75"]                         # the address stands in for the name
+    assert aws.facts["to_sync_network"] == "" and "max_route" not in aws.facts
