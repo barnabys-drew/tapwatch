@@ -90,6 +90,11 @@ What these numbers imply:
 | Offline enrichment feeds (pull-only) | ASN and country per IP (iptoasn.com TSV or a GeoLite2 ASN DB), Tranco (already have it), daily newly-registered-domain (NRD) list, OUI vendor table | Daily download. **Nothing about the house is sent out** | R02, R08, R05 vendor, R10 |
 
 **Blind spots (by design of the tap):**
+- **IPv6 needs the LAN's prefix.** Private IPv4, link-local and unique-local IPv6 are built in; a device's
+  *global* IPv6 address is "inside" only if `network.local_nets` lists the prefix (`tapwatch init`
+  proposes this machine's /64). Phones and laptops prefer IPv6 when the router offers it, so without
+  it that traffic is invisible to every detector (fixed 2026-10-15; the 14 rotating addresses above
+  were link-local, which was always inside).
 - **Same-switch east-west traffic isn't mirrored.** PC → NAS on the same USW, or
   Wi-Fi client → client on the same AP, never crosses port 1. Only 75 device→device
   rows were seen, all of them cross-VLAN/routed. Lateral movement is visible only

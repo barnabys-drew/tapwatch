@@ -30,6 +30,7 @@ class Facts:
     timezone: str = ""
     interfaces: list[tuple[str, bool]] = field(default_factory=list)  # (name, has an IPv4 address)
     windows_capture: bool = False
+    local_v6: str = ""  # this machine's global IPv6 prefix (/64), if the LAN has one
 
 
 def _run(cmd: list[str]) -> str:
@@ -46,6 +47,7 @@ def detect() -> Facts:
         f.gateway = m.group(1)
         src = re.search(r"src (\S+)", _run(["ip", "route", "get", m.group(1)]))
         f.this_ip = src.group(1) if src else ""
+        f.local_v6 = global_v6_prefix(_run(["ip", "-6", "addr", "show", "dev", m.group(2), "scope", "global"]))
     tz = Path("/etc/timezone")
     f.timezone = tz.read_text().strip() if tz.exists() else _run(["timedatectl", "show", "-p", "Timezone", "--value"]).strip()
     with_ip = set(re.findall(r"^\d+:\s+(\S+)\s+inet\s", _run(["ip", "-o", "-4", "addr", "show"]), re.MULTILINE))
@@ -55,6 +57,20 @@ def detect() -> Facts:
             f.interfaces.append((p.name, p.name in with_ip))
     f.windows_capture = DUMPCAP.exists()
     return f
+
+
+def global_v6_prefix(ip_addr_output: str) -> str:
+    """The /64 of the first global IPv6 address in `ip -6 addr` output (not a temporary/privacy one)."""
+    import ipaddress
+
+    for addr, plen, flags in re.findall(r"inet6 (\S+)/(\d+) scope global([^\n]*)", ip_addr_output):
+        if "temporary" in flags:
+            continue
+        try:
+            return str(ipaddress.ip_interface(f"{addr}/{min(int(plen), 64)}").network)
+        except ValueError:
+            continue
+    return ""
 
 
 def suggest_iface(f: Facts) -> str:
@@ -86,7 +102,9 @@ def build(f: Facts, ask) -> tuple[dict, dict, dict, list[str]]:
     cfg: dict = {
         "db_path": "tapwatch.db", "assets_file": "assets.yaml", "feeds_dir": "feeds",
         "audience": audience, "timezone": tz,
-        "network": {"gateways": [gateway] if gateway else [], "admin_devices": [this_ip] if this_ip else []},
+        "network": {"gateways": [gateway] if gateway else [], "admin_devices": [this_ip] if this_ip else [],
+                    "local_nets": [v6] if (v6 := ask("Your LAN's IPv6 prefix (Enter to skip if you don't use IPv6)",
+                                                      f.local_v6)) else []},
         "warmup_seconds": 86400, "learning_days": 3, "zeek_retention_days": 30, "digest_hour_utc": 13,
         "ui": {"host": "127.0.0.1", "port": 8765},
     }

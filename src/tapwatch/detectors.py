@@ -46,12 +46,22 @@ def unicast(ip: str) -> bool:
     return not (addr.is_multicast or str(addr) == "255.255.255.255" or str(addr).endswith(".255"))
 
 
+# The site's own routable prefixes (network.local_nets), set by build(): a LAN device's IPv6 global
+# address is not in any list above, so without this every detector skipped its traffic, and Apple
+# and Android devices prefer IPv6 whenever the router offers it.
+LOCAL_NETS: list = []
+
+
+def set_local_nets(cidrs) -> None:
+    LOCAL_NETS[:] = [ipaddress.ip_network(c, strict=False) for c in cidrs]
+
+
 def is_internal(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
-    return any(addr in net for net in INTERNAL_NETS)
+    return any(addr in net for net in INTERNAL_NETS) or any(addr in net for net in LOCAL_NETS)
 
 
 # Two-label public suffixes, so bbc.co.uk is a registrable domain and co.uk is not. The common
@@ -1737,6 +1747,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
           popular: set[str] | None = None, assets_table: dict | None = None) -> list[Detector]:
     d = cfg.get("detectors", {})
     net = cfg.get("network", {})
+    set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
     gateways = Gateways(set(net.get("gateways") or ()))  # learned from the logs when not configured
     admins = set(net.get("admin_devices") or ())
     devp = cfg.get("dev_profile", {})

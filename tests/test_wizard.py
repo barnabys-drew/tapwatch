@@ -89,3 +89,14 @@ def test_service_install_and_uninstall(tmp_path):
     assert calls[1][:4] == ["systemctl", "--user", "enable", "--now"]
     removed = service.uninstall(run=run, unit_dir=tmp_path / "units")
     assert len(removed) == 3 and not list((tmp_path / "units").iterdir())
+
+
+def test_wizard_proposes_the_lans_ipv6_prefix_and_skips_privacy_addresses():
+    out = ("2: eth0    inet6 2001:db8:abcd:12:5d1e:ffff:aaaa:1/64 scope global temporary dynamic\n"
+           "       valid_lft 600sec preferred_lft 600sec\n"
+           "2: eth0    inet6 2001:db8:abcd:12:aaaa:bbbb:cccc:dddd/64 scope global dynamic mngtmpaddr\n")
+    assert wizard.global_v6_prefix(out) == "2001:db8:abcd:12::/64"
+    assert wizard.global_v6_prefix("2: eth0    inet6 fe80::1/64 scope link\n") == ""
+    cfg, _, _, _ = wizard.build(wizard.Facts(gateway="192.168.50.1", local_v6="2001:db8:abcd:12::/64"), answers())
+    assert cfg["network"]["local_nets"] == ["2001:db8:abcd:12::/64"]
+    assert wizard.build(FACTS, answers())[0]["network"]["local_nets"] == []
