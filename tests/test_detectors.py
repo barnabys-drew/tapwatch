@@ -1007,3 +1007,42 @@ def test_identity_learns_mac_from_conn_and_hostname_from_dhcp():
     again = Identity()
     again.restore(ident.snapshot())
     assert again.facts_for("192.168.50.77") == ident.facts_for("192.168.50.77")
+
+
+def test_baselines_follow_the_device_across_a_dock_swap_and_old_entries_move_under_its_identity():
+    from tapwatch.detectors import HourlyProfile, Identity, ManagementAccess
+    ident = Identity()
+    laptop, desktop = "aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"
+    nd = NewExternalDomain(Warmup(0))
+    nd.ident = ident
+    # the laptop on Wi-Fi (.102) learns a domain before its identity is known: keyed on the IP for now
+    feed_all([ident, nd], [dns(T0, "cdn.example", src="192.168.50.102")])
+    nd.flush()
+    assert "cdn.example" in nd.known["192.168.50.102"]
+    lease = lambda ts, mac, ip, name: dict(dhcp(ts, mac=mac), host_name=name, assigned_addr=ip)
+    feed_all([ident, nd], [lease(T0 + 1, laptop, "192.168.50.102", "ACCT-LAPTOP"),
+                           dict(conn(T0 + 2, src="192.168.50.102"), orig_l2_addr=laptop)])
+    # the laptop docks and takes .215: the domain it knows is not new, because the baseline moved with it
+    feed_all([ident, nd], [lease(T0 + 10, laptop, "192.168.50.215", "ACCT-LAPTOP"),
+                           dict(conn(T0 + 11, src="192.168.50.215"), orig_l2_addr=laptop),
+                           dns(T0 + 12, "cdn.example", src="192.168.50.215")])
+    assert nd.flush() == [] and "192.168.50.102" not in nd.known and "cdn.example" in nd.known["name:acct-laptop"]
+    # the desktop takes .102 next: it does not inherit the laptop's baseline
+    feed_all([ident, nd], [dict(conn(T0 + 20, src="192.168.50.102"), orig_l2_addr=desktop),
+                           dns(T0 + 21, "cdn.example", src="192.168.50.102")])
+    assert [c.host for c in nd.flush()] == ["192.168.50.102"]
+    # an admin-port pair learned on one address stays learned on the next
+    ma = ManagementAccess(Warmup(600), gateways=Gateways({GW}))
+    ma.ident = ident
+    assert run(ma, [conn(T0 + 30, src="192.168.50.215", dst=GW, port=443)]) == []        # warmup: learned
+    feed_all([ident], [lease(T0 + 40, laptop, "192.168.50.150", "ACCT-LAPTOP"),
+                       dict(conn(T0 + 41, src="192.168.50.150"), orig_l2_addr=laptop)])
+    assert run(ma, [conn(T0 + 700, src="192.168.50.150", dst=GW, port=443)]) == []       # same laptop, new IP
+    assert len(run(ma, [conn(T0 + 701, src="192.168.50.102", dst=GW, port=443)])) == 1   # the desktop: new
+    # hourly profiles are keyed on the device too, and the case names the address it is on now
+    hp = HourlyProfile()
+    hp.ident = ident
+    recs = [conn(T0 + 3600 + h * 3600, src="192.168.50.150", orig_bytes=10_000_000) for h in range(8)]
+    recs += [conn(T0 + 9 * 3600 + 60, src="192.168.50.150", orig_bytes=1_000_000_000), conn(T0 + 10 * 3600, src="192.168.50.150")]
+    spike = next(c for c in run(hp, recs) if c.detector == "upload_spike")
+    assert spike.host == "192.168.50.150" and "name:acct-laptop" in hp.history and "192.168.50.150" not in hp.history

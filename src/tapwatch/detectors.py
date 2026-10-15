@@ -21,7 +21,7 @@ from typing import ClassVar
 from zoneinfo import ZoneInfo
 
 from .feeds import AsnTable
-from .models import Case
+from .models import Case, device_id
 
 log = logging.getLogger("tapwatch")
 
@@ -212,6 +212,63 @@ class Detector:
         """Emit anything still buffered (end of a replay). Most detectors buffer nothing."""
         return []
 
+    # Per-device baselines are keyed on the device identity (name:<hostname>, mac:<address>, else
+    # the IP) rather than the IP of the day, so a laptop keeps its baselines across a dock swap or a
+    # DHCP change and a different machine on that address doesn't inherit them. DEVICE_KEYED names
+    # the attributes whose keys are device keys (a str, or a tuple whose first item is one); entries
+    # recorded under an IP before its identity was known move under the identity when it is.
+    ident: Identity | None = None
+    DEVICE_KEYED: ClassVar[tuple[str, ...]] = ()
+
+    def dev_key(self, ip: str) -> str:
+        if self.ident is None:
+            return ip
+        key = self.ident.key(ip)
+        moved = self.__dict__.setdefault("_moved", {})
+        if key != ip and moved.get(ip) != key:
+            moved[ip] = key
+            # Entries this device recorded under any of its addresses before they resolved to it
+            # (the laptop learned on Wi-Fi, then docked and was first resolved on the dock's address).
+            for old in self.ident.ips_for(key):
+                for a in self.DEVICE_KEYED:
+                    move_entries(getattr(self, a), old, key)
+        return key
+
+    def dev_ip(self, key: str) -> str:
+        """The address a device key was last seen on (cases always name an address)."""
+        return self.ident.ip_for(key) if self.ident is not None else key
+
+
+def _keyed_on(k, ip: str) -> bool:
+    return k == ip or (isinstance(k, tuple) and bool(k) and k[0] == ip)
+
+
+def _rekeyed(k, ip: str, key: str):
+    return key if k == ip else (key, *k[1:])
+
+
+def move_entries(container, ip: str, key: str) -> None:
+    """Move a detector's entries keyed by `ip` under `key`, merging with what is already there."""
+    if isinstance(container, dict):
+        for k in [k for k in container if _keyed_on(k, ip)]:
+            v, nk = container.pop(k), _rekeyed(k, ip, key)
+            if nk not in container:
+                container[nk] = v
+                continue
+            old = container[nk]
+            if isinstance(old, set) and isinstance(v, set):
+                old |= v
+            elif isinstance(old, dict) and isinstance(v, dict):
+                old.update(v)
+            elif isinstance(old, deque) and isinstance(v, deque):
+                old.extend(v)
+            elif isinstance(old, list) and isinstance(v, list):
+                container[nk] = [a + b for a, b in zip(old, v)]
+    elif isinstance(container, set):
+        moved = {k for k in container if _keyed_on(k, ip)}
+        container -= moved
+        container |= {_rekeyed(k, ip, key) for k in moved}
+
 
 class Warmup:
     """Tracks when we first saw traffic, so 'first seen' detectors stay quiet while learning."""
@@ -311,6 +368,7 @@ class Beaconing(Detector):
 
     name = "beaconing"
     PERSIST: ClassVar[tuple[str, ...]] = ("reported",)
+    DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("reported",)
 
     def __init__(self, min_count: int = 10, min_span: float = 600, max_cv: float = 0.15, min_interval: float = 5,
                  ignore_udp_ports: set[int] | None = None, dev: DevProfile | None = None, burst: float = 10,
@@ -393,8 +451,8 @@ class Beaconing(Detector):
         if rec.get("proto") == "udp" and port in self.ignore_udp:
             return []
         name = self.name_for(dst)
-        key = base_domain(name) if name else dst
-        if self.already_reported(src, port, key, rec["ts"]) or self.dev.covers(src, name) \
+        key, who = base_domain(name) if name else dst, self.dev_key(src)
+        if self.already_reported(who, port, key, rec["ts"]) or self.dev.covers(src, name) \
                 or (name and suffix_match(name, self.expected.get(src, frozenset()))):
             return []  # already reported, or a dev host polling a dev service (model API, registry)
         pair = (src, dst, port)
@@ -419,7 +477,7 @@ class Beaconing(Detector):
         cv = statistics.pstdev(gaps) / mean  # coefficient of variation: 0 = perfectly regular
         if cv > self.max_cv:
             return []
-        self.reported[(src, port, key)] = rec["ts"]
+        self.reported[(who, port, key)] = rec["ts"]
         if len(self.reported) > 5000:
             self._prune(rec["ts"])
         indicators = [name] if name else []
@@ -657,6 +715,7 @@ class HourlyProfile(Detector):
 
     name = "hourly"
     PERSIST: ClassVar[tuple[str, ...]] = ("current", "history", "last_hour", "reported")
+    DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("current", "dests", "history", "reported")
 
     def __init__(self, multiple: float = 10, floor_bytes: int = 500_000_000, min_hours: int = 6,
                  steady_mb: float = 50, stop_hours: int = 2, busy_min: int = 200, timezone: str | None = None):
@@ -688,6 +747,7 @@ class HourlyProfile(Detector):
             self.last_hour = hour
         src, dst = rec.get("id.orig_h", ""), rec.get("id.resp_h", "")
         if is_unicast_lan(src) and not is_internal(dst):
+            src = self.dev_key(src)
             cur = self.current.setdefault(src, [0, 0, 0])
             if len(cur) < 3:
                 cur.append(0)  # state saved before downloads were counted
@@ -722,6 +782,7 @@ class HourlyProfile(Detector):
 
     def _judge(self, host: str, hour: int, conns: int, up: int, down: int = 0) -> list[Case]:
         hist, ts, out = self.history[host], hour * 3600 + 3599, []
+        ip = self.dev_ip(host)  # cases name the address the device was last seen on
         same_up = self._same_hour(host, hour, 2)
         if len(same_up) >= 3:
             normal, basis = statistics.median(same_up), "same hour on earlier days"
@@ -742,7 +803,7 @@ class HourlyProfile(Detector):
                      "to_security_vendor": bool(top) and suffix_match(top, SECURITY_TELEMETRY) is not None}
             if (facts["to_sync_service"] or facts["to_security_vendor"] or symmetric) and share >= 0.6:
                 facts["max_route"] = "digest"  # home eval: a 700 MB OneDrive hour was Jev's "exfiltration 1.00"
-            out.append(Case("upload_spike", host, ts, "Unusually large upload", facts,
+            out.append(Case("upload_spike", ip, ts, "Unusually large upload", facts,
                             [top] if top else [], base_severity=3))
         day = datetime.fromtimestamp(ts, self.tz).date().isoformat()
         recent = [x[2] for x in list(hist)[-24:]]
@@ -752,7 +813,7 @@ class HourlyProfile(Detector):
             earlier = recent[:-(self.stop_hours - 1)] if self.stop_hours > 1 else recent
             if steady >= self.steady and all(v < 0.05 * steady for v in last) and statistics.median(earlier) >= self.steady:
                 self.reported.add((host, "stopped", day))
-                out.append(Case("upload_stopped", host, ts, "A steady uploader went quiet",
+                out.append(Case("upload_stopped", ip, ts, "A steady uploader went quiet",
                                 {"normal_mb": round(steady / 1e6), "hours": self.stop_hours, "dedupe": day},
                                 base_severity=2))
         same_conns = self._same_hour(host, hour, 1)
@@ -760,7 +821,7 @@ class HourlyProfile(Detector):
             quiet = statistics.median(same_conns)
             if quiet < 5 and conns >= max(self.busy_min, 20 * max(quiet, 1)):
                 self.reported.add((host, "off", day))
-                out.append(Case("off_hours", host, ts, "Busy at an hour it's normally idle",
+                out.append(Case("off_hours", ip, ts, "Busy at an hour it's normally idle",
                                 {"conns": conns, "normal": round(quiet), "hour": datetime.fromtimestamp(ts, self.tz).hour,
                                  "days": len(same_conns), "dedupe": day},
                                 base_severity=3))
@@ -804,6 +865,7 @@ class NewExternalDomain(Detector):
 
     name = "new_domain"
     PERSIST: ClassVar[tuple[str, ...]] = ("known", "users")
+    DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("known",)
 
     def __init__(self, warmup: Warmup, window: float = 300, popular: set[str] | None = None,
                  dev: DevProfile | None = None):
@@ -822,12 +884,12 @@ class NewExternalDomain(Detector):
             return out
         if rec["_type"] == "dns" and rec.get("rcode_name") not in (None, "NOERROR"):
             return out
-        dom = base_domain(name)
-        if dom in self.known[host]:
+        dom, who = base_domain(name), self.dev_key(host)
+        if dom in self.known[who]:
             return out
-        self.known[host].add(dom)
+        self.known[who].add(dom)
         others = len(self.users[dom])  # other devices that already used it
-        self.users[dom].add(host)
+        self.users[dom].add(who)
         if self.warmup.learning(rec["ts"]):
             return out
         win = self.pending.setdefault(host, {"start": rec["ts"], "items": []})
@@ -1029,11 +1091,12 @@ class Identity(Detector):
     """
 
     name = "identity"
-    PERSIST: ClassVar[tuple[str, ...]] = ("mac", "hostname")
+    PERSIST: ClassVar[tuple[str, ...]] = ("mac", "hostname", "last_ip")
 
     def __init__(self):
         self.mac: dict[str, str] = {}       # internal IP -> MAC
         self.hostname: dict[str, str] = {}  # MAC -> DHCP hostname
+        self.last_ip: dict[str, str] = {}   # device key -> the address it was last seen on
 
     def feed(self, rec: dict) -> list[Case]:
         kind = rec["_type"]
@@ -1044,6 +1107,7 @@ class Identity(Detector):
                     if len(self.mac) > 50_000:
                         self.mac.clear()
                     self.mac[ip] = mac
+                    self.last_ip[self.key(ip)] = ip
         elif kind == "dhcp":
             mac, name = (rec.get("mac") or "").lower(), (rec.get("host_name") or "").strip()
             if mac_ok(mac):
@@ -1054,7 +1118,19 @@ class Identity(Detector):
                 ip = rec.get("assigned_addr") or rec.get("client_addr") or ""
                 if is_unicast_lan(ip):
                     self.mac[ip] = mac
+                    self.last_ip[self.key(ip)] = ip
         return []
+
+    def key(self, ip: str) -> str:
+        """The device key for an address: name:<hostname>, else mac:<address>, else the IP itself."""
+        return device_id(ip, self.facts_for(ip))
+
+    def ip_for(self, key: str) -> str:
+        return self.last_ip.get(key, key)
+
+    def ips_for(self, key: str) -> list[str]:
+        """Every address known to belong to this device key."""
+        return [ip for ip in self.mac if self.key(ip) == key]
 
     def mac_for(self, ip: str) -> str:
         return self.mac.get(ip, "")
@@ -1159,6 +1235,7 @@ class ManagementAccess(Detector):
 
     name = "mgmt_access"
     PERSIST: ClassVar[tuple[str, ...]] = ("known",)
+    DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("known",)
     ADMIN_PORTS: ClassVar[dict[int, str]] = {22: "SSH", 23: "Telnet", 445: "Windows file sharing (SMB)",
                                              3389: "Remote Desktop", 5900: "VNC remote control",
                                              8291: "router admin (Winbox)"}
@@ -1178,7 +1255,7 @@ class ManagementAccess(Detector):
         what = self.ADMIN_PORTS.get(port) or (self.GATEWAY_PORTS.get(port) if dst in self.gateways else None)
         if what is None:
             return []
-        key = (src, dst, port)
+        key = (self.dev_key(src), dst, port)
         if key in self.known:
             return []
         self.known.add(key)
@@ -1292,6 +1369,7 @@ class OddPort(Detector):
 
     name = "odd_port"
     PERSIST: ClassVar[tuple[str, ...]] = ("ports", "long_pairs", "services", "reported", "start")
+    DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("long_pairs", "services", "reported")
 
     def __init__(self, learn_days: float = 7, long_hours: float = 4, dev: DevProfile | None = None,
                  reported_days: float = 7):
@@ -1331,24 +1409,24 @@ class OddPort(Detector):
             return []
         if self.dev.covers(src, self.names.get(dst)):
             return []
-        pp, dur = f"{proto}/{port}", float(rec.get("duration") or 0)
+        pp, dur, who = f"{proto}/{port}", float(rec.get("duration") or 0), self.dev_key(src)
         name = self.names.get(dst)
         dom = base_domain(name) if name else ""
-        known_service = bool(dom) and dom in self.services[src]
+        known_service = bool(dom) and dom in self.services[who]
         if dom:
-            self.services[src].add(dom)
+            self.services[who].add(dom)
         if self.start is None:
             self.start = rec["ts"]
         if rec["ts"] - self.start < self.learn:
             self.ports.add(pp)
             if dur > self.long_s:
-                self.long_pairs.add((src, pp))
+                self.long_pairs.add((who, pp))
             return []
         new_port = pp not in self.ports and not known_service
-        long_new = dur > self.long_s and port != 443 and (src, pp) not in self.long_pairs
-        if not (new_port or long_new) or still_reported(self.reported, (src, pp, new_port), rec["ts"], self.reported_s):
+        long_new = dur > self.long_s and port != 443 and (who, pp) not in self.long_pairs
+        if not (new_port or long_new) or still_reported(self.reported, (who, pp, new_port), rec["ts"], self.reported_s):
             return []
-        self.reported[(src, pp, new_port)] = rec["ts"]
+        self.reported[(who, pp, new_port)] = rec["ts"]
         return [Case(self.name, src, rec["ts"], "Connection on an unusual port" if new_port else "Unusually long connection",
                      {"proto": proto, "port": port, "service": rec.get("service") or "unknown",
                       "new_for_house": new_port, "minutes": round(dur / 60),
@@ -1368,6 +1446,7 @@ class DnsBypass(Detector):
 
     name = "dns_bypass"
     PERSIST: ClassVar[tuple[str, ...]] = ("known",)
+    DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("known",)
     DOH_NAMES: ClassVar[frozenset[str]] = frozenset({
         "dns.google", "cloudflare-dns.com", "dns.quad9.net", "nextdns.io", "doh.opendns.com",
         "dns.adguard-dns.com", "doh.cleanbrowsing.org", "dns.mullvad.net", "doh.dns.sb"})
@@ -1394,7 +1473,7 @@ class DnsBypass(Detector):
             how = "DNS over HTTPS"
         if how is None:
             return []
-        key = (src, how)
+        key = (self.dev_key(src), how)
         if key in self.known:
             return []
         self.known.add(key)
@@ -1434,6 +1513,7 @@ class IotDrift(Detector):
 
     name = "iot_drift"
     PERSIST: ClassVar[tuple[str, ...]] = ("first", "asns", "countries", "ports", "services", "reported")
+    DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("first", "asns", "countries", "ports", "services", "reported", "burst")
 
     def __init__(self, hosts: dict[str, str], asn=None, learn_days: float = 7, new_asns: int = 3):
         self.hosts, self.asn, self.learn, self.new_asns = hosts, asn, learn_days * 86400, new_asns
@@ -1460,6 +1540,7 @@ class IotDrift(Detector):
         src, dst, port, proto = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec.get("id.resp_p"), rec.get("proto")
         if src not in self.hosts or is_internal(dst) or proto not in ("tcp", "udp"):
             return []
+        ip, src = src, self.dev_key(src)  # baselines follow the device; the role and the case use the address
         if proto == "udp" and port == 123:
             return []  # NTP pools are volunteer servers worldwide: a "new country" every few hours (measured)
         hit = self.asn.lookup(dst)
@@ -1484,10 +1565,10 @@ class IotDrift(Detector):
         if not known_service:
             if country not in self.countries[src] and (src, "country", country) not in self.reported:
                 self.reported.add((src, "country", country))
-                out.append(self._case(src, ts, "country", country, name, port))
+                out.append(self._case(ip, src, ts, "country", country, name, port))
             if pp and pp not in self.ports[src] and (src, "port", pp) not in self.reported:
                 self.reported.add((src, "port", pp))
-                out.append(self._case(src, ts, "port", pp, name, port))
+                out.append(self._case(ip, src, ts, "port", pp, name, port))
             if asn not in self.asns[src]:
                 b = self.burst[src]
                 b.append((ts, asn))
@@ -1496,17 +1577,17 @@ class IotDrift(Detector):
                 fresh = {a for _, a in b}
                 if len(fresh) >= self.new_asns and (src, "asns", int(ts // 3600)) not in self.reported:
                     self.reported.add((src, "asns", int(ts // 3600)))
-                    out.append(self._case(src, ts, "networks", str(len(fresh)), name, port))
+                    out.append(self._case(ip, src, ts, "networks", str(len(fresh)), name, port))
         self.asns[src].add(asn)  # report each novelty once, then treat it as known
         self.countries[src].add(country)
         if pp:
             self.ports[src].add(pp)
         return out
 
-    def _case(self, host, ts, what, value, name, port) -> Case:
+    def _case(self, host, who, ts, what, value, name, port) -> Case:
         return Case(self.name, host, ts, "Fixed-function device talking somewhere new",
                     {"role": self.hosts[host], "what": what, "value": value, "port": port,
-                     "known_networks": len(self.asns[host]), "known_countries": len(self.countries[host]),
+                     "known_networks": len(self.asns[who]), "known_countries": len(self.countries[who]),
                      "dedupe": f"{what}:{value}"},
                     [name] if name else [], base_severity=3)
 
@@ -1526,6 +1607,7 @@ class TlsOddities(Detector):
 
     name = "tls_odd"
     PERSIST: ClassVar[tuple[str, ...]] = ("reported",)
+    DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("reported",)
     BAD_CERT: ClassVar[set[str]] = {"self signed certificate", "self signed certificate in certificate chain",
                                     "certificate has expired"}
 
@@ -1554,7 +1636,10 @@ class TlsOddities(Detector):
         if kind != "ssl" or not rec.get("established"):
             return []
         src, dst, port = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec.get("id.resp_p")
-        if not is_internal(src) or is_internal(dst) or still_reported(self.reported, (src, port), ts, self.reported_s):
+        if not is_internal(src) or is_internal(dst):
+            return []
+        who = self.dev_key(src)
+        if still_reported(self.reported, (who, port), ts, self.reported_s):
             return []
         signs = {"no_name": not rec.get("server_name"),
                  "unexplained_ip": ts - self.answered.get(dst, -1e18) > 3600,
@@ -1564,7 +1649,7 @@ class TlsOddities(Detector):
         if score < self.threshold:
             return []
         learning = self.warmup.learning(ts)
-        self.reported[(src, port)] = PERMANENT if learning else ts
+        self.reported[(who, port)] = PERMANENT if learning else ts
         if learning:
             return []
         return [Case(self.name, src, ts, "Unusual encrypted connection",
@@ -1846,6 +1931,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     net = cfg.get("network", {})
     set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
     gateways = Gateways(set(net.get("gateways") or ()))  # learned from the logs when not configured
+    identity = Identity()
     admins = set(net.get("admin_devices") or ())
     devp = cfg.get("dev_profile", {})
     dev = DevProfile(devp.get("hosts") or (), devp.get("domains") or ())
@@ -1853,7 +1939,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     tz = cfg.get("timezone")  # for time-of-day rules; None = this machine's local time
     dets: list[Detector] = [
         gateways,  # first: the home rules below ask it about every record
-        Identity(),  # who is behind each address; the pipeline stamps cases with it
+        identity,  # who is behind each address: cases are stamped with it, baselines keyed on it
         SuricataAlert(),
         Beaconing(dev=dev, popular=popular, expected=_expected_services(d.get("takeover", {})),
                   **d.get("beaconing", {})),
@@ -1876,4 +1962,6 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     ]
     if ioc_ips or ioc_domains:
         dets.insert(0, IOCMatch(ioc_ips or set(), ioc_domains or set()))
+    for det in dets:
+        det.ident = identity  # per-device baselines follow the device, not the address (Detector.dev_key)
     return dets
