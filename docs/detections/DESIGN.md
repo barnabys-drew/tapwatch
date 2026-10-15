@@ -194,6 +194,8 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   accepts an established inbound connection from the internet. Joined with any mapping
   request from that host in the previous 24 h.
 - **Baseline:** none needed. Measured: **0 established inbound services**, 3 unanswered P2P probes.
+  A port forward the owner declares (`detectors.exposure.expected`: host, proto, port) counts as
+  known from the start, like one seen during warmup; it is config, so the rule stays `must_alert`.
 - **Dedupe:** `exposure|host|proto/port`.
 - **FPs:** game/voice P2P (STUN on udp ephemeral ports), the main PC's NAT-PMP chatter.
   Suppress UDP to ephemeral ports when the same host did STUN (udp/3478) within 60 s.
@@ -477,7 +479,9 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Baseline:** none. Measured: 1 hit in 2.9 h (TeamViewer on the Windows laptop).
 - **Dedupe:** `takeover|host|service`.
 - **Dev profile:** **does not apply.** Dev and agent work is exactly what an injected agent would hide behind.
-- **Route:** callback and file drop → ALERT, `must_alert`. Tunnel and remote control → ALERT,
+- **Route:** a remote-control service seen only in a DNS lookup raises nothing (visiting the vendor's
+  website resolves the same name): the case needs TLS/HTTP to the service, or a connection to one of
+  the lookup's answers within 60 s. Callback and file drop → ALERT, `must_alert`. Tunnel and remote control → ALERT,
   code-only, suppressible per device for tools you installed on purpose.
 - **Expected tools (`detectors.takeover.expected`):** a device plus a tunnel or remote-control service, with
   business `hours` and an optional `mac`. Sightings never raise a case, because the client polls all
