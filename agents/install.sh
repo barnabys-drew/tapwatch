@@ -63,6 +63,8 @@ write_flags() {
     sed -e "s|@CONF_PATH@|$dir/osquery.conf|" -e "s|@LOG_PATH@|$logs|" -e "s|@DB_PATH@|$db|" \
         "$HERE/config/standalone.flags" > "$tmp"
   fi
+  # Linux: turn on the eBPF publisher for bpf_connections (every connection, with its process)
+  if [ "$(uname -s)" = Linux ]; then cat "$HERE/config/linux.flags" >> "$tmp"; fi
   $SUDO install -m 644 "$HERE/config/osquery.conf" "$dir/osquery.conf"
   $SUDO install -m 644 "$tmp" "$dir/osquery.flags"
   rm -f "$tmp"

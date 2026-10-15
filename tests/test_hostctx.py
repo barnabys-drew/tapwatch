@@ -551,11 +551,12 @@ def test_sysmon_ties_short_connections_and_dns_lookups_to_process_and_command_li
     idx.read_log(sysmon_log(tmp_path), since=0)
     idx.resolve()
     (conn_owner,) = idx.who(DST, 443, T0 + 2)          # a 1-second connection a snapshot would miss
-    (dns_owner,) = idx.who_dns("DL.example.", T0 + 5)
+    (dns_owner,), followed = idx.who_dns("DL.example.", T0 + 5)
+    assert not followed
     for o in (conn_owner, dns_owner):
         assert o.name == "powershell.exe" and o.parent == "WINWORD.EXE"
         assert "dl.example" in o.cmdline and "hunter2" not in o.cmdline   # redacted
-    assert idx.who(DST, 443, T0 + 600) == [] and idx.who_dns("dl.example", T0 + 600) == []
+    assert idx.who(DST, 443, T0 + 600) == [] and idx.who_dns("dl.example", T0 + 600) == ([], False)
 
 
 def test_a_document_app_starting_a_shell_is_suspicious(tmp_path):
@@ -684,3 +685,52 @@ def test_follow_this_pc_moves_admin_and_dev_rules(tmp_path, caplog):
     p.follow_this_pc(T0 + 3600)
     assert dev.hosts == {PC, "192.168.50.88"}          # the old lease is dropped
     assert p.follow_this_pc(T0 + 90 * 86400) is None and dev.hosts == {PC, "192.168.50.88"}
+
+
+# ----------------------------------------------------------- Linux/WSL: eBPF connections, DNS via answers
+
+GIT = "/usr/lib/git-core/git-remote-http"
+
+
+def bpf(t, path=GIT, remote=DST, port=443, **cols):
+    return {"name": "bpf_connections", "unixTime": T0 + 60, "action": "added",
+            "columns": {"time": str(int(t)), "pid": "4242", "path": path, "remote_address": remote,
+                        "remote_port": str(port), "protocol": "6", "parent_name": "git", "cgroup_path": None,
+                        "claude_session": SID, "claude_attended": "1", "claude_entrypoint": "cli",
+                        "in_herdr": "1", "via_ssh": "0", **cols}}
+
+
+def test_bpf_connections_catch_short_linux_connections_with_claude_markers(tmp_path):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(json.dumps(bpf(T0)) + "\n" + json.dumps(bpf(T0, path="", pid="4829")) + "\n")
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    (o,) = idx.who(DST, 443, T0 + 1)                   # the path-less row (a process older than osqueryd) is skipped                   # over in a second: no 1-minute snapshot saw it
+    assert (o.name, o.parent, o.session, o.attended, o.in_herdr) == ("git-remote-http", "git", SID, "1", True)
+    assert o.container is None                         # the process was gone by query time: unknown, not "no"
+    assert idx.who(DST, 443, T0 + 600) == []
+
+
+def test_lookup_through_wsl_dns_proxy_goes_to_the_program_that_used_the_answer(tmp_path):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text("\n".join(json.dumps(r) for r in [
+        sysmon(22, T0, path="C:\\Windows\\System32\\wslservice.exe", query="github.example"),
+        bpf(T0 + 2),
+        bpf(T0 - 120, path="/usr/bin/curl"),           # an earlier connection to the same address: not this lookup
+    ]) + "\n")
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    (o,), followed = idx.who_dns("github.example", T0, answers=[DST, "github.example.cdn.example"])
+    assert o.name == "git-remote-http" and followed
+    assert idx.who_dns("github.example", T0) == ([], False)    # no answers to follow: unmatched, not "wslservice"
+    assert idx.who_dns("github.example", T0, answers=["198.51.100.9"]) == ([], False)
+
+
+def test_collect_counts_lookups_matched_through_their_answers(tmp_path):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text(json.dumps(bpf(T0 + 1)) + "\n")
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    dns_rows = [{"ts": T0, "id.orig_h": PC, "query": "github.example", "answers": [DST]}]
+    facts = hc.collect(case(), [out_conn(T0 + 1)], dns_rows, now=T0 + 3600)
+    assert facts["host_lookups_matched"] == 1 and facts["host_lookups_followed"] == 1
+    assert facts["host_matched"] == 1 and facts["host_programs"] == ["git-remote-http"]

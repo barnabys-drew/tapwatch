@@ -43,7 +43,8 @@ with the [README](../README.md). Rule-by-rule specs are in [detections/DESIGN.md
 **Non-goals (v0.1)**
 
 - Not a SIEM or EDR: there's no event store beyond Zeek logs and SQLite. The endpoint agent takes
-  scheduled osquery snapshots; there's no process-event stream yet (that's v0.3).
+  osquery snapshots plus the connection events Sysmon (Windows) and eBPF (Linux) feed it; there's no
+  general process-event store.
 - No inline blocking. tapwatch is passive and never sits in the traffic path.
 - No fleet server, cloud hosting, multi-site or mobile app (see the [roadmap](ROADMAP.md)).
 - Host context reads the agent only on the machine tapwatch runs on. Agents on other computers log
@@ -224,6 +225,8 @@ When the case is on the tapwatch machine, `hostctx.py` asks the machine itself
 |---|---|---|
 | Program holding the connection, its path, parent, redacted command line, on-disk state, container | live osquery (cases under 10 min old) + the agent's 1-minute `outbound_connections_ctx` history | **process proof** |
 | Windows: the program behind every connection and DNS lookup, however short, with its parent and command-line signals (encoded, download-and-run...) | Sysmon events 1, 3 and 22, collected by the osquery service (`sysmon_events`) | **process proof** |
+| Linux/WSL: the program behind every outgoing connection, however short, with its parent and Claude/Herdr/SSH markers | osquery's eBPF publisher (`bpf_connections`, flags in `agents/config/linux.flags`) | **process proof** |
+| A DNS lookup made through a proxy (WSL's) or a resolver Windows doesn't see (Chrome's own): the program that connected to one of its answers within 30 s | Zeek DNS answers + the connection owners above (`host_lookups_followed`) | **inferred** |
 | Started by a Claude Code session, attended, interactive entrypoint | `CLAUDE_CODE_*` environment markers on the process (they survive reparenting) | **process proof** |
 | Started from the owner's Herdr terminal, or from an SSH login | `HERDR_PANE_ID`, `SSH_CONNECTION` markers | **process proof** |
 | Agent ran a command naming the destination; minutes since the owner's prompt | that session's transcript | context |
