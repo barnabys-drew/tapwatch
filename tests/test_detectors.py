@@ -297,6 +297,11 @@ def test_mgmt_access_flags_new_admin_port_pairs_but_not_admins_or_learned_pairs(
     cases = run(det, later)
     assert [(c.facts["target"], c.facts["port"]) for c in cases] == [("router", 443), ("device", 3389)]
     assert not cases[0].facts["answered"]
+    assert [c.base_severity for c in cases] == [2, 2]                     # unanswered: digest, not critical
+    accepted = [conn(T0 + 710, src="192.168.50.31", dst="192.168.50.40", port=445),
+                conn(T0 + 711, src="192.168.50.32", dst="192.168.50.40", port=3389),
+                conn(T0 + 712, src="192.168.50.33", dst=GW, port=443)]
+    assert [c.base_severity for c in run(det, accepted)] == [3, 4, 4]     # SMB session; RDP; the router's UI
 
 
 def test_cleartext_auth_grades_by_destination_and_never_copies_credentials():
@@ -923,3 +928,14 @@ def test_upload_spike_to_an_endpoint_security_cloud_is_capped_at_digest():
     recs += [conn(T0 + 8 * 3600 + 60, dst="203.0.113.41", orig_bytes=700_000_000), conn(T0 + 9 * 3600)]
     c = next(x for x in run(det, recs) if x.detector == "upload_spike")
     assert c.facts["to_security_vendor"] and c.facts["max_route"] == "digest"
+
+
+def test_a_symmetric_hour_is_a_video_call_not_an_upload():
+    def hour(down):
+        det = HourlyProfile()
+        recs = [conn(T0 + h * 3600, orig_bytes=5_000_000) for h in range(8)]
+        big = dict(conn(T0 + 8 * 3600 + 60, dst="203.0.113.42", orig_bytes=600_000_000), resp_bytes=down)
+        return next(x for x in run(det, recs + [big, conn(T0 + 9 * 3600)]) if x.detector == "upload_spike")
+    call, exfil = hour(580_000_000), hour(20_000_000)
+    assert call.facts["symmetric"] and call.facts["down_mb"] == 580 and call.facts["max_route"] == "digest"
+    assert not exfil.facts["symmetric"] and "max_route" not in exfil.facts
