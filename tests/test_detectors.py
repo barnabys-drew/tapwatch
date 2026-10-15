@@ -26,6 +26,7 @@ from tapwatch.detectors import (
     is_internal,
     looks_random,
     parse_hours,
+    set_local_nets,
     suffix_match,
 )
 from tapwatch.zeek import _parse_line
@@ -227,6 +228,16 @@ def test_readable_long_names_are_not_random_but_dga_is():
 def test_multicast_and_broadcast_count_as_local():
     assert is_internal("224.0.0.251") and is_internal("ff02::fb") and is_internal("255.255.255.255")
     assert not is_internal("198.51.100.7")
+    # a LAN device's global IPv6 address counts as inside only once the site's prefix is configured
+    assert not is_internal("2001:db8:1:2::10")
+    beats = [conn(T0 + i * 300, src="2001:db8:1:2::10", dst="2001:db8:9::1") for i in range(12)]
+    assert run(Beaconing(), beats) == []                                     # unknown prefix: not a LAN device
+    try:
+        build({"network": {"local_nets": ["2001:db8:1::/48"]}})
+        assert is_internal("2001:db8:1:2::10") and not is_internal("2001:db8:2::1")
+        assert len(run(Beaconing(), beats)) == 1                             # now it is, and its beacon is seen
+    finally:
+        set_local_nets(())
 
 
 def test_mdns_chatter_is_not_beaconing_and_link_local_is_not_a_new_device():
