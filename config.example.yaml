@@ -91,7 +91,8 @@ dev_profile:                         # dev workstations running coding agents
   domains: []                        # flagged by beaconing/dns_anomaly/new_domain; takeover still applies
 
 detectors:
-  beaconing: {min_count: 10, min_span: 600, max_cv: 0.15}
+  beaconing: {min_count: 10, min_span: 600, max_cv: 0.15}   # also: reported_days 7 (one case per destination
+                                                             # this often), fanout_per_day 3 (per device and port)
   #   benign_classes:                  # services that are regular by design: a heartbeat to them is capped at
   #     endpoint security agent: [edr.example.com]   # digest (R04). Adds to the built-in push/EDR/NTP/STUN table.
   dns_anomaly: {window: 600, nx_threshold: 25, random_threshold: 15}   # also: nx_min_names 5, tunnel_queries 200, tunnel_label_len 30

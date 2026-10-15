@@ -264,8 +264,12 @@ HOUSEKEEPING_UDP_PORTS = {3478, 3479, 5349, 41641, 123, *range(19302, 19310)}
 class Beaconing(Detector):
     """Same internal host -> same external host:port at very regular intervals (C2 heartbeat).
 
-    Reported once per (host, port): a client that fans out to many servers on the same
-    port at the same cadence (latency probes, CDNs) is one case, not one per server.
+    Reported once per (host, port, destination) every `reported_days`, where the destination is
+    the base domain when the server has a name, else its address. Until 2026-10-15 it was once
+    per (host, port) forever: after one benign heartbeat on 443 (Spotify, Windows push) a C2 on
+    443 from the same PC could never be reported again, and that survived restarts. A client that
+    fans out to many servers on one port at the same cadence (latency probes, CDNs) is held to
+    `fanout_per_day` cases per (host, port) a day, not one per server.
     """
 
     name = "beaconing"
@@ -274,9 +278,11 @@ class Beaconing(Detector):
     def __init__(self, min_count: int = 10, min_span: float = 600, max_cv: float = 0.15, min_interval: float = 5,
                  ignore_udp_ports: set[int] | None = None, dev: DevProfile | None = None, burst: float = 10,
                  popular: set[str] | None = None, expected: dict[str, set[str]] | None = None,
-                 benign_classes: dict[str, Iterable[str]] | None = None):
+                 benign_classes: dict[str, Iterable[str]] | None = None, reported_days: float = 7,
+                 fanout_per_day: int = 3):
         self.min_count, self.min_span, self.max_cv, self.min_interval = min_count, min_span, max_cv, min_interval
         self.burst, self.popular = burst, popular or set()
+        self.reported_s, self.fanout_per_day = reported_days * 86400, fanout_per_day
         self.expected = expected or {}             # host -> services it's expected to poll (takeover.expected)
         self.classes = {k: set(v) for k, v in BEACON_CLASSES.items()}  # class -> domains (config adds to it)
         for cls, domains in (benign_classes or {}).items():
@@ -287,7 +293,7 @@ class Beaconing(Detector):
         self.ignore_udp = HOUSEKEEPING_UDP_PORTS if ignore_udp_ports is None else set(ignore_udp_ports)
         self.seen: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=60))
         self.durations: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=60))
-        self.reported: set[tuple] = set()  # (host, port)
+        self.reported: dict[tuple, float] = {}  # (host, port, base domain or address) -> when it was reported
         self.regular: dict[tuple, set[str]] = defaultdict(set)  # (host, port) -> destinations with regular timing
         self.sni: dict[str, str] = {}  # external ip -> last TLS server name seen
         self.dns: dict[str, str] = {}  # external ip -> name a client looked up to reach it
@@ -303,6 +309,25 @@ class Beaconing(Detector):
     def class_for(self, name: str | None) -> str | None:
         """The benign beacon class the destination belongs to (push, EDR, NTP, STUN), if any."""
         return next((cls for cls, domains in self.classes.items() if suffix_match(name, domains)), None) if name else None
+
+    def restore(self, data: dict) -> None:
+        super().restore(data)
+        if isinstance(self.reported, set):  # the pre-2026-10-15 shape, (host, port) forever: start over
+            self.reported = {}
+
+    def snapshot(self) -> dict:
+        self._prune(max(self.reported.values(), default=0.0))
+        return super().snapshot()
+
+    def _prune(self, now: float) -> None:
+        self.reported = {k: t for k, t in self.reported.items() if now - t < self.reported_s}
+
+    def already_reported(self, src: str, port, key: str, ts: float) -> bool:
+        """This destination within reported_days, or this (host, port) already at its fan-out budget today."""
+        if ts - self.reported.get((src, port, key), -1e18) < self.reported_s:
+            return True
+        today = sum(1 for (s, p, _), t in self.reported.items() if (s, p) == (src, port) and ts - t < 86400)
+        return today >= self.fanout_per_day
 
     def feed(self, rec: dict) -> list[Case]:
         if rec["_type"] == "conn" and mac_ok(rec.get("orig_l2_addr")) and is_internal(rec.get("id.orig_h", "")):
@@ -331,7 +356,8 @@ class Beaconing(Detector):
         if rec.get("proto") == "udp" and port in self.ignore_udp:
             return []
         name = self.name_for(dst)
-        if (src, port) in self.reported or self.dev.covers(src, name) \
+        key = base_domain(name) if name else dst
+        if self.already_reported(src, port, key, rec["ts"]) or self.dev.covers(src, name) \
                 or (name and suffix_match(name, self.expected.get(src, frozenset()))):
             return []  # already reported, or a dev host polling a dev service (model API, registry)
         pair = (src, dst, port)
@@ -356,7 +382,9 @@ class Beaconing(Detector):
         cv = statistics.pstdev(gaps) / mean  # coefficient of variation: 0 = perfectly regular
         if cv > self.max_cv:
             return []
-        self.reported.add((src, port))
+        self.reported[(src, port, key)] = rec["ts"]
+        if len(self.reported) > 5000:
+            self._prune(rec["ts"])
         indicators = [name] if name else []
         dom = base_domain(name) if name else ""
         me = self.device.get(src, src)
@@ -365,7 +393,7 @@ class Beaconing(Detector):
         facts = {"interval_s": round(mean), "count": len(times), "span_s": round(times[-1] - times[0]),
                  "regularity": "very regular" if cv < 0.05 else "regular", "port": port,
                  "service": rec.get("service") or "unknown", "popular": popular, "shared_by": shared_by,
-                 "dedupe": f"port:{port}"}
+                 "dedupe": f"{key}:{port}"}
         # Code-proven ceiling from household prevalence (home eval 2026-10-13: Windows push, OneDrive
         # and a CDN poll, each used by other devices, were 3 of 8 beaconing items): a widely used
         # service other devices also use -> log. Deliberately no cap for a shared *obscure* domain:
