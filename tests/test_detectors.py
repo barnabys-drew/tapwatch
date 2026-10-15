@@ -286,6 +286,25 @@ def test_rogue_dhcp_with_configured_gateway():
     assert len(cases) == 1 and cases[0].host == "192.168.50.99" and cases[0].must_alert
 
 
+def test_rogue_dhcp_configured_gateway_still_learns_other_vlans():
+    # The wizard writes one gateway; a VLAN'd router answers DHCP from an address per VLAN.
+    gw = Gateways({GW})
+    det = RogueDHCP(Warmup(600), gateways=gw)
+    iot = lambda ts, client, server="192.168.60.1": dict(
+        dhcp(ts, server=server), client_addr=client, assigned_addr=client)
+    assert run(det, [iot(T0, "192.168.60.10")]) == []              # warmup: trusted, not an alert
+    feed_all([gw, det], [iot(T0 + 700 + i, f"192.168.60.{20 + i}") for i in range(3)])
+    assert gw.leader("192.168.60") == "192.168.60.1"               # learned as that VLAN's router
+    assert run(det, [iot(T0 + 800, "192.168.60.30", server="192.168.60.99")])[0].must_alert
+    # a VLAN first seen after warmup: its only DHCP server is trusted once, a second one is rogue
+    guest = lambda ts, server: dict(dhcp(ts, server=server), client_addr="192.168.70.10")
+    assert run(det, [guest(T0 + 900, "192.168.70.1")]) == []
+    assert run(det, [guest(T0 + 901, "192.168.70.99")])[0].host == "192.168.70.99"
+    # the configured /24 stays strict, even during warmup
+    assert run(RogueDHCP(Warmup(600), gateways=Gateways({GW})),
+               [dhcp(T0, server="192.168.50.99")])[0].must_alert
+
+
 def test_rogue_dhcp_learns_servers_during_warmup_and_reads_conn_replies():
     det = RogueDHCP(Warmup(600))
     assert run(det, [dhcp(T0)]) == []                                          # learned as trusted

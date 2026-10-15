@@ -79,8 +79,9 @@ thresholds:
   alert_confidence: 0.75             # Jev's category confidence needed to alert on its own (see eval/RESULTS.md)
 
 network:                             # home rules (docs/detections/DESIGN.md R03, R14)
-  gateways: []                       # optional: router addresses. Empty = learned from the logs (the address
-                                     # 3+ devices use for DNS/NAT-PMP/DHCP on each /24)
+  gateways: []                       # optional: router addresses, one per VLAN if you want that VLAN strict
+                                     # (any other DHCP server there is rogue). Each /24 not listed is learned
+                                     # from the logs: the address 3+ devices use for DNS/NAT-PMP/DHCP
   admin_devices: []                  # devices allowed to use admin ports (SSH, RDP, router UI)
 
 dev_profile:                         # dev workstations running coding agents

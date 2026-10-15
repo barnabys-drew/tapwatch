@@ -850,8 +850,9 @@ class Gateways(Detector):
     Learning: per /24, count the distinct devices that treat an address as their router. They
     send it DNS (port 53) or NAT-PMP/PCP port-mapping requests (5351, a router-only protocol), or
     it answers their DHCP. The first address that `min_clients` devices agree on is elected and
-    then kept (sticky), so a rogue that later collects votes can't take over. Emits no cases; it
-    must be fed before the detectors that ask it.
+    then kept (sticky), so a rogue that later collects votes can't take over. A configured address
+    settles its own /24; every other /24 (a VLAN the config doesn't list) is still learned. Emits
+    no cases; it must be fed before the detectors that ask it.
     """
 
     name = "gateways"
@@ -866,12 +867,14 @@ class Gateways(Detector):
     def __contains__(self, ip: str) -> bool:
         return ip in self.configured or (bool(ip) and self.leaders.get(subnet(ip) or "") == ip)
 
+    def configured_for(self, sub: str | None) -> str | None:
+        """The configured gateway on this /24, if the config names one."""
+        return next((ip for ip in self.configured if subnet(ip) == sub), None) if sub else None
+
     def leader(self, sub: str | None) -> str | None:
-        return self.leaders.get(sub) if sub else None
+        return (self.configured_for(sub) or self.leaders.get(sub)) if sub else None
 
     def feed(self, rec: dict) -> list[Case]:
-        if self.configured:
-            return []
         if rec["_type"] == "conn" and rec.get("id.resp_p") in self.ROUTER_PORTS:
             self._vote(rec.get("id.resp_h", ""), rec.get("id.orig_h", ""))
         elif rec["_type"] == "dhcp" and rec.get("server_addr"):
@@ -880,7 +883,7 @@ class Gateways(Detector):
 
     def _vote(self, ip: str, client: str) -> None:
         sub = subnet(ip)
-        if sub is None or sub in self.leaders or client == ip or not is_unicast_lan(client):
+        if sub is None or self.leader(sub) or client == ip or not is_unicast_lan(client):
             return
         clients = self.votes[sub][ip]
         clients.add(client)
@@ -1049,9 +1052,10 @@ class RogueDHCP(Detector):
     """R14. A DHCP server other than the router answers clients (hostile gateway/DNS, or a stray travel router).
 
     Uses dhcp.log `server_addr` and conn rows where something answered on udp/67 (Zeek logs the
-    server as the responder). With `network.gateways` configured, any other server is rogue.
-    Without it, one DHCP server per LAN is expected: the router learned by Gateways, the first
-    server seen on that LAN, or any server seen during warmup. Anything else is rogue.
+    server as the responder). On a /24 whose gateway is in `network.gateways`, any other server is
+    rogue. On every other /24 (the config lists one address; a VLAN'd network has a gateway per
+    VLAN), one DHCP server is expected: the router learned by Gateways, the first server seen on
+    that LAN, or any server seen during warmup. Anything else is rogue.
     """
 
     name = "rogue_dhcp"
@@ -1075,7 +1079,7 @@ class RogueDHCP(Detector):
         sub = subnet(server) or server
         if server in self.trusted[sub]:
             return []
-        if not self.gateways.configured and (
+        if self.gateways.configured_for(sub) is None and (
                 self.warmup.learning(rec["ts"])
                 # the LAN's only DHCP server so far, and no learned router says otherwise
                 or (self.gateways.leader(sub) is None and not self.trusted[sub])):
