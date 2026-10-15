@@ -236,6 +236,10 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Dedupe:** `mgmt|src|dst|port`, 24 h.
 - **FPs:** Other admin devices of yours (phone app → UDM 443) belong in `admin_devices`;
   UniFi inform traffic.
+- **Sweep:** new admin-port pairs from one source to 5+ devices within 10 minutes is one severity-5
+  case ("Admin-port sweep"), once an hour per source; the probes it covers raise nothing more. This
+  is the worm shape: WannaCry (CTU-297-1) made 9,900 SMB attempts in 16 minutes, which as single
+  unanswered probes would be 80 digest items and no alert (eval re-run 2026-10-15).
 - **Route:** code-only, by outcome: an accepted remote-control or router-admin session is severity 4
   (ALERT), accepted SMB 3 (DIGEST), an unanswered attempt 2 (DIGEST). Before 2026-10-15 every attempt
   was 4, so Windows discovery probing 445 across VLANs was a critical alert.
