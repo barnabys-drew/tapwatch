@@ -147,7 +147,8 @@ in WSL (`--capture-iface` adds the capture service). See [docs/setup/windows.md]
 
 `init` writes `config.yaml`, `assets.yaml` and `.env` (secrets live only in `.env`). Alerts can go
 to **ntfy** (phone push; `init` makes a private topic), **Discord**, **Teams**, **email** or any
-**webhook**. The first 24 hours are a learning period, so expect it to be quiet before it settles.
+**webhook**. The first 3 days are a learning period: the AI's alerts go to the daily digest instead of
+your phone while the baselines fill (always-alert rules still interrupt), so expect it to be quiet before it settles.
 
 **Try it without a network** (synthetic capture, no real hosts, no malware):
 

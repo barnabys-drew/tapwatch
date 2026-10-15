@@ -232,3 +232,13 @@ def test_summary_states_the_benign_beacon_class_as_a_fact():
     text = summarize(c, Assets())
     assert "well-known endpoint security agent service" in text and "poll by design" in text
     assert "endpoint security" not in summarize(case(), Assets())
+
+
+def test_learning_period_sends_ai_alerts_to_the_digest_but_not_always_alert_rules():
+    hot = parse(jev_response("c2_beaconing", conf=0.95, severity=3.5, routine=0.0, page=0.9))
+    assert route(case(), hot)[0] is Route.ALERT
+    r, reason = route(case(), hot, learning="learning period (day 1 of 3)")
+    assert r is Route.DIGEST and reason.startswith("learning period (day 1 of 3): ")
+    assert route(case(must_alert=True), hot, learning="learning period (day 1 of 3)")[0] is Route.ALERT
+    floor = case(facts={**case().facts, "min_route": "alert", "host_signals": ["runs from /tmp"]})
+    assert route(floor, hot, learning="learning period (day 1 of 3)")[0] is Route.ALERT

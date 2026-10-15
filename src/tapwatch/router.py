@@ -54,7 +54,8 @@ RANK = {Route.LOG: 0, Route.DIGEST: 1, Route.ALERT: 2}
 
 
 def route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
-          suppression: str | None = None) -> tuple[Route, str]:
+          suppression: str | None = None, learning: str | None = None) -> tuple[Route, str]:
+    """`learning` is the pipeline's label ("learning period (day 1 of 3)") while the install is new."""
     r, reason = _route(case, verdict, t, suppression)
     if case.facts.get("min_route") == "alert" and not case.must_alert and r is not Route.ALERT:
         # Code saw something suspicious on the PC itself (a program in /tmp, a deleted binary, a
@@ -69,6 +70,13 @@ def route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
         return Route(cap), f"{reason}; capped at {cap} by code facts"
     if r is Route.ALERT and not case.must_alert and owner_likely(case):
         return Route.DIGEST, "on the PC: probably the owner's agent work (not confirmed), " + reason
+    if learning and r is Route.ALERT and not case.must_alert and not agent_misused(case) \
+            and case.facts.get("min_route") != "alert":
+        # A fresh install. The windowed detectors (beaconing, dns_anomaly, scan) have no warm-up and
+        # the prevalence caps need days of history, so day one of a home install produced 50 alerts
+        # (2026-10-12), then 5, then 3. Until the learning period ends, the AI's alerts go to the
+        # digest. Always-alert rules, agent misuse and a suspicious program on the PC still interrupt.
+        return Route.DIGEST, f"{learning}: {reason}"
     return r, reason
 
 

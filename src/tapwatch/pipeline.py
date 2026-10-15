@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from datetime import datetime, timezone
 
@@ -45,12 +46,14 @@ class Pipeline:
                  client: JevClient | None = None, notifier: Notifier | None = None,
                  thresholds: Thresholds | None = None, dedupe_seconds: float = 3600,
                  base_url: str | None = None, herdr: HerdrNotifier | None = None, herdr_ai_severity: float = 3.5,
-                 hostctx: HostContext | None = None, zeek_dirs=None):
+                 hostctx: HostContext | None = None, zeek_dirs=None, learning_seconds: float = 0):
         self.detectors, self.assets, self.store, self.base_url = detectors, assets, store, base_url
         self.client, self.notifier = client, notifier
         self.herdr, self.herdr_ai_severity = herdr, herdr_ai_severity  # critical cases pop up in the terminal
         self.hostctx, self.zeek_dirs = hostctx, zeek_dirs  # "who on the PC did this", for the tapwatch PC
         self.thresholds, self.dedupe_seconds = thresholds or Thresholds(), dedupe_seconds
+        self.learning_seconds = learning_seconds  # AI alerts go to the digest while the install is this young
+        self._first_ts: float | None = None       # learning clock when no detector carries a Warmup
         self.input_tokens = 0
         self._pc_base: dict[int, set] = {}   # "this PC" address sets as configured, before follow_this_pc
         self._pc_warned: str | None = None
@@ -92,7 +95,7 @@ class Pipeline:
                 self.input_tokens += verdict.input_tokens
             except TriageError as e:
                 log.warning("AI triage failed, using rules only: %s", e)
-        r, reason = route(case, verdict, self.thresholds, suppression)
+        r, reason = route(case, verdict, self.thresholds, suppression, self.learning_label(case.ts))
         case_id = self.store.add(case, state, verdict, r, reason)
         if self.herdr and critical(case, verdict, r, self.herdr_ai_severity):
             where = case_link(self.base_url, case_id) if self.base_url else f"case #{case_id}"
@@ -111,6 +114,22 @@ class Pipeline:
 
     def _warmup(self) -> det.Warmup | None:
         return next((d.warmup for d in self.detectors if isinstance(getattr(d, "warmup", None), det.Warmup)), None)
+
+    def learning_label(self, ts: float) -> str | None:
+        """"learning period (day 1 of 3)" while the install is younger than learning_seconds, else None.
+
+        The clock is the first-seen detectors' warm-up start, which save_state persists, so a
+        restart doesn't start a new learning period."""
+        if not self.learning_seconds:
+            return None
+        w = self._warmup()
+        start = w.start if w is not None and w.start is not None else self._first_ts
+        if start is None:
+            self._first_ts = start = ts
+        if ts - start >= self.learning_seconds:
+            return None
+        days = max(1, math.ceil(self.learning_seconds / 86400))
+        return f"learning period (day {min(days, int((ts - start) // 86400) + 1)} of {days})"
 
     def save_state(self) -> int:
         """Persist what the detectors have learned. Returns how many detectors were saved."""

@@ -11,7 +11,7 @@ import pytest
 from conftest import T0, conn, dns, jev_response, ssl, write_logs
 
 from tapwatch import evidence, ui
-from tapwatch.detectors import Beaconing, IOCMatch
+from tapwatch.detectors import Beaconing, IOCMatch, NewDevice, Warmup
 from tapwatch.models import Case, Route
 from tapwatch.pipeline import Pipeline, alert_item
 from tapwatch.router import route
@@ -538,3 +538,35 @@ def test_case_page_notes_order_toggle(server):
     assert 'class="pill on" href="/case/1?notes=newest#notes"' in text
     _, text = request(app, "GET", "/case/1?notes=<script>", cookie=sid)  # unknown value: default order
     assert text.index("first look") < text.index("follow-up") and "<script>" not in text
+
+
+def test_learning_period_clock_is_the_warmup_start_and_survives_a_restart(fake_jev):
+    jev = fake_jev(jev_response("c2_beaconing", conf=0.95, severity=3.5, routine=0.0, page=0.9))
+
+    class Recorder:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, title, items):
+            self.sent.append(title)
+
+    store, note = Store(":memory:"), Recorder()
+    w = Warmup(600)
+    p = Pipeline([Beaconing(), NewDevice(w, {})], Assets(), store, client=jev, notifier=note,
+                 learning_seconds=2 * 86400)
+    out = []
+    for i in range(15):
+        out += p.process(conn(T0 + i * 60))
+    assert [r for _, c, _, r in out if c.detector == "beaconing"] == [Route.DIGEST] and note.sent == []
+    assert store.get(out[0][0])["reason"].startswith("learning period (day 1 of 2): ")
+    p.save_state()
+    # a restart two days later: the clock is the saved warm-up start, so the learning period is over
+    p2 = Pipeline([Beaconing(), NewDevice(Warmup(600), {})], Assets(), store, client=jev, notifier=note,
+                  learning_seconds=2 * 86400)
+    p2.restore_state()
+    assert p2.learning_label(T0 + 86400 + 1) == "learning period (day 2 of 2)"
+    assert p2.learning_label(T0 + 2 * 86400) is None
+    out = []
+    for i in range(15):
+        out += p2.process(conn(T0 + 2 * 86400 + i * 60, port=8443))
+    assert [r for _, c, _, r in out if c.detector == "beaconing"] == [Route.ALERT] and len(note.sent) == 1

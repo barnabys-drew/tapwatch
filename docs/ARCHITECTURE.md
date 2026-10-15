@@ -197,6 +197,10 @@ Then:
 - **The floor** (`min_route: alert`) promotes anything that isn't already an alert.
 - **The ceilings** (`max_route`, `host_max_route`) pull the result down to the lowest cap. They
   never apply to `must_alert` cases or when code saw agent misuse.
+- **The learning period** (`learning_days`, default 3) turns an alert into a digest item while the
+  install is younger than that: the windowed detectors have no warm-up and the prevalence caps need
+  days of history (day one at home: 50 alerts, then 5, then 3). Never for `must_alert`, agent misuse
+  or the `min_route` floor. The clock is the warm-up start, which survives restarts.
 - **The owner-likely hold** turns an alert into a digest item when an attended agent session made
   the connection and Jev reads it as the owner's work (≥ 0.8). It never logs the case away.
 

@@ -87,7 +87,7 @@ def build(f: Facts, ask) -> tuple[dict, dict, dict, list[str]]:
         "db_path": "tapwatch.db", "assets_file": "assets.yaml", "feeds_dir": "feeds",
         "audience": audience, "timezone": tz,
         "network": {"gateways": [gateway] if gateway else [], "admin_devices": [this_ip] if this_ip else []},
-        "warmup_seconds": 86400, "zeek_retention_days": 30, "digest_hour_utc": 13,
+        "warmup_seconds": 86400, "learning_days": 3, "zeek_retention_days": 30, "digest_hour_utc": 13,
         "ui": {"host": "127.0.0.1", "port": 8765},
     }
     if channel == "ntfy":
