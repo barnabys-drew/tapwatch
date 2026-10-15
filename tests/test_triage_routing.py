@@ -223,3 +223,12 @@ def test_jev_needs_075_confidence_to_alert_on_its_own():
     assert route(c, sure)[0] is Route.ALERT
     r, reason = route(c, lean)
     assert r is Route.DIGEST and "not sure enough" in reason
+
+
+def test_summary_states_the_benign_beacon_class_as_a_fact():
+    c = case(facts={"interval_s": 75, "count": 13, "span_s": 897, "regularity": "regular", "port": 17472,
+                    "service": "ssl", "popular": False, "shared_by": 0, "known_class": "endpoint security agent",
+                    "max_route": "digest"})
+    text = summarize(c, Assets())
+    assert "well-known endpoint security agent service" in text and "poll by design" in text
+    assert "endpoint security" not in summarize(case(), Assets())

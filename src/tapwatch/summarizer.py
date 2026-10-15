@@ -70,14 +70,15 @@ def _duration(seconds: int) -> str:
 
 def _observed(c: Case, words: dict) -> str:
     f = c.facts
-    if c.detector == "beaconing" and f.get("shared_by"):
-        return (f"It connected to the same outside server on port {f['port']} ({f['service']}) "
-                f"{_every(f['interval_s'])}, {f['regularity']} timing, {f['count']} times over {_duration(f['span_s'])}. "
-                f"{f['shared_by']} other device(s) in the house also use this service"
-                + (", which is widely used on the internet." if f.get("popular") else "."))
     if c.detector == "beaconing":
-        return (f"It connected to the same outside server on port {f['port']} ({f['service']}) "
+        text = (f"It connected to the same outside server on port {f['port']} ({f['service']}) "
                 f"{_every(f['interval_s'])}, {f['regularity']} timing, {f['count']} times over {_duration(f['span_s'])}.")
+        if f.get("shared_by"):
+            text += (f" {f['shared_by']} other device(s) in the house also use this service"
+                     + (", which is widely used on the internet." if f.get("popular") else "."))
+        if f.get("known_class"):  # a code fact (BEACON_CLASSES), not a question about the domain
+            text += f" The server belongs to a well-known {f['known_class']} service, which clients poll by design."
+        return text
     if c.detector == "dns_anomaly" and f.get("tunnel"):
         return (f"In {f['window_min']} minutes it sent {f['queries']} DNS lookups to a single little-used domain. "
                 f"The first part of each name averaged {f['mean_label']} characters and {f['txt_pct']}% asked for "

@@ -147,7 +147,7 @@ Two optional facts let code bound the outcome:
 | Fact | Set by | Effect |
 |---|---|---|
 | `min_route: alert` | host context, when the program looks **suspicious** (runs from `/tmp` or a Windows temp folder, its binary was deleted, it's a LOLBin, its command line downloads and runs, its signature is bad) | **Floor.** The case alerts regardless of suppressions or the AI. |
-| `max_route: log` / `digest` | detectors, from code-proven facts (beaconing to a popular service other household devices also use, uploads to a known cloud-sync or endpoint-security vendor) | **Ceiling.** The AI can lower a case further but can't raise it past this. |
+| `max_route: log` / `digest` | detectors, from code-proven facts (beaconing to a popular service other household devices also use, or to a service that is regular by design such as push notifications, EDR check-ins, NTP and STUN; uploads to a known cloud-sync or endpoint-security vendor) | **Ceiling.** The AI can lower a case further but can't raise it past this. |
 | `host_max_route: digest` | host context, when the program is likely benign but not corroborated | A separate ceiling key, so it never loosens a detector's stricter cap. |
 
 ### Who gets asked
