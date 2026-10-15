@@ -1123,3 +1123,20 @@ def test_upload_to_a_sync_companys_own_network_is_capped_when_no_name_was_seen()
     assert apple.facts["to_sync_network"] == "Apple" and apple.facts["max_route"] == "digest"
     assert apple.indicators == ["17.250.103.75"]                         # the address stands in for the name
     assert aws.facts["to_sync_network"] == "" and "max_route" not in aws.facts
+
+
+def test_a_device_whose_every_connection_fails_is_offline_not_scanning():
+    offline = run(PortScan(), [conn(T0 + i * 0.5, dst=f"203.0.113.{i + 1}", port=443, state="S0") for i in range(60)])
+    assert offline[0].facts["all_failed"] and offline[0].facts["max_route"] == "digest"
+    det = PortScan()
+    run(det, [conn(T0 + i, dst="203.0.113.250", port=443) for i in range(5)])       # its own traffic works
+    scanning = run(det, [conn(T0 + 10 + i * 0.5, dst=f"192.168.50.{i + 2}", port=22, state="REJ") for i in range(60)])
+    assert scanning[0].facts["all_failed"] and scanning[0].facts["max_route"] == "digest"   # nothing since the run began
+    det = PortScan()
+    recs = [conn(T0 + i * 0.5, dst=f"192.168.50.{i + 2}", port=22, state="REJ") for i in range(60)]
+    recs.insert(30, conn(T0 + 15.2, dst="203.0.113.250", port=443))                # an answered one mid-run
+    live = run(det, recs)
+    assert not live[0].facts["all_failed"] and "max_route" not in live[0].facts
+    # a reset after the handshake (tarpits, banner-grab refusals) is still a failed probe, not an answer
+    rst = run(PortScan(), [conn(T0 + i * 0.5, dst=f"192.168.50.{i + 2}", port=443, state="RSTR") for i in range(60)])
+    assert len(rst) == 1 and rst[0].facts["all_failed"]
