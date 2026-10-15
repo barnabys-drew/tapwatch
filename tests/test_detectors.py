@@ -139,6 +139,22 @@ def test_port_scan():
     cases = run(PortScan(), recs)
     assert len(cases) == 1
     assert cases[0].facts["internal_targets"] is True and cases[0].facts["failed_pct"] == 100
+    assert cases[0].facts["proto"] == "tcp"
+
+
+def test_udp_counts_as_a_scan_only_in_a_sweep_shape():
+    def udp(ts, dst, port):
+        r = conn(ts, dst=dst, port=port, state="S0")
+        r["proto"] = "udp"
+        return r
+    # the main PC's NetBIOS name fallback: udp/137 S0 to 63 public addresses (#73) is discovery, not a scan
+    assert run(PortScan(), [udp(T0 + i * 0.1, f"203.0.113.{i + 1}", 137) for i in range(63)]) == []
+    # BitTorrent DHT / game peers gone away: many hosts on many ports, no sweep shape
+    assert run(PortScan(), [udp(T0 + i * 0.1, f"203.0.113.{i + 1}", 20000 + i) for i in range(60)]) == []
+    # one host, many ports (a UDP port scan) and one port, many hosts (a host sweep) still count
+    ports = run(PortScan(), [udp(T0 + i * 0.1, "192.168.50.7", 1000 + i) for i in range(60)])
+    hosts = run(PortScan(), [udp(T0 + i * 0.1, f"192.168.50.{i + 2}", 161) for i in range(60)])
+    assert [c.facts["proto"] for c in ports + hosts] == ["udp", "udp"] and hosts[0].facts["hosts"] == 50  # fires at the threshold
 
 
 def test_ioc_hits_are_must_alert():
