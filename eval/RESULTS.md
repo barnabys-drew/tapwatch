@@ -18,6 +18,41 @@ into alerts, without adding false alerts at home. It did not reduce the number o
 The eval's GO rule says so: Jev must cut noise *or* alert on more real threats, add no false
 alerts, and lose no malicious host.
 
+## Re-run 2026-10-15, after the noise review
+
+Same captures, same home night, same model, after the day's detector changes (per-VLAN DHCP learning,
+benign beacon classes and the popular-only cap, per-destination beacon reporting, UDP-aware scan,
+outcome-based management-plane severity plus the admin-port sweep, device identity, and the rest).
+
+| | 2026-10-13 rules / Jev | 2026-10-15 rules / Jev |
+|---|---|---|
+| Infected hosts surfaced (alert or digest), 7 labelled hosts | 4 / 4 | 4 / 4 |
+| Infected hosts **alerted** | 2 / **4** | 1 / **2** |
+| Home night: items to read | 8 / 8 | 10 / 10 |
+| Home night: false alerts | 0 / 0 | 1 / 2 |
+| WannaCry: cases raised | 86 | **10** |
+
+What changed, and why each is kept:
+
+- **WannaCry** went from 82 management-plane cases (each an alert) to one severity-5 **admin-port
+  sweep** alert plus 4 digest probes: the worm shape is the signal, not each probe. Its second
+  labelled host made one *accepted* SMB session, which is now severity 3 (digest); as a single
+  event that is also what a PC opening a share on the NAS looks like. Jev no longer promotes it.
+- **FluBot** lost Jev's promotion. Its beat goes to a `www.facebook.com` address, which the 10-13
+  notes already called the phone's own keepalive rather than the C2; the popular-destination cap
+  now holds it at digest by design (popular services are C2 channels too, so digest, never log).
+  The infected phone still surfaces.
+- **Home night**: 2 more digest items, because beaconing now reports per destination (a work
+  laptop's two vendors on one port were one case before) and no longer silences a port forever.
+  The rules-only "false alert" is `takeover`: TeamViewer present on a work laptop, seen over TLS.
+  The labels call the whole night benign; the detector is right that a remote-control tool is
+  there, and `takeover.expected` is how an owner declares it. Jev's second alert is a beaconing
+  digest item it promoted.
+
+The GO rule is unchanged and Jev still passes it on the captures where it mattered (HtBot).
+The eval's own blind spot is that it scores labels, and this night's labels predate the
+remote-control rule; the correct fix is a labelled `expected` entry, not a softer detector.
+
 ## Malware: Stratosphere Lab public captures
 
 Real infections recorded by the Stratosphere Lab, CTU Prague (https://mcfp.felk.cvut.cz/publicDatasets/,

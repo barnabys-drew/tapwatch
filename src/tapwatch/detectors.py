@@ -1267,10 +1267,14 @@ class ManagementAccess(Detector):
                                              8291: "router admin (Winbox)"}
     GATEWAY_PORTS: ClassVar[dict[int, str]] = {443: "router admin web page", 8443: "router admin web page"}
 
+    SWEEP_WINDOW, SWEEP_TARGETS = 600, 5  # new admin-port pairs to this many devices in 10 min = a sweep
+
     def __init__(self, warmup: Warmup, gateways: Gateways | None = None, admin_devices: set[str] | None = None):
         self.warmup = warmup
         self.gateways, self.admins = gateways or Gateways(), admin_devices or set()
         self.known: set[tuple] = set()
+        self.recent: dict[str, deque] = defaultdict(deque)  # source -> (ts, target) of its new admin pairs
+        self.swept: dict[str, float] = {}                   # source -> until when its sweep is already reported
 
     def feed(self, rec: dict) -> list[Case]:
         if rec["_type"] != "conn" or rec.get("proto") != "tcp":
@@ -1288,8 +1292,26 @@ class ManagementAccess(Detector):
         if self.warmup.learning(rec["ts"]):
             return []
         answered, target = rec.get("conn_state") in ESTABLISHED, "router" if dst in self.gateways else "device"
+        ts = rec["ts"]
+        # A worm: one source trying admin ports on device after device. WannaCry (CTU-297-1) made
+        # 9,900 SMB attempts to other hosts in 16 min; as single unanswered probes each is only a
+        # digest item, so the sweep itself is the alert, once an hour, and the probes it covers stay
+        # learned but raise nothing more.
+        q = self.recent[src]
+        q.append((ts, dst))
+        while q and ts - q[0][0] > self.SWEEP_WINDOW:
+            q.popleft()
+        targets = {d for _, d in q}
+        if len(targets) >= self.SWEEP_TARGETS:
+            if ts < self.swept.get(src, 0):
+                return []
+            self.swept[src] = ts + 3600
+            return [Case(self.name, src, ts, "Admin-port sweep across the network",
+                         {"what": what, "port": port, "target": target, "answered": answered, "sweep": True,
+                          "targets": len(targets), "window_min": self.SWEEP_WINDOW // 60, "dedupe": f"sweep:{port}"},
+                         base_severity=5)]
         severity = 2 if not answered else 4 if target == "router" or port != 445 else 3
-        return [Case(self.name, src, rec["ts"], "Device tried an admin connection",
+        return [Case(self.name, src, ts, "Device tried an admin connection",
                      {"what": what, "port": port, "target": target, "answered": answered, "dedupe": f"{dst}:{port}"},
                      base_severity=severity)]
 

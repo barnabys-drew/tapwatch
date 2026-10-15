@@ -1090,3 +1090,18 @@ def test_beaconing_timing_windows_and_dns_zones_are_bounded():
         d._tunnel("192.168.50.10", T0 + i * 0.01, f"x.z{i}.example", f"z{i}.example", "A")
     d._tunnel("192.168.50.10", T0 + 5000, "x.last.example", "last.example", "A")
     assert len(d.zones) < 100
+
+
+def test_admin_port_sweep_is_one_alert_not_eighty_digest_items():
+    det = ManagementAccess(Warmup(0), gateways=Gateways({GW}))
+    probes = [conn(T0 + i, src="192.168.50.66", dst=f"192.168.50.{100 + i}", port=445, state="S0") for i in range(80)]
+    cases = run(det, probes)
+    assert [c.base_severity for c in cases] == [2, 2, 2, 2, 5]                   # 4 probes, then the sweep
+    assert cases[-1].facts["sweep"] and cases[-1].facts["targets"] == 5 and cases[-1].facts["dedupe"] == "sweep:445"
+    again = run(det, [conn(T0 + 3700 + i, src="192.168.50.66", dst=f"192.168.50.{200 + i}", port=445, state="S0")
+                      for i in range(5)])
+    assert [c.base_severity for c in again] == [2, 2, 2, 2, 5]                   # an hour later: reported again
+    # five pairs spread over a day are ordinary admin use, not a sweep
+    slow = ManagementAccess(Warmup(0), gateways=Gateways({GW}))
+    spread = [conn(T0 + i * 3600, src="192.168.50.20", dst=f"192.168.50.{100 + i}", port=3389) for i in range(6)]
+    assert all(not c.facts.get("sweep") for c in run(slow, spread))

@@ -141,6 +141,9 @@ def _observed(c: Case, words: dict) -> str:
         why = " Shortly before, this device asked the router to open a port for it." if f["after_mapping_request"] else ""
         return (f"A computer on the internet connected to this device on {f['proto'].upper()} port {f['port']} "
                 f"({f['service']}) and the device answered, so it is reachable from outside.{why}")
+    if c.detector == "mgmt_access" and f.get("sweep"):
+        return (f"Within {f['window_min']} minutes it tried {f['what']} (port {f['port']}) on {f['targets']} different "
+                "devices on the network, one after another, the way a worm looks for its next victim.")
     if c.detector == "mgmt_access":
         target = "the router's" if f["target"] == "router" else "another device's"
         result = "The connection was accepted." if f["answered"] else "The connection was not answered."
