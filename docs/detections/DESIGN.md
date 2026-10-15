@@ -241,7 +241,10 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   the case: `sni_popular` (Tranco), `shared_by_n_devices`, `device_role`, `bytes_per_hit`.
 - **Baseline:** none for detection. Suppression learns which (role, base-domain) pairs are
   normal heartbeats after 7 days.
-- **Dedupe:** existing `dst:port`.
+- **Dedupe:** `base domain (or address):port`. One case per (device, port, destination) every
+  `reported_days` (7), at most `fanout_per_day` (3) per (device, port) a day for clients that poll
+  many servers the same way. Until 2026-10-15 it was one case per (device, port) forever, which
+  silenced any later C2 on 443 once a benign heartbeat on 443 had been reported.
 - **FPs:** the camera's vendor-port keepalive, UniFi inform, push services (5223/5228),
   NTP, the hub's MQTT keepalive. Suppress when SNI or base domain is popular **and**
   shared, or the role is fixed-function **and** the destination is in the device's 14-day set.

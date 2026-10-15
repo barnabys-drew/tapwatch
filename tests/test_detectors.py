@@ -61,6 +61,30 @@ def test_beaconing_reports_once_and_carries_sni():
     assert cases[0].indicators == ["updates.example.com"]
 
 
+def test_beaconing_reports_per_destination_with_an_expiry_and_a_fanout_budget():
+    # One benign heartbeat on 443 used to silence every later beacon from that PC on 443, forever.
+    b = Beaconing(reported_days=7, fanout_per_day=3)
+    beats = lambda dst, start=T0: [conn(start + i * 300, dst=dst) for i in range(12)]
+    first = run(b, [ssl(T0 - 2, "music.example", dst="203.0.113.5")] + beats("203.0.113.5"))
+    second = run(b, [ssl(T0 - 1, "c2.example", dst="203.0.113.6")] + beats("203.0.113.6"))
+    assert [c.indicators for c in first + second] == [["music.example"], ["c2.example"]]
+    assert run(b, beats("203.0.113.5", T0 + 86400)) == []                # same destination, 1 day later: silent
+    later = [conn(T0 + 8 * 86400 + i * 300, dst="203.0.113.5") for i in range(60)]  # the window rolls over
+    assert len(run(b, later)) == 1                                         # 8 days later: reported again
+    # fan-out: a client that polls many servers on one port the same way gets 3 cases a day, not 57
+    fan = Beaconing(fanout_per_day=3)
+    cases = []
+    for i in range(20):
+        cases += run(fan, beats(f"198.51.100.{i + 1}", T0 + i * 10))
+    assert len(cases) == 3 and len(run(fan, beats("198.51.100.99", T0 + 86400 + 4000))) == 1
+    # the saved state round-trips, and the old (host, port) set shape starts over instead of crashing
+    again = Beaconing()
+    again.restore(b.snapshot())
+    assert again.reported == b.reported
+    again.restore({"reported": {"$set": [{"$tuple": ["192.168.50.10", 443]}]}})
+    assert again.reported == {}
+
+
 def test_beaconing_skips_internal_destinations():
     assert run(Beaconing(), [conn(T0 + i * 60, dst="192.168.50.2") for i in range(20)]) == []
 
