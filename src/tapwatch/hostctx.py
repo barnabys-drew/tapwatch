@@ -361,6 +361,8 @@ class OwnerIndex:
                     continue
                 if rec["name"] == BPF:  # one row per connect(): an instant, like Sysmon's
                     for c in rows or ():
+                        if not c.get("path"):  # started before osqueryd: eBPF never saw it start (snapshots cover it)
+                            continue
                         t = float(c.get("time") or ts)
                         c = {k: v for k, v in c.items() if v is not None}  # a gone process: container unknown
                         o = _owner({**c, "name": _basename(c.get("path") or "") or "?"}, t)

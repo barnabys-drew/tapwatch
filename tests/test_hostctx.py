@@ -702,10 +702,10 @@ def bpf(t, path=GIT, remote=DST, port=443, **cols):
 
 def test_bpf_connections_catch_short_linux_connections_with_claude_markers(tmp_path):
     log = tmp_path / "osqueryd.results.log"
-    log.write_text(json.dumps(bpf(T0)) + "\n")
+    log.write_text(json.dumps(bpf(T0)) + "\n" + json.dumps(bpf(T0, path="", pid="4829")) + "\n")
     idx = OwnerIndex()
     idx.read_log(log, since=0)
-    (o,) = idx.who(DST, 443, T0 + 1)                   # over in a second: no 1-minute snapshot saw it
+    (o,) = idx.who(DST, 443, T0 + 1)                   # the path-less row (a process older than osqueryd) is skipped                   # over in a second: no 1-minute snapshot saw it
     assert (o.name, o.parent, o.session, o.attended, o.in_herdr) == ("git-remote-http", "git", SID, "1", True)
     assert o.container is None                         # the process was gone by query time: unknown, not "no"
     assert idx.who(DST, 443, T0 + 600) == []
