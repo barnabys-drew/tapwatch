@@ -1017,6 +1017,61 @@ class Gateways(Detector):
             log.info("learned router for %s.0/24 from the logs (%d devices use it)", sub, len(clients))
 
 
+class Identity(Detector):
+    """Who is behind an address: IP -> MAC from conn.log, MAC -> DHCP hostname from dhcp.log.
+
+    Emits no cases. Fed first, so the pipeline can stamp every case with `device_mac` and
+    `device_name` facts, and Assets can label a device by its DHCP hostname or MAC as well as
+    by IP. Needed because an IP changes hands: a dock shared by two laptops gave both the same
+    "main PC" label and mixed their baselines (2026-10-14). The hostname is network data (a
+    device can claim any name), so it is shown escaped and never sent to the AI unless the owner
+    mapped it to a name in assets.yaml.
+    """
+
+    name = "identity"
+    PERSIST: ClassVar[tuple[str, ...]] = ("mac", "hostname")
+
+    def __init__(self):
+        self.mac: dict[str, str] = {}       # internal IP -> MAC
+        self.hostname: dict[str, str] = {}  # MAC -> DHCP hostname
+
+    def feed(self, rec: dict) -> list[Case]:
+        kind = rec["_type"]
+        if kind == "conn":
+            for ip_key, mac_key in (("id.orig_h", "orig_l2_addr"), ("id.resp_h", "resp_l2_addr")):
+                ip, mac = rec.get(ip_key, ""), (rec.get(mac_key) or "").lower()
+                if mac_ok(mac) and is_unicast_lan(ip):
+                    if len(self.mac) > 50_000:
+                        self.mac.clear()
+                    self.mac[ip] = mac
+        elif kind == "dhcp":
+            mac, name = (rec.get("mac") or "").lower(), (rec.get("host_name") or "").strip()
+            if mac_ok(mac):
+                if name:
+                    if len(self.hostname) > 10_000:
+                        self.hostname.clear()
+                    self.hostname[mac] = name
+                ip = rec.get("assigned_addr") or rec.get("client_addr") or ""
+                if is_unicast_lan(ip):
+                    self.mac[ip] = mac
+        return []
+
+    def mac_for(self, ip: str) -> str:
+        return self.mac.get(ip, "")
+
+    def hostname_for(self, ip: str) -> str:
+        return self.hostname.get(self.mac.get(ip, ""), "")
+
+    def facts_for(self, ip: str) -> dict:
+        """The identity facts for a case on `ip`: only what is known."""
+        out = {}
+        if mac := self.mac_for(ip):
+            out["device_mac"] = mac
+            if name := self.hostname.get(mac, ""):
+                out["device_name"] = name
+        return out
+
+
 class InternetExposure(Detector):
     """R01. A LAN device answers a connection started from the internet (port forward, UPnP, rogue listener).
 
@@ -1798,6 +1853,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     tz = cfg.get("timezone")  # for time-of-day rules; None = this machine's local time
     dets: list[Detector] = [
         gateways,  # first: the home rules below ask it about every record
+        Identity(),  # who is behind each address; the pipeline stamps cases with it
         SuricataAlert(),
         Beaconing(dev=dev, popular=popular, expected=_expected_services(d.get("takeover", {})),
                   **d.get("beaconing", {})),

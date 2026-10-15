@@ -2,7 +2,7 @@ import json
 import subprocess
 
 import pytest
-from conftest import T0, conn, dns, jev_response, ssl, write_logs
+from conftest import T0, conn, dhcp, dns, jev_response, ssl, write_logs
 
 from tapwatch import config, evaluate, notifiers, zeek
 from tapwatch.detectors import Beaconing, IOCMatch, build
@@ -433,3 +433,27 @@ def test_eval_go_when_ai_promotes_a_real_threat_without_false_alerts(tmp_path, f
     text = evaluate.report(res)
     assert res["rules"].alerted_bad_hosts == set() and res["ai"].alerted_bad_hosts == {bad}
     assert "verdict: GO" in text and "alerted 0 -> 1" in text
+
+
+def test_pipeline_stamps_cases_with_the_device_identity_and_alerts_use_it(fake_jev):
+    from tapwatch.detectors import Identity
+    from tapwatch.pipeline import alert_item
+
+    class Recorder:
+        def __init__(self):
+            self.items = []
+
+        def send(self, title, items):
+            self.items += items
+
+    mac, note = "aa:bb:cc:dd:ee:01", Recorder()
+    p = Pipeline([Identity(), IOCMatch({"203.0.113.5"}, set())],
+                 Assets({"name:acct-laptop": {"name": "accounting laptop"}, "192.168.50.10": {"name": "dock"}}),
+                 Store(":memory:"), notifier=note)
+    p.process(dict(dhcp(T0, mac=mac), host_name="ACCT-LAPTOP", assigned_addr="192.168.50.10"))
+    out = p.process(dict(conn(T0 + 1), orig_l2_addr=mac))
+    cid, c, _, r = out[0]
+    assert r is Route.ALERT and c.facts["device_name"] == "ACCT-LAPTOP" and c.facts["device_mac"] == mac
+    assert note.items[0]["facts"]["Device"] == "accounting laptop (192.168.50.10)"   # not "dock": the hostname wins
+    assert alert_item(c, None, "r", Assets(), cid)["facts"]["Device"] == "192.168.50.10 (192.168.50.10)"
+    assert "device_name" in json.loads(p.store.get(cid)["facts"])

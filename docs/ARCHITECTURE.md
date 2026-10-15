@@ -300,7 +300,7 @@ tapwatch treats everything from the network as hostile and keeps the household's
 
 | Flow | What | When |
 |---|---|---|
-| Jev triage | The audience framing, the device's *name and role* from `assets.yaml`, a description in words, up to 3 quoted network names (domains, SNI, DHCP hostname). With host context: program names (quoted as untrusted) and yes/no facts and minutes. **Never** internal IPs, MACs, packet contents, transcript text, session IDs, paths or command lines. | Only if a TypeSafe or Vercel AI Gateway key is set |
+| Jev triage | The audience framing, the device's *name and role* from `assets.yaml` (matched by DHCP hostname, MAC or IP), a description in words, up to 3 quoted network names (domains, SNI, DHCP hostname). With host context: program names (quoted as untrusted) and yes/no facts and minutes. **Never** internal IPs, MACs, packet contents, transcript text, session IDs, paths or command lines. | Only if a TypeSafe or Vercel AI Gateway key is set |
 | Notifications | Case title, device name and its LAN address, the reason, the AI's read, a case link, and network names (defanged in push and chat apps, Markdown-escaped in Teams) | To channels you configure |
 | Feed downloads | Nothing is sent. Tranco, IEEE OUI and iptoasn are fetched over https. | `tapwatch update-feeds` |
 | Analyst lookups | The case's domains and IPs, sent to VirusTotal, RDAP and web search | Only when you run the optional `enrich-case` skill |

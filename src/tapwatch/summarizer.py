@@ -30,25 +30,39 @@ WORDING = {
 
 
 class Assets:
-    """Maps internal IPs to human labels, e.g. {"192.168.1.20": {"name": "front-desk PC", "role": "workstation"}}.
-    Also carries the audience (office | home) so every summary uses the same framing."""
+    """Maps devices to human labels, e.g. {"192.168.1.20": {"name": "front-desk PC", "role": "workstation"}}.
+
+    A key is an internal IP, `mac:aa:bb:cc:dd:ee:ff`, or `name:<DHCP hostname>`. With the case's
+    identity facts (device_name, device_mac, from the Identity detector) the lookup goes hostname,
+    then MAC, then IP: the hostname survives a dock swap and a DHCP change, the MAC survives a
+    DHCP change, the IP is what's left. Also carries the audience (office | home) so every
+    summary uses the same framing."""
 
     def __init__(self, table: dict | None = None, audience: str = "office"):
-        self.table = table or {}
+        self.table = {(str(k).lower() if str(k).lower().startswith(("mac:", "name:")) else k): v
+                      for k, v in (table or {}).items()}
         if audience not in WORDING:
             raise ValueError(f"audience must be one of {sorted(WORDING)}, not {audience!r}")
         self.audience = audience
         self.words = WORDING[audience]
 
-    def describe(self, ip: str) -> str:
-        a = self.table.get(ip)
+    def entry(self, ip: str, facts: dict | None = None) -> dict | None:
+        f = facts or {}
+        for key in (f"name:{f['device_name'].lower()}" if f.get("device_name") else "",
+                    f"mac:{f['device_mac'].lower()}" if f.get("device_mac") else "", ip):
+            if key and self.table.get(key):
+                return self.table[key]
+        return None
+
+    def describe(self, ip: str, facts: dict | None = None) -> str:
+        a = self.entry(ip, facts)
         if not a:
             return f"an unlabelled device on {self.words['network']}"
         role = f" ({a['role']})" if a.get("role") else ""
         return f"{a.get('name', 'unnamed device')}{role}"
 
-    def name(self, ip: str) -> str:
-        return self.table.get(ip, {}).get("name", ip)
+    def name(self, ip: str, facts: dict | None = None) -> str:
+        return (self.entry(ip, facts) or {}).get("name", ip)
 
 
 def clean_untrusted(s: str) -> str:
@@ -256,7 +270,7 @@ def _on_the_pc(f: dict) -> str:
 def summarize(case: Case, assets: Assets) -> str:
     lines = [
         assets.words["setting"],
-        f"Device: {assets.describe(case.host)}.",
+        f"Device: {assets.describe(case.host, case.facts)}.",
         f"What happened: {_observed(case, assets.words)}",
     ]
     if case.indicators:

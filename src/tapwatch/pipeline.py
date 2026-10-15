@@ -28,7 +28,7 @@ def case_link(base_url: str | None, case_id: int) -> str:
 def alert_item(case: Case, verdict: Verdict | None, reason: str, assets: Assets, case_id: int,
                base_url: str | None = None) -> dict:
     facts = {
-        "Device": f"{assets.name(case.host)} ({case.host})",
+        "Device": f"{assets.name(case.host, case.facts)} ({case.host})",
         "When": datetime.fromtimestamp(case.ts, timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "Why": reason,
     }
@@ -53,6 +53,7 @@ class Pipeline:
         self.hostctx, self.zeek_dirs = hostctx, zeek_dirs  # "who on the PC did this", for the tapwatch PC
         self.thresholds, self.dedupe_seconds = thresholds or Thresholds(), dedupe_seconds
         self.learning_seconds = learning_seconds  # AI alerts go to the digest while the install is this young
+        self.identity = next((d for d in detectors if isinstance(d, det.Identity)), None)
         self._first_ts: float | None = None       # learning clock when no detector carries a Warmup
         self.input_tokens = 0
         self._pc_base: dict[int, set] = {}   # "this PC" address sets as configured, before follow_this_pc
@@ -80,6 +81,8 @@ class Pipeline:
     def handle(self, case: Case) -> tuple[int, Case, Verdict | None, Route] | None:
         if self.store.recent(case, self.dedupe_seconds) is not None:
             return None  # same thing already reported recently: count it, don't re-ask or re-alert
+        if self.identity is not None:
+            case.facts.update(self.identity.facts_for(case.host))  # device_mac, device_name
         self.add_host_context(case)
         state = summarize(case, self.assets)
         if "host_who" in case.facts and self.client and hasattr(self.client, "who"):
@@ -106,7 +109,7 @@ class Pipeline:
             where = case_link(self.base_url, case_id) if self.base_url else f"case #{case_id}"
             try:
                 self.herdr.show(f"tapwatch CRITICAL: {case.title}",
-                                f"{self.assets.name(case.host)} - {reason} - {where}")
+                                f"{self.assets.name(case.host, case.facts)} - {reason} - {where}")
             except RuntimeError as e:
                 log.error("could not show Herdr notification for #%s: %s", case_id, e)
         if r is Route.ALERT and self.notifier:
@@ -199,7 +202,8 @@ class Pipeline:
             return 0
         items = []
         for row in rows[:40]:  # keep the card readable; the rest go in the next digest
-            facts = {"Device": f"{self.assets.name(row['host'])} ({row['host']})", "Why": row["reason"],
+            facts = {"Device": f"{self.assets.name(row['host'], json.loads(row['facts']))} ({row['host']})",
+                     "Why": row["reason"],
                      "Seen": f"{row['hits']} time(s)", "Case": case_link(self.base_url, row["id"])}
             items.append({"heading": row["title"], "facts": facts, "untrusted": json.loads(row["indicators"])})
         self.notifier.send(f"tapwatch daily digest: {len(rows)} item(s) to review", items)

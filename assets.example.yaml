@@ -1,5 +1,7 @@
-# Internal IP -> what it is. The AI only ever sees these names, never the IPs.
+# Device -> what it is. The AI only ever sees these names, never IPs, MACs or DHCP hostnames.
+# A key is an internal IP, "mac:<address>" or "name:<DHCP hostname>". A case is matched by its
+# DHCP hostname first, then its MAC, then its IP: the name survives a dock swap and a DHCP change.
 192.168.1.1: {name: firewall, role: network gear}
 192.168.1.10: {name: file server, role: server}
-192.168.1.20: {name: front-desk PC, role: workstation}
-192.168.1.30: {name: accounting laptop, role: workstation handling payments}
+"mac:aa:bb:cc:dd:ee:ff": {name: front-desk PC, role: workstation}
+"name:ACCT-LAPTOP": {name: accounting laptop, role: workstation handling payments}

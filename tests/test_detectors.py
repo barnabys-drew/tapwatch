@@ -989,3 +989,21 @@ def test_tls_odd_and_odd_port_report_again_after_reported_days_but_keep_warmup_l
     fresh = OddPort(learn_days=1)
     fresh.restore(snap)
     assert fresh.reported == op.reported
+
+
+def test_identity_learns_mac_from_conn_and_hostname_from_dhcp():
+    from tapwatch.detectors import Identity
+    ident = Identity()
+    mac = "aa:bb:cc:dd:ee:01"
+    assert ident.facts_for("192.168.50.10") == {}
+    run(ident, [dict(conn(T0), orig_l2_addr=mac.upper())])
+    assert ident.facts_for("192.168.50.10") == {"device_mac": mac}                      # MAC, no name yet
+    run(ident, [dict(dhcp(T0 + 1, mac=mac), host_name="ACCT-LAPTOP", assigned_addr="192.168.50.10")])
+    assert ident.facts_for("192.168.50.10") == {"device_mac": mac, "device_name": "ACCT-LAPTOP"}
+    run(ident, [dict(dhcp(T0 + 2, mac=mac), host_name="ACCT-LAPTOP", assigned_addr="192.168.50.77")])
+    assert ident.hostname_for("192.168.50.77") == "ACCT-LAPTOP"                        # follows the lease
+    run(ident, [dict(conn(T0 + 3, src="192.168.50.10"), orig_l2_addr="ff:ff:ff:ff:ff:ff")])
+    assert ident.mac_for("192.168.50.10") == mac                                          # broadcast MAC ignored
+    again = Identity()
+    again.restore(ident.snapshot())
+    assert again.facts_for("192.168.50.77") == ident.facts_for("192.168.50.77")

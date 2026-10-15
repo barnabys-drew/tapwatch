@@ -242,3 +242,18 @@ def test_learning_period_sends_ai_alerts_to_the_digest_but_not_always_alert_rule
     assert route(case(must_alert=True), hot, learning="learning period (day 1 of 3)")[0] is Route.ALERT
     floor = case(facts={**case().facts, "min_route": "alert", "host_signals": ["runs from /tmp"]})
     assert route(floor, hot, learning="learning period (day 1 of 3)")[0] is Route.ALERT
+
+
+def test_assets_match_by_dhcp_hostname_then_mac_then_ip_and_the_ai_never_sees_the_raw_identity():
+    assets = Assets({"192.168.50.10": {"name": "dock", "role": "workstation"},
+                     "MAC:AA:BB:CC:DD:EE:01": {"name": "work laptop", "role": "workstation"},
+                     "name:acct-laptop": {"name": "accounting laptop", "role": "workstation handling payments"}})
+    facts = {"device_mac": "aa:bb:cc:dd:ee:01", "device_name": "ACCT-LAPTOP"}
+    assert assets.name("192.168.50.10") == "dock"                                 # IP alone: the old behaviour
+    assert assets.name("192.168.50.10", {"device_mac": "aa:bb:cc:dd:ee:01"}) == "work laptop"
+    assert assets.name("192.168.50.10", facts) == "accounting laptop"             # hostname wins over MAC and IP
+    assert assets.name("192.168.50.99", {"device_name": "unknown-box"}) == "192.168.50.99"
+    text = summarize(case(host="192.168.50.99", facts={**case().facts, "device_mac": "aa:bb:cc:dd:ee:99",
+                                                        "device_name": "SOMEONES-PHONE"}), assets)
+    assert "aa:bb" not in text and "SOMEONES-PHONE" not in text                   # unmapped: not for the AI
+    assert "accounting laptop (workstation handling payments)" in summarize(case(facts={**case().facts, **facts}), assets)

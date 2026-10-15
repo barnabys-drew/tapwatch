@@ -181,7 +181,7 @@ connection.
 
 ## What leaves the network
 
-- **AI summaries**, if enabled: the device's *name* from `assets.yaml` (never internal IPs), a
+- **AI summaries**, if enabled: the device's *name* from `assets.yaml` (never internal IPs, MACs or DHCP hostnames), a
   description in words, and up to three domain names, quoted as untrusted data. With host context
   that adds program names and yes/no facts, but never transcript text, session IDs, paths or
   command lines. About $0.02 a day at 1,000 cases.
