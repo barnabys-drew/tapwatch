@@ -59,8 +59,9 @@ WIN_LIVE_SQL = (
     "FROM process_open_sockets s JOIN processes p USING (pid) "
     "WHERE s.remote_address NOT IN ('', '0.0.0.0', '::', '127.0.0.1', '::1') AND s.remote_port != 0;"
 )
-QUERIES = ("outbound_connections", "outbound_connections_ctx", "sysmon_events")
+QUERIES = ("outbound_connections", "outbound_connections_ctx", "sysmon_events", "bpf_connections")
 QUERY_KEYS = tuple(f'"{q}"'.encode() for q in QUERIES)
+BPF = "bpf_connections"   # Linux/WSL: every outgoing connection from osquery's eBPF publisher, as it happens
 SYSMON = "sysmon_events"   # Windows: Sysmon process starts (1), connections (3) and DNS lookups (22), as they happen
 # Command-line signals the sysmon_events query computes (agents/config/osquery.conf), so benign command lines never
 # reach the results log, which every local account can read. Raw text is logged only when a suspicious one fires.
@@ -168,6 +169,9 @@ WIN_SHELLS = {"powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.e
 WIN_DOC_APPS = {"winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "onenote.exe", "msaccess.exe",
                 "mspub.exe", "acrord32.exe", "acrobat.exe", "foxitpdfreader.exe", "hxoutlook.exe", "olk.exe"}
 WIN_PSEUDO = {"[system process]", "system", "registry", "memory compression"}  # not programs
+# Programs that make DNS lookups for others: WSL's DNS proxy answers every Linux lookup through Windows.
+DNS_PROXIES = {"wslservice.exe"}
+DNS_FOLLOW = 30               # a lookup belongs to the program that connects to its answer within 30 s
 
 
 def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) -> None:
@@ -258,10 +262,34 @@ class OwnerIndex:
     notes: list[str] = field(default_factory=list)
     lookups: dict = field(default_factory=dict)   # Sysmon 22: query name -> [Owner]
     procs: dict = field(default_factory=dict)     # Sysmon 1: ProcessGuid -> (command line, parent path)
+    by_ip: dict | None = None                     # remote address -> owners, built on first who_ip
 
-    def who_dns(self, query: str, ts: float) -> list[Owner]:
-        """Programs that looked up `query` around `ts` (Sysmon event 22)."""
-        return [o for o in self.lookups.get(query.lower().rstrip("."), ()) if abs(o.start - ts) <= SLACK]
+    def who_dns(self, query: str, ts: float, answers=()) -> tuple[list[Owner], bool]:
+        """Programs that looked up `query` around `ts`, and whether that's inferred. Sysmon event 22 names the
+        program directly, unless it's a DNS proxy (WSL's). Otherwise: whoever connected to one of the answers
+        right after, which covers Linux programs and resolvers that skip Windows (Chrome's own)."""
+        named = [o for o in self.lookups.get(query.lower().rstrip("."), ())
+                 if abs(o.start - ts) <= SLACK and o.name.lower() not in DNS_PROXIES]
+        if named:
+            return named, False
+        followed = [o for ip in answers if isinstance(ip, str) for o in self.who_ip(ip, ts, DNS_FOLLOW)]
+        return followed, bool(followed)
+
+    def who_ip(self, remote: str, ts: float, within: float) -> list[Owner]:
+        """Processes that connected to `remote`, any port, from `ts` to `ts + within`."""
+        if self.by_ip is None:
+            self.by_ip = {}
+            for (addr, _port), owners in self.by_remote.items():
+                self.by_ip.setdefault(addr, []).extend(owners)
+        out = []
+        for o in self.by_ip.get(remote, ()):
+            if o.start and o.end == o.start:  # an event (Sysmon, eBPF): the connect itself must follow the lookup
+                hit = ts - 2 <= o.start <= ts + within
+            else:                              # a snapshot interval: held open around then
+                hit = o.start - SLACK <= ts + within and (o.end is None or ts <= o.end + SLACK)
+            if hit:
+                out.append(o)
+        return out
 
     def _sysmon(self, c: dict, fallback_ts: float) -> None:
         eid, guid, path = str(c.get("eventid", "")), c.get("guid") or "", c.get("path") or ""
@@ -285,6 +313,7 @@ class OwnerIndex:
                     o.cmdline, o.parent, o.cmd_flags = redact(cmdline), _basename(parent), flags
 
     def add(self, remote: str, port, owner: Owner) -> None:
+        self.by_ip = None
         try:
             self.by_remote.setdefault((remote, int(port)), []).append(owner)
         except (TypeError, ValueError):
@@ -329,6 +358,14 @@ class OwnerIndex:
                 if rec["name"] == SYSMON:
                     for c in rows or ():
                         self._sysmon(c, ts)
+                    continue
+                if rec["name"] == BPF:  # one row per connect(): an instant, like Sysmon's
+                    for c in rows or ():
+                        t = float(c.get("time") or ts)
+                        c = {k: v for k, v in c.items() if v is not None}  # a gone process: container unknown
+                        o = _owner({**c, "name": _basename(c.get("path") or "") or "?"}, t)
+                        o.end = t
+                        self.add(c.get("remote_address", ""), c.get("remote_port"), o)
                     continue
                 for c in rows or ():
                     key = (c.get("remote_address"), c.get("remote_port"), c.get("pid"), c.get("name"))
@@ -581,9 +618,11 @@ class HostContext:
         # DNS lookups the PC made, tied to the program that asked (Sysmon 22): what DNS-anomaly cases need.
         lookups = [r for r in dns_rows if r.get("id.orig_h") == case.host and r.get("query")]
         lookups_matched = 0
+        lookups_followed = 0
         for r in lookups:
-            found = idx.who_dns(r["query"], r["ts"])
+            found, followed = idx.who_dns(r["query"], r["ts"], r.get("answers") or ())
             lookups_matched += bool(found)
+            lookups_followed += followed
             owners += found
         ips = {r["id.resp_h"] for r in outbound}
         names = {n.lower().rstrip(".") for n in case.indicators}
@@ -610,6 +649,7 @@ class HostContext:
         programs = sorted({o.name for o in named}, key=lambda n: -sum(o.name == n for o in named))
         facts = {"host_who": who, "host_corroborated": corroborated, "host_conns": len(outbound),
                  "host_matched": matched, "host_lookups": len(lookups), "host_lookups_matched": lookups_matched,
+                 "host_lookups_followed": lookups_followed,
                  "host_programs": programs[:3],
                  "host_agent_session": bool(sessions), "host_session": sessions[0] if sessions else "",
                  "host_attended": any(o.attended == "1" for o in owners if o.session),

@@ -62,6 +62,12 @@ variables are read, never the rest of the environment (it holds tokens). Results
 `0644` (`--logger_mode`), so tapwatch can read them without root. On the PC that runs tapwatch, install the
 agent **inside WSL** too: Windows can't see Linux processes, and the coding agents run there.
 
+On Linux the installer also turns on osquery's **eBPF publisher** (`config/linux.flags`), and
+`bpf_connections` records every outgoing connection as it happens, with the same markers, so a one-second
+`git fetch` or API call isn't missed between snapshots. It needs a kernel with BPF and BTF (4.18 or later;
+WSL2's has both). Linux DNS lookups from WSL reach Windows through WSL's DNS proxy, so tapwatch gives each
+lookup to the program that connected to one of its answers right after.
+
 On Windows, command lines can hold passwords or tokens, and osquery's results log is readable by every local
 account (osquery sets the file's permissions itself, and tapwatch has to read it without admin rights). So
 `sysmon_events` turns each command line into yes/no signals inside osquery (an encoded payload, base64

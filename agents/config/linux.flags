@@ -1,0 +1,12 @@
+# Linux only, appended by install.sh: osquery's eBPF publisher, so the bpf_connections query (osquery.conf)
+# sees every outgoing connection with the process behind it, not just the ones open at a 1-minute snapshot.
+# Needs a kernel with BPF and BTF (4.18+; WSL2's kernel has both).
+--disable_events=false
+--enable_bpf_events=true
+# Events wait in osquery's database between scheduled runs; drop them after an hour if unread.
+--events_expiry=3600
+--events_max=200000
+# Every connection makes the results log busier: rotate at 100 MB, keep 10 files.
+--logger_rotate=true
+--logger_rotate_size=104857600
+--logger_rotate_max_files=10
