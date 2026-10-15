@@ -98,6 +98,9 @@ def _observed(c: Case, words: dict) -> str:
         elif f.get("to_security_vendor"):
             text += (f" {f.get('top_share_pct', 0)}% went to an endpoint-security vendor's cloud, as managed "
                      "work computers' security agents do.")
+        if f.get("symmetric"):
+            text += (f" It also downloaded about {f.get('down_mb', 0)} MB in the same hour, the shape of a video "
+                     "call rather than an upload.")
         return text
     if c.detector == "upload_stopped":
         return (f"It normally uploads about {f['normal_mb']} MB every hour, but sent almost nothing for "

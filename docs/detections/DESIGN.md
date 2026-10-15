@@ -229,7 +229,9 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Dedupe:** `mgmt|src|dst|port`, 24 h.
 - **FPs:** Other admin devices of yours (phone app → UDM 443) belong in `admin_devices`;
   UniFi inform traffic.
-- **Route:** ALERT, code-only. A non-admin device touching an admin port is the verdict.
+- **Route:** code-only, by outcome: an accepted remote-control or router-admin session is severity 4
+  (ALERT), accepted SMB 3 (DIGEST), an unanswered attempt 2 (DIGEST). Before 2026-10-15 every attempt
+  was 4, so Windows discovery probing 445 across VLANs was a critical alert.
 - **Jev:** none. Note: same-switch SMB/RDP between two PCs is **not visible** (§2 blind spots).
 - **Safe test:** from a Windows laptop that isn't on the admin allowlist, open `https://<UDM>` in a
   browser. That's one harmless connection.
@@ -350,7 +352,9 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   any fixed threshold), the next device at 23 MB/h, and most devices ≈ 0.
 - **Dedupe:** `upload|host|hour`.
 - **FPs:** phone photo backup, PC cloud sync and game uploads. Code tags the destination as "known
-  sync service" from a curated map. That's a lookup, not Jev's guess.
+  sync service" from a curated map. That's a lookup, not Jev's guess. Video calls: the hour is
+  `symmetric` (upload 35-65% of the total) and capped at digest when mostly to one destination;
+  measured 2026-10-14, an all-day Meet (2.17 GB up, about the same down) alerted as #82.
 - **Route:** Jev-routed. A camera stop → DIGEST (code-only).
 - **Jev:** **yes.** "The Windows laptop uploaded 4 GB in one hour, 40× its normal for a Tuesday
   20:00, mostly to one destination new to this device, not a known sync service." Questions:

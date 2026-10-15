@@ -623,10 +623,10 @@ class HourlyProfile(Detector):
         self.multiple, self.floor, self.min_hours = multiple, floor_bytes, min_hours
         self.tz = ZoneInfo(timezone) if timezone else None  # None = this machine's local time
         self.steady, self.stop_hours, self.busy_min = steady_mb * 1e6, stop_hours, busy_min
-        self.current: dict[str, list] = {}                       # host -> [conns, upload bytes] this hour
+        self.current: dict[str, list] = {}                       # host -> [conns, upload bytes, download bytes] this hour
         self.dests: dict[str, Counter] = defaultdict(Counter)     # host -> upload bytes per destination name, this hour
         self.names: dict[str, str] = {}                          # external IP -> name (DNS/TLS), not saved
-        self.history: dict[str, deque] = defaultdict(lambda: deque(maxlen=14 * 24))  # host -> (hour, conns, up)
+        self.history: dict[str, deque] = defaultdict(lambda: deque(maxlen=14 * 24))  # host -> (hour, conns, up, down)
         self.last_hour: int | None = None
         self.reported: set[tuple] = set()
 
@@ -648,9 +648,12 @@ class HourlyProfile(Detector):
             self.last_hour = hour
         src, dst = rec.get("id.orig_h", ""), rec.get("id.resp_h", "")
         if is_unicast_lan(src) and not is_internal(dst):
-            cur = self.current.setdefault(src, [0, 0])
+            cur = self.current.setdefault(src, [0, 0, 0])
+            if len(cur) < 3:
+                cur.append(0)  # state saved before downloads were counted
             cur[0] += 1
             cur[1] += int(rec.get("orig_bytes") or 0)
+            cur[2] += int(rec.get("resp_bytes") or 0)
             if rec.get("orig_bytes"):
                 self.dests[src][self.names.get(dst, "")] += int(rec["orig_bytes"])
         return out
@@ -663,9 +666,9 @@ class HourlyProfile(Detector):
         closing = range(max(self.last_hour, hour - 48), hour)  # cap the catch-up after a long gap
         for h in closing:
             for host in set(self.current) | set(self.history):
-                conns, up = self.current.pop(host, [0, 0]) if h == self.last_hour else (0, 0)
-                out += self._judge(host, h, conns, up)
-                self.history[host].append((h, conns, up))
+                conns, up, down = (self.current.pop(host, [0, 0, 0]) + [0])[:3] if h == self.last_hour else (0, 0, 0)
+                out += self._judge(host, h, conns, up, down)
+                self.history[host].append((h, conns, up, down))
         self.current.clear()
         self.dests.clear()
         for host in [h for h, hist in self.history.items()
@@ -677,7 +680,7 @@ class HourlyProfile(Detector):
         local = datetime.fromtimestamp(hour * 3600, self.tz).hour
         return [x[idx] for x in self.history[host] if datetime.fromtimestamp(x[0] * 3600, self.tz).hour == local]
 
-    def _judge(self, host: str, hour: int, conns: int, up: int) -> list[Case]:
+    def _judge(self, host: str, hour: int, conns: int, up: int, down: int = 0) -> list[Case]:
         hist, ts, out = self.history[host], hour * 3600 + 3599, []
         same_up = self._same_hour(host, hour, 2)
         if len(same_up) >= 3:
@@ -689,11 +692,15 @@ class HourlyProfile(Detector):
         if normal is not None and up > self.floor and up > self.multiple * max(normal, 1):
             top, top_bytes = (self.dests.get(host) or Counter({"": 0})).most_common(1)[0]
             share = top_bytes / up if up else 0
+            # A video call is symmetric (measured 2026-10-14: an all-day Google Meet, ~0.8 Mbit/s each
+            # way, 2.17 GB up, alerted as #82). Exfiltration is lopsided: the data goes one way.
+            symmetric = 0.35 <= up / (up + down) <= 0.65 if down else False
             facts = {"mb": round(up / 1e6), "normal_mb": round(normal / 1e6, 1),
-                     "times_normal": round(up / max(normal, 1)), "basis": basis,
+                     "times_normal": round(up / max(normal, 1)), "basis": basis, "down_mb": round(down / 1e6),
+                     "symmetric": symmetric,
                      "top_share_pct": round(100 * share), "to_sync_service": bool(top) and sync_service(top),
                      "to_security_vendor": bool(top) and suffix_match(top, SECURITY_TELEMETRY) is not None}
-            if (facts["to_sync_service"] or facts["to_security_vendor"]) and share >= 0.6:
+            if (facts["to_sync_service"] or facts["to_security_vendor"] or symmetric) and share >= 0.6:
                 facts["max_route"] = "digest"  # home eval: a 700 MB OneDrive hour was Jev's "exfiltration 1.00"
             out.append(Case("upload_spike", host, ts, "Unusually large upload", facts,
                             [top] if top else [], base_severity=3))
@@ -1049,7 +1056,10 @@ class ManagementAccess(Detector):
     Same-switch device-to-device traffic is not on the mirror, so this sees routed/cross-VLAN
     attempts and anything aimed at the UDM. Sources in `admin_devices` and the gateways (configured
     or learned, see Gateways) are exempt; the router-UI clause waits until a gateway is known;
-    (source, target, port) pairs seen during warmup count as known. Attempts count, not just successes.
+    (source, target, port) pairs seen during warmup count as known. Attempts count, not just
+    successes, but severity follows the outcome: an accepted remote-control or router-admin
+    session is 4 (alert), accepted file sharing 3, an unanswered attempt 2 (digest). Windows
+    network discovery probing 445 across VLANs is an attempt, not an intrusion.
     """
 
     name = "mgmt_access"
@@ -1079,10 +1089,11 @@ class ManagementAccess(Detector):
         self.known.add(key)
         if self.warmup.learning(rec["ts"]):
             return []
+        answered, target = rec.get("conn_state") in ESTABLISHED, "router" if dst in self.gateways else "device"
+        severity = 2 if not answered else 4 if target == "router" or port != 445 else 3
         return [Case(self.name, src, rec["ts"], "Device tried an admin connection",
-                     {"what": what, "port": port, "target": "router" if dst in self.gateways else "device",
-                      "answered": rec.get("conn_state") in ESTABLISHED, "dedupe": f"{dst}:{port}"},
-                     base_severity=4)]
+                     {"what": what, "port": port, "target": target, "answered": answered, "dedupe": f"{dst}:{port}"},
+                     base_severity=severity)]
 
 
 class CleartextAuth(Detector):
