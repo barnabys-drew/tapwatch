@@ -102,7 +102,8 @@ detectors:
   scan: {window: 60, threshold: 50}
   upload_spike: {multiple: 10, floor_bytes: 500000000}
   new_domain: {window: 300}          # new domains per device are grouped into one case per window
-  exposure: {stun_window: 600, reply_window: 1800, startup: 120}
+  exposure: {stun_window: 600, reply_window: 1800, startup: 120}   # R01; declared port forwards count as known:
+  #   expected: [{host: 192.168.1.10, proto: tcp, port: 32400}]       #   config, not a suppression (still must_alert)
   odd_port: {learn_days: 7, long_hours: 4}   # R06: learn the house's ports this long, then flag new ones; also
                                              # reported_days 7 (a device+port is reported again after this long)
   #   tls_odd: {threshold: 3, reported_days: 7}  # R10: same expiry; pairs learned in warmup are kept for good

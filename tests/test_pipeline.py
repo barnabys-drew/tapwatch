@@ -349,6 +349,20 @@ def test_restart_keeps_what_the_detectors_learned(tmp_path):
     assert nd.warmup.start == T0                             # warmup doesn't restart either
     p2.process(dns(T0 + 800, "known.example"))
     assert p2.flush() == []                                  # not "new" after the restart
+    # the caps' inputs survive too: which devices share a service (beaconing) and where an hour's
+    # upload went (hourly), which were lost on every restart before 2026-10-15
+    b1 = next(d for d in p1.detectors if d.name == "beaconing")
+    b1.users["shared.example"].add("192.168.50.11")
+    h1 = next(d for d in p1.detectors if d.name == "hourly")
+    h1.process = None  # not used; feed directly
+    h1.feed(dict(conn(T0 + 900, orig_bytes=5_000), orig_l2_addr="02:00:00:00:00:01"))
+    p1.save_state()
+    p3 = fresh()
+    p3.restore_state()
+    b3 = next(d for d in p3.detectors if d.name == "beaconing")
+    h3 = next(d for d in p3.detectors if d.name == "hourly")
+    assert "192.168.50.11" in b3.users["shared.example"]
+    assert h3.dests["192.168.50.10"].most_common(1)[0][1] == 5_000   # a Counter again, not a plain dict
 
 
 def test_unreadable_saved_state_is_discarded_not_fatal(tmp_path):

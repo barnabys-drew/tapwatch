@@ -506,7 +506,7 @@ def test_takeover_channels_alert_and_ignore_the_dev_profile():
     det = TakeoverChannel()
     http_drop = {"_type": "http", "ts": T0 + 3, "id.orig_h": DEV, "id.resp_h": "203.0.113.5", "host": "transfer.sh"}
     cases = run(det, [dns(T0, "abc123.webhook.site", src=DEV), ssl(T0 + 1, "abcd.ngrok-free.app", src=DEV),
-                      dns(T0 + 2, "net.anydesk.com", src=OTHER), http_drop,
+                      ssl(T0 + 2, "net.anydesk.com", src=OTHER), http_drop,
                       dns(T0 + 4, "zzz.webhook.site", src=DEV)])           # same service again: deduped
     got = [(c.facts["channel"], c.must_alert, c.base_severity) for c in cases]
     assert got == [("callback", True, 5), ("tunnel", False, 4), ("remote_control", False, 4),
@@ -568,7 +568,7 @@ def test_expected_tool_sightings_never_alert_at_any_hour():
     det = laptop_takeover()
     assert run(det, [tv_lookup(MON_10), tv_lookup(MON_21), dns(MON_21, "sn.splashtop.com", src=LAPTOP),
                      tv_traffic(MON_21, 20_000)]) == []                      # idle keepalive after hours
-    assert [c.host for c in run(det, [dns(MON_10, "net.teamviewer.com", src=OTHER)])] == [OTHER]
+    assert [c.host for c in run(det, [ssl(MON_10, "net.teamviewer.com", src=OTHER)])] == [OTHER]
 
 
 def test_expected_tool_session_alerts_only_outside_hours_once_per_day():
@@ -591,7 +591,8 @@ def test_expected_entry_stops_applying_when_the_address_changes_hands():
     assert run(det, [tv_lookup(MON_10)]) == []                 # no lease seen yet: entry applies
     lease = dict(dhcp(MON_10 + 1, mac="11:22:33:44:55:66"), assigned_addr=LAPTOP)
     assert run(det, [lease]) == []
-    assert [c.facts["channel"] for c in run(det, [tv_lookup(MON_10 + 2)])] == ["remote_control"]
+    cases = run(det, [tv_lookup(MON_10 + 2), tv_traffic(MON_10 + 3, 500)])   # lookup, then contact: a sighting
+    assert [c.facts["channel"] for c in cases] == ["remote_control"]
 
 
 def test_callback_and_file_drop_services_cannot_be_marked_expected():
@@ -1046,3 +1047,46 @@ def test_baselines_follow_the_device_across_a_dock_swap_and_old_entries_move_und
     recs += [conn(T0 + 9 * 3600 + 60, src="192.168.50.150", orig_bytes=1_000_000_000), conn(T0 + 10 * 3600, src="192.168.50.150")]
     spike = next(c for c in run(hp, recs) if c.detector == "upload_spike")
     assert spike.host == "192.168.50.150" and "name:acct-laptop" in hp.history and "192.168.50.150" not in hp.history
+
+
+def test_remote_control_lookup_alone_is_not_a_takeover_but_a_connection_to_its_answer_is():
+    from tapwatch.detectors import TakeoverChannel
+    det = TakeoverChannel()
+    look = dict(dns(T0, "net.anydesk.com"), answers=["203.0.113.50", "203.0.113.51"])
+    assert run(det, [look]) == []                                                          # visited the website?
+    assert run(det, [conn(T0 + 30, dst="198.51.100.9")]) == []                             # unrelated connection
+    assert run(det, [conn(T0 + 120, dst="203.0.113.50")]) == []                            # too late to count
+    cases = run(det, [look, conn(T0 + 5, dst="203.0.113.51", port=443)])
+    assert [(c.facts["channel"], c.facts["via"], c.base_severity) for c in cases] == \
+        [("remote_control", "DNS, then a connection to the answer", 4)]
+    assert run(det, [ssl(T0 + 400, "net.anydesk.com")]) == []                              # already reported
+    assert [c.facts["channel"] for c in run(det, [dns(T0 + 500, "abc.webhook.site")])] == ["callback"]  # lookup is enough
+
+
+def test_private_mac_without_a_hostname_rotating_on_the_lan_is_log_level():
+    det = NewDevice(Warmup(0))
+    rotate = dict(conn(T0, src="192.168.50.80", dst="192.168.50.1", port=53), orig_l2_addr="aa:bb:cc:dd:ee:55")
+    named = dict(conn(T0 + 1, src="192.168.50.81", dst="192.168.50.1", port=53), orig_l2_addr="aa:bb:cc:dd:ee:66")
+    outside = dict(conn(T0 + 2, src="192.168.50.82"), orig_l2_addr="aa:bb:cc:dd:ee:77")
+    cases = run(det, [dict(dhcp(T0 - 1, mac="aa:bb:cc:dd:ee:66"), host_name="my-phone"), rotate, named, outside])
+    assert [(c.facts["likely_rotation"], c.base_severity) for c in cases] == [(True, 1), (False, 2), (False, 2)]
+
+
+def test_declared_port_forwards_are_known_exposures():
+    from tapwatch.detectors import InternetExposure
+    det = InternetExposure(Warmup(0), expected=[{"host": "192.168.50.10", "proto": "tcp", "port": 8000}])
+    assert run(det, [inbound(T0), inbound(T0 + 200)]) == []                                 # declared: quiet
+    assert [c.facts["port"] for c in run(det, [inbound(T0 + 201, port=8001)])] == [8001]   # anything else alerts
+
+
+def test_beaconing_timing_windows_and_dns_zones_are_bounded():
+    from tapwatch.detectors import SuspiciousDNS
+    b = Beaconing()
+    run(b, [conn(T0 + i, dst=f"203.0.{i // 250}.{i % 250 + 1}", port=1000 + i % 60) for i in range(20_050)])
+    run(b, [conn(T0 + 2 * 86400, dst="203.0.113.250")])      # a day later: the quiet pairs are dropped
+    assert len(b.seen) < 100 and len(b.durations) == len(b.seen)
+    d = SuspiciousDNS(window=600)
+    for i in range(20_050):
+        d._tunnel("192.168.50.10", T0 + i * 0.01, f"x.z{i}.example", f"z{i}.example", "A")
+    d._tunnel("192.168.50.10", T0 + 5000, "x.last.example", "last.example", "A")
+    assert len(d.zones) < 100

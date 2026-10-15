@@ -367,7 +367,7 @@ class Beaconing(Detector):
     """
 
     name = "beaconing"
-    PERSIST: ClassVar[tuple[str, ...]] = ("reported",)
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "users", "device")  # users/device: the shared_by cap
     DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("reported",)
 
     def __init__(self, min_count: int = 10, min_span: float = 600, max_cv: float = 0.15, min_interval: float = 5,
@@ -417,6 +417,14 @@ class Beaconing(Detector):
     def _prune(self, now: float) -> None:
         self.reported = {k: t for k, t in self.reported.items() if now - t < self.reported_s}
 
+    def _forget_quiet(self, now: float) -> None:
+        stale = [p for p, t in self.seen.items() if not t or now - t[-1] > 86400]
+        for p in stale:
+            self.seen.pop(p, None)
+            self.durations.pop(p, None)
+        if len(self.users) > 100_000:  # base domains the house has used: relearned quickly
+            self.users.clear()
+
     def already_reported(self, src: str, port, key: str, ts: float) -> bool:
         """This destination within reported_days, or this (host, port) already at its fan-out budget today."""
         if ts - self.reported.get((src, port, key), -1e18) < self.reported_s:
@@ -433,6 +441,8 @@ class Beaconing(Detector):
         if named and is_internal(rec.get("id.orig_h", "")) and "." in named:
             self.users[base_domain(named)].add(rec["id.orig_h"])
         if rec["_type"] == "ssl" and rec.get("server_name"):
+            if len(self.sni) > 200_000:
+                self.sni.clear()
             self.sni[rec.get("id.resp_h", "")] = rec["server_name"]
         if rec["_type"] == "dns" and rec.get("query"):
             if len(self.dns) > 200_000:  # bound memory on a long run; names get relearned quickly
@@ -456,6 +466,8 @@ class Beaconing(Detector):
                 or (name and suffix_match(name, self.expected.get(src, frozenset()))):
             return []  # already reported, or a dev host polling a dev service (model API, registry)
         pair = (src, dst, port)
+        if len(self.seen) > 20_000:  # weeks of a busy network: drop pairs quiet for a day
+            self._forget_quiet(rec["ts"])
         times = self.seen[pair]
         if times and abs(rec["ts"] - times[-1]) < self.burst:
             return []  # a retry within the same beat (malware retrying a dead C2), not a new beat
@@ -578,6 +590,9 @@ class SuspiciousDNS(Detector):
         """R15. Data smuggled through DNS: many queries to one zone with long encoded labels or TXT/NULL answers."""
         if dom in self.popular or dom.endswith((".arpa", ".local")) or "." not in dom:
             return []
+        if len(self.zones) > 20_000:  # (host, zone) pairs quiet for a window: drop them
+            for k in [k for k, z in self.zones.items() if not z or ts - z[-1][0] > self.window]:
+                del self.zones[k]
         zone = self.zones[(host, dom)]
         zone.append((ts, len(q.split(".")[0]), qtype in ("TXT", "NULL")))
         while zone and ts - zone[0][0] > self.window:
@@ -714,8 +729,12 @@ class HourlyProfile(Detector):
     """
 
     name = "hourly"
-    PERSIST: ClassVar[tuple[str, ...]] = ("current", "history", "last_hour", "reported")
+    PERSIST: ClassVar[tuple[str, ...]] = ("current", "dests", "history", "last_hour", "reported")
     DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("current", "dests", "history", "reported")
+
+    def restore(self, data: dict) -> None:
+        super().restore(data)  # dests comes back as plain dicts: make them Counters again
+        self.dests = defaultdict(Counter, {k: Counter(v) for k, v in self.dests.items()})
 
     def __init__(self, multiple: float = 10, floor_bytes: int = 500_000_000, min_hours: int = 6,
                  steady_mb: float = 50, stop_hours: int = 2, busy_min: int = 200, timezone: str | None = None):
@@ -995,12 +1014,15 @@ class NewDevice(Detector):
         hour = datetime.fromtimestamp(rec["ts"], self.tz).hour
         night = 1 <= hour < 6
         vendor = "" if randomized or not mac else self.oui.get(mac[:8].replace(":", "").upper(), "")
+        # A private MAC with no DHCP hostname whose first move is on the LAN (DHCP, mDNS) is most
+        # likely a known phone on its next rotation (Android sends no hostname by default): log it.
+        rotation = randomized and not name and is_internal(dst)
         return [Case(self.name, host, rec["ts"], "New device on the network",
                      {"first_port": rec.get("id.resp_p"), "first_service": rec.get("service") or "unknown",
                       "first_dest": "another device on the network" if is_internal(dst) else "an outside server",
-                      "has_mac": bool(mac), "randomized_mac": randomized, "vendor": vendor,
-                      "vendor_known": bool(self.oui), "night": night, "dedupe": key},
-                     [name] if name else [], base_severity=3 if night and not randomized else 2)]
+                      "has_mac": bool(mac), "randomized_mac": randomized, "likely_rotation": rotation,
+                      "vendor": vendor, "vendor_known": bool(self.oui), "night": night, "dedupe": key},
+                     [name] if name else [], base_severity=1 if rotation else 3 if night and not randomized else 2)]
 
 
 def load_oui(path: str | None) -> dict[str, str]:
@@ -1166,11 +1188,15 @@ class InternetExposure(Detector):
     MAPPING_PORTS: ClassVar[set[int]] = {5351, 1900}  # NAT-PMP/PCP, SSDP (UPnP discovery)
 
     def __init__(self, warmup: Warmup, stun_window: float = 600, mapping_window: float = 86400,
-                 reply_window: float = 1800, startup: float = 120):
+                 reply_window: float = 1800, startup: float = 120, expected: list[dict] | None = None):
         self.warmup, self.stun_window, self.mapping_window = warmup, stun_window, mapping_window
         self.reply_window, self.startup = reply_window, startup
         self.first_ts: float | None = None
-        self.known: set[tuple] = set()
+        # Declared port forwards (config detectors.exposure.expected: host, proto, port) count as
+        # known from the start, like one seen during warmup: config, not a suppression, so the
+        # rule stays must_alert for everything else.
+        self.known: set[tuple] = {(e["host"], str(e.get("proto", "tcp")).lower(), int(e["port"]))
+                                  for e in (expected or ()) if e.get("host") and e.get("port")}
         self.recent_peer: dict[tuple, float] = {}  # (LAN host, remote) -> last outbound contact
         self.last_stun: dict[str, float] = {}     # host -> last outbound STUN (games, calls)
         self.last_mapping: dict[str, float] = {}  # host -> last port-mapping request to the router
@@ -1394,6 +1420,8 @@ class OddPort(Detector):
     def feed(self, rec: dict) -> list[Case]:
         kind = rec["_type"]
         if kind == "dns":
+            if len(self.names) > 200_000:  # bound memory on a long run; names are relearned quickly
+                self.names.clear()
             for a in rec.get("answers") or ():
                 self.names[a] = rec.get("query") or ""
             return []
@@ -1529,6 +1557,8 @@ class IotDrift(Detector):
     def feed(self, rec: dict) -> list[Case]:
         kind = rec["_type"]
         if kind == "dns":
+            if len(self.names) > 200_000:  # bound memory on a long run; names are relearned quickly
+                self.names.clear()
             for a in rec.get("answers") or ():
                 self.names[a] = rec.get("query") or ""
             return []
@@ -1718,6 +1748,7 @@ class TakeoverChannel(Detector):
                 self.expected[(e["host"], svc)] = {"hours": parse_hours(spec) if spec else None, "spec": spec,
                                                    "mac": (e.get("mac") or "").lower()}
         self.leases: dict[str, str] = {}                 # ip -> MAC from the latest DHCP lease
+        self.lookups: dict[str, tuple] = {}              # host -> (ts, service, name, answers) of its last remote-control lookup
         self.service_ips: dict[tuple, set[str]] = defaultdict(set)   # (host, service) -> server IPs
         self.traffic: dict[tuple, deque] = defaultdict(deque)        # (host, service) -> (ts, bytes)
         self.reported: set[tuple] = set()
@@ -1728,7 +1759,7 @@ class TakeoverChannel(Detector):
             self.leases[rec["assigned_addr"]] = rec["mac"].lower()
             return []
         if kind == "conn":
-            return self._session(rec)
+            return self._followed_lookup(rec) + self._session(rec)
         if kind == "dns" and rec.get("rcode_name") == "NOERROR":
             name, via = rec.get("query"), "DNS"
         elif kind == "ssl":
@@ -1754,12 +1785,34 @@ class TakeoverChannel(Detector):
             return []
         if (host, hit) in self.reported:
             return []
+        if channel == "remote_control" and via == "DNS":
+            # Resolving teamviewer.com is also what visiting its website does. The case needs
+            # contact: TLS/HTTP to the service, or a connection to one of these answers within
+            # LOOKUP_FOLLOW seconds (_followed_lookup). Callback and file-drop lookups stay as they
+            # are: there the lookup itself is the signal.
+            if len(self.lookups) > 10_000:
+                self.lookups.clear()
+            self.lookups[host] = (rec["ts"], hit, name, {a for a in (rec.get("answers") or []) if _is_ip(a)})
+            return []
+        return self._raise(host, rec["ts"], channel, hit, name, via)
+
+    LOOKUP_FOLLOW = 60  # seconds between a remote-control vendor lookup and a connection to its answer
+
+    def _raise(self, host: str, ts: float, channel: str, hit: str, name: str, via: str) -> list[Case]:
         self.reported.add((host, hit))
         always = channel in self.ALWAYS
         indicators = [hit] + ([name] if name.lower().rstrip(".") != hit else [])  # service first: stable key
-        return [Case(self.name, host, rec["ts"], "Possible takeover: " + channel.replace("_", " ") + " service",
+        return [Case(self.name, host, ts, "Possible takeover: " + channel.replace("_", " ") + " service",
                      {"channel": channel, "via": via, "dedupe": hit},
                      indicators, must_alert=always, base_severity=5 if always else 4)]
+
+    def _followed_lookup(self, rec: dict) -> list[Case]:
+        host, dst, ts = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec["ts"]
+        p = self.lookups.get(host)
+        if not p or dst not in p[3] or ts - p[0] > self.LOOKUP_FOLLOW or (host, p[1]) in self.reported:
+            return []
+        del self.lookups[host]
+        return self._raise(host, ts, "remote_control", p[1], p[2], "DNS, then a connection to the answer")
 
     def _expected(self, host: str, service: str) -> dict | None:
         e = self.expected.get((host, service))
