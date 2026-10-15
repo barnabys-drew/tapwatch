@@ -417,7 +417,10 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Threat:** a malicious or misconfigured device handing out a hostile gateway or DNS (an on-path attack).
 - **Data:** `dhcp` (`server_addr`, `msg_types` OFFER/ACK), `conn` udp/67 responders; UDM syslog DHCP.
 - **Logic:** `rules/R14-rogue-dhcp.yml` (Sigma). Raise on an OFFER or ACK from any server other than the UDM interfaces.
-- **Baseline:** none. Measured: **1 server** (the UDM).
+  A /24 whose gateway is in `network.gateways` is strict: any other server there is rogue. Every other /24 (the wizard
+  writes one gateway; a VLAN'd router answers DHCP from an address per VLAN) gets one server: the router Gateways
+  elects, the first server seen there, or anything seen during warmup. A second server on that /24 is rogue.
+- **Baseline:** the per-/24 trusted server. Measured: **1 server** (the UDM).
 - **Dedupe:** `rogue_dhcp|server`.
 - **FPs:** a travel router or mesh node plugged in by family. Still worth an alert.
 - **Route:** ALERT, code-only, `must_alert`.
