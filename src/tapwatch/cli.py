@@ -37,7 +37,8 @@ def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=Non
                     base_url=(cfg.get("ui") or {}).get("base_url"),
                     herdr=config.herdr(cfg) if notify else None,
                     herdr_ai_severity=(cfg.get("herdr") or {}).get("ai_severity", 3.5),
-                    hostctx=config.hostctx(cfg), zeek_dirs=zeek_dirs)
+                    hostctx=config.hostctx(cfg), zeek_dirs=zeek_dirs,
+                    learning_seconds=float(cfg.get("learning_days", 3)) * 86400)
 
 
 def _single_instance(db_path: str):
@@ -115,6 +116,7 @@ class DigestClock:
 
 
 def cmd_replay(args, cfg) -> int:
+    cfg = {**cfg, "learning_days": 0}  # a replay shows what settled routing would do
     p = _pipeline(cfg, use_ai=not args.no_ai, notify=args.notify)
     n = 0
     def results():
@@ -133,7 +135,7 @@ def cmd_replay(args, cfg) -> int:
 def cmd_eval(args, cfg) -> int:
     with open(args.labels) as fh:
         labels = yaml.safe_load(fh) or {}
-    cfg = {**cfg, "warmup_seconds": args.warmup}
+    cfg = {**cfg, "warmup_seconds": args.warmup}  # evaluate.run routes itself: no learning period
     ips, doms = config.iocs(cfg)
     res = evaluate.run(args.zeek_dir, labels, detectors.build(cfg, ips, doms, config.popular_domains(cfg), config.assets(cfg).table), config.assets(cfg),
                        None if args.no_ai else config.jev_client(cfg), config.thresholds(cfg))

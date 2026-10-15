@@ -70,6 +70,8 @@ zeek_retention_days: 30              # rotated Zeek logs older than this are del
 digest_hour_utc: 13
 dedupe_seconds: 3600
 warmup_seconds: 86400                # first-seen rules stay quiet for the first day
+learning_days: 3                     # AI alerts go to the digest this long after the first packet (always-alert
+                                     # rules and agent misuse still interrupt); 0 = off. Survives restarts.
 
 thresholds:
   min_confidence: 0.6
