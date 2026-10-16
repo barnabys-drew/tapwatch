@@ -1174,3 +1174,31 @@ def test_a_few_failures_among_many_successes_is_not_a_scan_alert():
     assert c.facts["failed_pct"] < 50 and c.facts["max_route"] == "digest" and not c.facts["all_failed"]
     pure = run(PortScan(), [conn(T0 + i * 0.1, dst=f"192.168.50.{i % 20 + 2}", port=1000 + i, state="REJ") for i in range(60)])[0]
     assert pure.facts["failed_pct"] == 100 and "max_route" not in pure.facts   # refusals are answers: online, scanning
+
+
+def test_scan_right_after_a_router_wifi_event_is_capped():
+    def wifi(ts, name, mac="aa:bb:cc:dd:ee:21", ip="192.168.50.10"):
+        return {"_type": "udm", "ts": ts, "sender": "192.168.50.1", "kind": "cef", "name": name,
+                "UNIFIclientMac": mac, "UNIFIclientIp": ip, "msg": f"client {mac[-5:]} {name.split()[-1].lower()}"}
+    burst = [dict(conn(T0 + i * 0.1, dst=f"203.0.113.{i + 1}", port=443, state="REJ"), orig_l2_addr="AA:BB:CC:DD:EE:21")
+             for i in range(60)]
+    # #321: the phone roamed between access points 3 s before its "scan"; the roam was logged first
+    c = run(PortScan(), [wifi(T0 - 3, "WiFi Client Roamed")] + burst)[0]
+    assert (c.facts["wifi_event"], c.facts["max_route"]) == ("roamed", "digest") and c.facts["wifi_event_age_s"] == 8
+    # the event already reported for a moment after the trigger also counts; a stale one does not
+    assert run(PortScan(), [wifi(T0 + 7, "WiFi Client Disconnected")] + burst)[0].facts["wifi_event"] == "disconnected"
+    assert "wifi_event" not in run(PortScan(), [wifi(T0 - 400, "WiFi Client Roamed")] + burst)[0].facts
+    # another client's roam, or a non-client event, says nothing about this device
+    assert "wifi_event" not in run(PortScan(), [wifi(T0, "WiFi Client Roamed", mac="aa:bb:cc:dd:ee:22", ip="192.168.50.11")] + burst)[0].facts
+    assert "wifi_event" not in run(PortScan(), [wifi(T0, "Admin Login")] + burst)[0].facts
+    # a join explains nothing: a device that joins and sweeps the LAN is the strongest scan shape
+    assert "wifi_event" not in run(PortScan(), [wifi(T0 - 3, "WiFi Client Connected")] + burst)[0].facts
+    # without the MAC on the connection, the client address matches; the event's address alone can't vouch for a MAC'd one
+    bare = [conn(T0 + i * 0.1, dst=f"203.0.113.{i + 1}", port=443, state="REJ") for i in range(60)]
+    assert run(PortScan(), [wifi(T0, "WiFi Client Disconnected")] + bare)[0].facts["wifi_event"] == "disconnected"
+    assert "wifi_event" not in run(PortScan(), [wifi(T0, "WiFi Client Disconnected", mac="aa:bb:cc:dd:ee:22")] + burst)[0].facts
+    bogus = [dict(r, orig_l2_addr="00:00:00:00:00:00") for r in bare]   # a MAC Zeek could not read is no MAC
+    assert run(PortScan(), [wifi(T0, "WiFi Client Disconnected")] + bogus)[0].facts["wifi_event"] == "disconnected"
+    from tapwatch.summarizer import Assets, summarize
+    text = summarize(c, Assets())
+    assert "roamed on Wi-Fi" in text and "before the burst" in text

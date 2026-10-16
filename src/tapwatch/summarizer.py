@@ -109,6 +109,11 @@ def _observed(c: Case, words: dict) -> str:
             text += " Nothing else it tried in that time succeeded either, which is what a device losing its network looks like."
         elif f.get("failed_pct", 100) < 50:
             text += " Most of what it tried in that time succeeded, so the failures are a small part of its traffic."
+        if f.get("wifi_event"):
+            age = f.get("wifi_event_age_s", 0)
+            when = f"{abs(age)} seconds {'before' if age >= 0 else 'after'} the burst"
+            text += (f" The router logged this device as having {f['wifi_event']} on Wi-Fi {when}; connections "
+                     "fail in a bunch while a device changes access points or drops off.")
         return text
     if c.detector == "upload_spike":
         text = (f"In one hour it uploaded about {f['mb']} MB to the internet, roughly {f['times_normal']} times "
