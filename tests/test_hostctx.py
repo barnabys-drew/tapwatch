@@ -734,3 +734,137 @@ def test_collect_counts_lookups_matched_through_their_answers(tmp_path):
     facts = hc.collect(case(), [out_conn(T0 + 1)], dns_rows, now=T0 + 3600)
     assert facts["host_lookups_matched"] == 1 and facts["host_lookups_followed"] == 1
     assert facts["host_matched"] == 1 and facts["host_programs"] == ["git-remote-http"]
+
+
+# -------------------------------------------- Linux/WSL: a gone process is credited through the exec parent chain
+
+CLAUDE = "/home/u/.local/share/claude/versions/2.1"
+
+
+def exec_row(t, pid, parent, path):
+    return {"name": "bpf_process_events", "unixTime": T0 + 60, "action": "added",
+            "columns": {"time": str(int(t)), "pid": str(pid), "parent": str(parent), "path": path}}
+
+
+def gone_curl(t, pid=4300, parent=4290, **cols):
+    """A one-second curl: by the time bpf_connections looked, it and its shell had exited, so no markers,
+    no parent_name (measured 2026-10-15, case #259)."""
+    return bpf(t, path="/usr/bin/curl", pid=str(pid), parent=str(parent), parent_name="", claude_session="",
+               claude_attended="", claude_entrypoint="", in_herdr="0", via_ssh="0", **cols)
+
+
+def write_rows(tmp_path, rows):
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return log
+
+
+def test_gone_curl_is_credited_to_the_claude_ancestor_that_still_has_markers(tmp_path):
+    log = write_rows(tmp_path, [
+        bpf(T0 - 30, path=CLAUDE, pid="4000", parent="3000", parent_name="bash", remote="198.51.100.7"),  # the agent
+        exec_row(T0 - 5, 4290, 4000, "/usr/bin/bash"),   # claude -> bash -c '...'
+        exec_row(T0 - 4, 4300, 4290, "/usr/bin/curl"),   # bash -> curl
+        gone_curl(T0),
+    ])
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (o,) = idx.who(DST, 443, T0)
+    assert (o.name, o.parent, o.session, o.attended, o.entrypoint) == ("curl", "bash", SID, "1", "cli")
+    assert o.in_herdr and not o.via_ssh and o.inherited
+    assert verdict([o], {})[0] == "agent_unconfirmed"       # an agent did it: no longer other_program
+
+
+def test_gone_curl_is_attributed_in_collect_and_the_transcript_is_read(tmp_path):
+    log = write_rows(tmp_path, [
+        bpf(T0 - 30, path=CLAUDE, pid="4000", parent="3000", remote="198.51.100.7"),
+        exec_row(T0 - 5, 4290, 4000, "/usr/bin/bash"),
+        exec_row(T0 - 4, 4300, 4290, "/usr/bin/curl"),
+        gone_curl(T0),
+    ])
+    write_transcript(tmp_path / "t", [prompt(T0 - 60, f"curl {DST} every minute as a heartbeat"),
+                                      tool(T0 - 1, "Bash", {"command": f"curl -s https://{DST}/"})])
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    facts = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0 + 3600)
+    assert facts["host_who"] == "owner_using_agent" and facts["host_corroborated"]
+    assert facts["host_agent_session"] and facts["host_session"] == SID and facts["host_inherited"]
+    assert facts["host_programs"] == ["curl"] and facts["host_parent"] == "bash"
+    assert not facts["host_transcript_only"]  # process proof, not a transcript guess
+
+
+def test_chain_that_reaches_no_agent_stays_other_program(tmp_path):
+    log = write_rows(tmp_path, [
+        bpf(T0 - 30, path=CLAUDE, pid="4000", parent="3000", remote="198.51.100.7"),  # an agent runs, unrelated
+        exec_row(T0 - 9, 5000, 1, "/usr/bin/bash"),       # a cron shell under init
+        exec_row(T0 - 4, 5010, 5000, "/usr/bin/curl"),
+        gone_curl(T0, pid=5010, parent=5000),
+    ])
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (o,) = idx.who(DST, 443, T0)
+    assert (o.session, o.inherited, o.parent) == ("", False, "bash")
+    assert verdict([o], {})[0] == "other_program"
+
+
+def test_reused_pid_and_missing_exec_rows_do_not_borrow_markers(tmp_path):
+    log = write_rows(tmp_path, [
+        bpf(T0 - 30, path=CLAUDE, pid="4000", parent="3000", remote="198.51.100.7"),
+        exec_row(T0 + 120, 4290, 4000, "/usr/bin/bash"),  # pid 4290 exec'd under claude only *after* the connect
+        gone_curl(T0, pid=4300, parent=4290),             # ...and curl's own exec row was never logged
+    ])
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (o,) = idx.who(DST, 443, T0)
+    assert (o.session, o.inherited, o.parent) == ("", False, "")  # nothing is known about its parent at T0
+    assert verdict([o], {})[0] == "other_program"
+
+
+def test_reused_pid_does_not_borrow_a_dead_agents_markers(tmp_path):
+    log = write_rows(tmp_path, [
+        bpf(T0 - 600, path=CLAUDE, pid="4000", parent="3000", remote="198.51.100.7"),  # an agent, pid 4000...
+        exec_row(T0 - 60, 4000, 1, "/usr/bin/bash"),       # ...exited; a cron shell got pid 4000 afterwards
+        exec_row(T0 - 4, 4300, 4000, "/usr/bin/curl"),
+        gone_curl(T0, pid=4300, parent=4000),
+    ])
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (o,) = idx.who(DST, 443, T0)
+    assert (o.session, o.inherited, o.parent) == ("", False, "bash")
+    # The same pid with its markers read *after* the exec is the live process: credited.
+    log = write_rows(tmp_path, [
+        exec_row(T0 - 600, 4000, 3000, CLAUDE),
+        bpf(T0 - 30, path=CLAUDE, pid="4000", parent="3000", remote="198.51.100.7"),
+        exec_row(T0 - 4, 4300, 4000, "/usr/bin/curl"),
+        gone_curl(T0, pid=4300, parent=4000),
+    ])
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (o,) = idx.who(DST, 443, T0)
+    assert (o.session, o.inherited, o.parent) == (SID, True, "claude")
+
+
+def test_exec_map_is_bounded(tmp_path):
+    from tapwatch import hostctx
+    log = write_rows(tmp_path, [exec_row(T0 + i, 10_000 + i, 1, "/usr/bin/true") for i in range(hostctx.EXEC_KEEP + 5)])
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    assert len(idx.execs) <= hostctx.EXEC_KEEP and 10_000 + hostctx.EXEC_KEEP + 4 in idx.execs
+
+
+def test_benign_signals_name_only_the_listed_programs():
+    from tapwatch.hostctx import assess
+    curl = Owner(name="curl", path="/usr/bin/curl")
+    node = Owner(name="node", path="/home/u/.nvm/versions/node/v22/bin/node")
+    cursor = win("Cursor.exe", r"C:\Users\<user>\AppData\Local\Programs\cursor\Cursor.exe", signature="trusted",
+                 signer="Cursor AI")
+    a, signals = assess([curl, node, cursor], "other_program", programs=["curl", "Cursor.exe"])
+    assert a == "likely_benign"                                   # node still counts for the verdict...
+    assert signals == ["Cursor.exe is signed by Cursor AI", "curl is an installed program (/usr/bin)"]  # ...not shown
+    assert assess([curl, node, cursor], "other_program")[1][2] == "node is a user-installed tool"  # no list: all
+    tmp = Owner(name="dropper", path="/tmp/dropper")
+    a, signals = assess([curl, tmp], "other_program", programs=["curl"])
+    assert (a, signals) == ("suspicious", ["dropper runs from a temporary folder"])  # suspicious: always shown

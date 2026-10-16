@@ -8,7 +8,9 @@ tapwatch, osquery can. For a case on that PC, this module answers in code:
   * whether a Claude Code session started it. That's read from environment markers
     (CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_SESSION_ATTENDED, CLAUDE_CODE_ENTRYPOINT), which
     survive reparenting, unlike the parent chain. Also: started from the owner's Herdr
-    terminal, or from an SSH login?
+    terminal, or from an SSH login? A process that exited before osquery could read its
+    environment (a one-second `curl`; measured 2026-10-15, case #259) is credited to the
+    nearest ancestor that still carries markers, through the eBPF exec events' parent chain.
   * from that session's transcript (~/.claude/projects/*/<session>.jsonl): did the agent
     run a command naming this destination, did the owner's prompt name it, and did
     the agent read outside web content between the prompt and the command (the
@@ -59,9 +61,15 @@ WIN_LIVE_SQL = (
     "FROM process_open_sockets s JOIN processes p USING (pid) "
     "WHERE s.remote_address NOT IN ('', '0.0.0.0', '::', '127.0.0.1', '::1') AND s.remote_port != 0;"
 )
-QUERIES = ("outbound_connections", "outbound_connections_ctx", "sysmon_events", "bpf_connections")
+QUERIES = ("outbound_connections", "outbound_connections_ctx", "sysmon_events", "bpf_connections",
+           "bpf_process_events")
 QUERY_KEYS = tuple(f'"{q}"'.encode() for q in QUERIES)
 BPF = "bpf_connections"   # Linux/WSL: every outgoing connection from osquery's eBPF publisher, as it happens
+PROCS = "bpf_process_events"  # Linux/WSL: every exec, with its parent pid, so a gone process's chain is still known
+# Parent-chain walk for a connection whose process left no markers (it had exited before osquery read
+# /proc/<pid>/environ). A Claude Code shell runs commands as bash -> (tool) a few levels deep; 12 is plenty.
+CHAIN_MAX = 12
+EXEC_KEEP = 50_000            # exec rows kept per index: ~an hour of a busy dev box, well under the 50 MB log tail
 SYSMON = "sysmon_events"   # Windows: Sysmon process starts (1), connections (3) and DNS lookups (22), as they happen
 # Command-line signals the sysmon_events query computes (agents/config/osquery.conf), so benign command lines never
 # reach the results log, which every local account can read. Raw text is logged only when a suspicious one fires.
@@ -103,9 +111,19 @@ class Owner:
     end: float | None = None
     guid: str = ""           # Sysmon ProcessGuid: joins a connection or lookup to its process start (command line)
     cmd_flags: tuple = ()    # Sysmon: command-line signals osquery computed (raw text is only logged when suspicious)
+    pid: int = 0             # Linux rows: the process, and its parent, for the exec-chain walk (0 = unknown)
+    ppid: int = 0
+    inherited: bool = False  # markers came from an ancestor (the process itself was gone before osquery looked)
 
 
 VERSION_NAME = re.compile(r"^\d+(\.\d+)+$")
+
+
+def _int(v) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _name(c: dict) -> str:
@@ -122,7 +140,8 @@ def _owner(c: dict, start: float = 0.0) -> Owner:
                  via_ssh=str(c.get("via_ssh") or "0") not in ("0", ""), cmdline=redact(c.get("cmdline") or ""),
                  parent=c.get("parent_name") or "", on_disk=str(c.get("on_disk") if c.get("on_disk") is not None else ""),
                  container=None if "cgroup_path" not in c else bool(CONTAINER.search(c.get("cgroup_path") or "")),
-                 signature=(c.get("signature") or "").lower(), signer=c.get("signer") or "", start=start)
+                 signature=(c.get("signature") or "").lower(), signer=c.get("signer") or "", start=start,
+                 pid=_int(c.get("pid")), ppid=_int(c.get("parent")))
 
 
 # A container's program file lives in the container's filesystem, so from the host it looks deleted
@@ -209,8 +228,13 @@ def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) 
         unclear.append(f"{o.name} isn't code-signed")
 
 
-def assess(owners: list[Owner], who: str) -> tuple[str, list[str]]:
-    """(assessment, signals): likely_benign / suspicious / unclear, from what ran on the PC."""
+def assess(owners: list[Owner], who: str, programs: list[str] | None = None) -> tuple[str, list[str]]:
+    """(assessment, signals): likely_benign / suspicious / unclear, from what ran on the PC.
+
+    `programs` is the case's listed programs (`host_programs`, the three most frequent). Every owner still
+    counts for the verdict, but the "X is signed by Y" / "X is an installed program" signals are shown only
+    for those, so a fourth or fifth program the case page never names doesn't clutter them. Suspicious signals
+    are always shown, whoever they're about."""
     if not owners:
         return "unclear", ["no program on the PC could be tied to the connection"]
     owners = [o for o in owners if o.name.lower() not in WIN_PSEUDO]
@@ -218,14 +242,14 @@ def assess(owners: list[Owner], who: str) -> tuple[str, list[str]]:
     owners = [o for o in owners if o.path or o.name not in with_path]  # prefer the row that knows the path
     if not owners:
         return "unclear", ["only Windows pseudo-processes held the connection"]
-    bad, good, bad_or_unclear = [], [], []
+    bad, bad_or_unclear = [], []
+    good: dict[str, list[str]] = {}  # program -> its benign signals
     for o in owners:
-        path = o.path or ""
+        path, og = o.path or "", good.setdefault(o.name, [])
         if re.match(r"^[a-z]:\\", path, re.IGNORECASE) or o.name.lower().endswith(".exe"):   # a Windows process
-            ob, og = [], []
+            ob = []
             _windows_signals(o, path.replace("\\", "/").lower(), ob, og, bad_or_unclear)
             bad += ob
-            good += og
             continue
         if path.startswith(SUSPICIOUS_DIRS):
             bad.append(f"{o.name} runs from a temporary folder")
@@ -236,22 +260,23 @@ def assess(owners: list[Owner], who: str) -> tuple[str, list[str]]:
         if o.cmdline and SUSPICIOUS_CMD.search(o.cmdline):
             bad.append(f"{o.name}'s command line downloads-and-runs or opens a raw shell")
         if path.startswith(SYSTEM_DIRS):
-            good.append(f"{o.name} is an installed program ({path.rsplit('/', 1)[0]})")
+            og.append(f"{o.name} is an installed program ({path.rsplit('/', 1)[0]})")
         elif any(d in path for d in USER_TOOL_DIRS):
-            good.append(f"{o.name} is a user-installed tool")
+            og.append(f"{o.name} is a user-installed tool")
     if who == "agent_misused":
         bad.append("a coding agent did this without the owner asking")
     if bad:
         return "suspicious", sorted(set(bad))
     if bad_or_unclear:
         return "unclear", sorted(set(bad_or_unclear))
+    shown = sorted({s for name, sigs in good.items() if programs is None or name in programs for s in sigs})
     if who == "owner_using_agent":
-        return "likely_benign", ["the owner's coding agent did this at the owner's request", *sorted(set(good))]
+        return "likely_benign", ["the owner's coding agent did this at the owner's request", *shown]
     if who == "agent_unconfirmed":
-        return "unclear", ["a coding agent did this; the owner didn't name the destination", *sorted(set(good))]
-    if good and len(good) >= len({o.name for o in owners}):
-        return "likely_benign", sorted(set(good))
-    return "unclear", sorted(set(good)) or ["the program isn't in an installed location"]
+        return "unclear", ["a coding agent did this; the owner didn't name the destination", *shown]
+    if all(good.values()):  # every program has something in its favour
+        return "likely_benign", shown
+    return "unclear", shown or ["the program isn't in an installed location"]
 
 
 @dataclass
@@ -263,6 +288,8 @@ class OwnerIndex:
     lookups: dict = field(default_factory=dict)   # Sysmon 22: query name -> [Owner]
     procs: dict = field(default_factory=dict)     # Sysmon 1: ProcessGuid -> (command line, parent path)
     by_ip: dict | None = None                     # remote address -> owners, built on first who_ip
+    execs: dict = field(default_factory=dict)     # eBPF exec: pid -> (parent pid, path, time), the latest per pid
+    markers: dict = field(default_factory=dict)   # pid -> an Owner seen with Claude markers (the long-lived agent)
 
     def who_dns(self, query: str, ts: float, answers=()) -> tuple[list[Owner], bool]:
         """Programs that looked up `query` around `ts`, and whether that's inferred. Sysmon event 22 names the
@@ -305,15 +332,79 @@ class OwnerIndex:
             self.lookups.setdefault(str(c["query"]).lower().rstrip("."), []).append(o)
 
     def resolve(self) -> None:
-        """Give Sysmon-attributed owners their command line and parent from the process-start event."""
+        """Give Sysmon-attributed owners their command line and parent from the process-start event, and
+        marker-less eBPF owners the markers of their nearest marker-bearing ancestor."""
         for owners in (*self.by_remote.values(), *self.lookups.values()):
             for o in owners:
                 if o.guid and o.guid in self.procs and not o.cmdline:
                     cmdline, parent, flags = self.procs[o.guid]
                     o.cmdline, o.parent, o.cmd_flags = redact(cmdline), _basename(parent), flags
+                elif o.pid and not o.session and o.start:
+                    self._inherit(o)
+
+    def _exec(self, c: dict) -> None:
+        pid = _int(c.get("pid"))
+        if not pid:
+            return
+        self.execs.pop(pid, None)  # re-insert so the dict stays in time order for trimming
+        self.execs[pid] = (_int(c.get("parent")), c.get("path") or "", float(c.get("time") or 0))
+        if len(self.execs) > EXEC_KEEP:
+            for old in list(self.execs)[: EXEC_KEEP // 10]:
+                del self.execs[old]
+
+    def _inherit(self, o: Owner) -> None:
+        """Walk pid -> parent from the connection's process until an ancestor with markers (a `claude` process
+        that is still running and connects out itself, so its own rows carry them). osquery reads
+        /proc/<pid>/environ at query time: a one-second `curl` has exited by then, and so has the `bash -c` that
+        ran it, so both the markers and parent_name come back empty (measured 2026-10-15, case #259). The exec
+        events still hold each pid's parent. An exec logged after the connection is a reused pid: stop there."""
+        cur = o.ppid or self._parent_of(o.pid, o.start)
+        if not o.parent and cur:
+            o.parent = self._name_of(cur, o.start)
+        seen: set[int] = set()
+        while cur and cur not in seen and len(seen) < CHAIN_MAX:
+            seen.add(cur)
+            anc = self._markers_of(cur, o.start)
+            if anc is not None:
+                o.session, o.attended, o.entrypoint = anc.session, anc.attended, anc.entrypoint
+                o.in_herdr, o.via_ssh, o.inherited = anc.in_herdr, anc.via_ssh, True
+                return
+            cur = self._parent_of(cur, o.start)
+
+    def _exec_of(self, pid: int, before: float) -> tuple[int, str, float] | None:
+        """The exec that made `pid` the process it was at `before`; None if the only exec known came later (a
+        reused pid) or none was logged (a process older than the log window, such as a long-running agent)."""
+        row = self.execs.get(pid)
+        return row if row and row[2] <= before + 1 else None
+
+    def _parent_of(self, pid: int, before: float) -> int:
+        row = self._exec_of(pid, before)
+        return row[0] if row else 0
+
+    def _markers_of(self, pid: int, before: float) -> Owner | None:
+        """`pid`'s marker-bearing row, if it belongs to the process that held the pid at `before`. With an exec
+        logged for the pid, the markers must have been read after it (a live row is "now", so always after) and
+        the exec must precede the connection; otherwise a pid reused after an agent exited would borrow the
+        dead agent's session."""
+        anc = self.markers.get(pid)
+        if anc is None:
+            return None
+        row = self.execs.get(pid)
+        if row and (row[2] > before + 1 or 0 < anc.start < row[2] - 1):
+            return None
+        return anc
+
+    def _name_of(self, pid: int, before: float) -> str:
+        row = self._exec_of(pid, before)
+        if row and row[1]:
+            return _name({"name": _basename(row[1]), "path": row[1]})  # Claude's binary is named after its version
+        anc = self._markers_of(pid, before)
+        return anc.name if anc else ""
 
     def add(self, remote: str, port, owner: Owner) -> None:
         self.by_ip = None
+        if owner.pid and owner.session and not owner.inherited:
+            self.markers[owner.pid] = owner
         try:
             self.by_remote.setdefault((remote, int(port)), []).append(owner)
         except (TypeError, ValueError):
@@ -358,6 +449,10 @@ class OwnerIndex:
                 if rec["name"] == SYSMON:
                     for c in rows or ():
                         self._sysmon(c, ts)
+                    continue
+                if rec["name"] == PROCS:  # one row per exec(): pid -> parent, for the chain walk in resolve()
+                    for c in rows or ():
+                        self._exec(c)
                     continue
                 if rec["name"] == BPF:  # one row per connect(): an instant, like Sysmon's
                     for c in rows or ():
@@ -599,9 +694,9 @@ class HostContext:
         idx = OwnerIndex()
         for p in self.results_logs:
             idx.read_log(p, since)
-        idx.resolve()
         for c in self.live() if live else ():
             idx.add(c.get("remote_address", ""), c.get("remote_port"), _owner(c))
+        idx.resolve()  # after the live rows: a running agent's live row can be the chain's marker-bearing end
         return idx
 
     def collect(self, case, conn_rows: list[dict], dns_rows: list[dict], now: float | None = None) -> dict:
@@ -655,11 +750,12 @@ class HostContext:
                  "host_programs": programs[:3],
                  "host_agent_session": bool(sessions), "host_session": sessions[0] if sessions else "",
                  "host_attended": any(o.attended == "1" for o in owners if o.session),
+                 "host_inherited": any(o.inherited for o in owners),  # credited through the exec parent chain
                  "host_via_ssh": any(o.via_ssh for o in owners), "host_in_terminal": any(o.in_herdr for o in owners),
                  "host_transcript_only": transcript_only}
         facts.update({f"host_{k}": v for k, v in tf.items()})
         self.check_signatures(owners)
-        assessment, signals = assess(owners, who)
+        assessment, signals = assess(owners, who, programs[:3])
         facts["host_assessment"], facts["host_signals"] = assessment, signals[:4]
         paths = sorted({o.path for o in owners if o.path})
         if len(paths) == 1:  # one program explains every matched connection: suppressions can key on it
