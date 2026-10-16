@@ -64,15 +64,16 @@ Events start within a minute; check with `tail -f <dir>/udm.log`.
 
 ## What arrives
 
-Measured on a UDM Pro, UniFi Network 10.6.106, UniFi OS 5.1.33, with all twelve content types on:
+Measured on a UDM Pro, UniFi Network 10.6.106, UniFi OS 5.1.33, with all twelve content types on
+(94 minutes on 2026-10-15: 35,301 datagrams, of which 11 were CEF events):
 
 | Format | Looks like | Rate | tapwatch |
 |---|---|---|---|
 | CEF events | `Oct 15 19:29:37 gateway CEF:0\|Ubiquiti\|UniFi Network\|10.6.106\|401\|WiFi Client Disconnected\|2\|UNIFIcategory=Client Devices UNIFIhost=UDM Pro ...` (no `<PRI>`) | one per UniFi event | kept, one JSON record each |
-| Firewall lines ("Firewall Default Policy") | `<13>Oct 15 19:25:16 gateway gateway [LAN_LOCAL-RET-2147483647] DESCR="no rule description" IN=br0 OUT= MAC=... SRC=192.168.50.18 DST=192.168.50.1 ... PROTO=UDP SPT=61975 DPT=53` | **300–670 a minute**, all default-policy accepts for LAN devices talking to the gateway (DNS, mDNS, UniFi discovery on udp/10001) | drops and rejects (`-D-`, `-R-`) kept; accepts and chain returns (`-A-`, `-RET-`) counted and discarded |
-| The gateway's own system log | `<30>Oct 15 19:28:01 gateway gateway earlyoom[1024]: mem avail: ...` (systemd, earlyoom, syslog-ng, the IDS and AI daemons) | a few a minute | discarded |
+| Firewall lines ("Firewall Default Policy") | `<13>Oct 15 19:25:16 gateway gateway [LAN_LOCAL-RET-2147483647] DESCR="no rule description" IN=br0 OUT= MAC=... SRC=192.168.50.18 DST=192.168.50.1 ... PROTO=UDP SPT=61975 DPT=53` | **290–670 a minute, median 360**, all but two of them default-policy accepts for LAN devices talking to the gateway (DNS, mDNS, UniFi discovery on udp/10001); the two drops were `WAN_LOCAL-D`, late packets of finished flows | drops and rejects (`-D-`, `-R-`) kept; accepts and chain returns (`-A-`, `-RET-`) counted and discarded |
+| The gateway's own system log | `<30>Oct 15 19:28:01 gateway gateway earlyoom[1024]: mem avail: ...` (earlyoom, systemd, mcad, syslog-ng, dnsmasq, the AI and IDS daemons) | about 3 a minute | discarded |
 
-The firewall lines are the whole cost of this feed: 20–40k an hour, which is why the
+The firewall lines are the whole cost of this feed: about 22k an hour, which is why the
 listener counts them instead of writing them. Untick Firewall Default Policy in Contents and
 they stop.
 
@@ -82,17 +83,22 @@ they stop.
   disconnected events (classes 400–402) from UniFi Network 10.6.106 parse with every
   `UNIFI*` key intact, including values with spaces (`UNIFIhost=UDM Pro`, `UNIFIduration=1d 11h`).
   Real lines carry no syslog `<PRI>`; the parser never needed one.
-- **Firewall lines** (2026-10-15): the UDP, TCP and IPv6 shapes parse to chain, action, rule,
-  description, interfaces, addresses, protocol and ports. Only `LAN_LOCAL-RET` (accept) lines
-  were seen; the drop/reject shape in the tests is inferred from the same prefix format.
+- **Firewall lines** (2026-10-15): the UDP, TCP and IPv6 accept shapes and the `WAN_LOCAL-D`
+  drop shape parse to chain, action, rule, description, interfaces, addresses, protocol and
+  ports. iptables truncates the description (`[WAN_LOCAL]Block All Other Tra`), so a rule's
+  full name is not recoverable from the line.
 - **IPS mapping (`udm_ips`)**: built against a real UDM line published in Graylog's UniFi
   content pack (`Threat Detected and Blocked`, `UNIFIrisk`, `UNIFIipsSignature`, `src`/`dst`).
   No Security Detections line has arrived from this router yet (it needs the router to block
   something), so the 10.x wording is unconfirmed.
-- **Admin-login mapping (`udm_admin`)**: uses UniFi's documented keys (`UNIFIadmin`, `suser`,
-  `src`, `UNIFIaccessMethod`) and wording ("login", "accessed", "failed"). **Not yet checked
-  against a real admin event.** After enabling, log in to the router once and check that a
-  `udm_admin` case appears (after the first day's warmup, or from a new device).
+- **Admin-login mapping (`udm_admin`)** (2026-10-15): a real admin event is CEF class 544
+  `Network Accessed` with `UNIFIcategory=Audit`, `UNIFIadmin=<display name>`, `src=<ip>`,
+  `UNIFIaccessMethod=web` and `msg=<name> accessed UniFi Network using the web. Source IP: <ip>`.
+  The detector keys on `UNIFIadmin` and `src`, so it learns the (user, source) pair and alerts
+  on a new one, as the test shows with the sanitized line. One event is sent per console
+  page load, not per sign-in, so expect several a day from the same pair. **Not yet seen:**
+  a failed login (the failure-burst branch still relies on "fail" wording), SSH logins and
+  UniFi OS (not Network) sign-ins, which may not be in this export at all.
 
 ## Suricata vs the router's IPS
 

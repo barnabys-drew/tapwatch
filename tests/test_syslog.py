@@ -34,7 +34,8 @@ REAL_CEF = ("Oct 15 19:29:37 gateway CEF:0|Ubiquiti|UniFi Network|10.6.106|401|W
             "msg=speaker 0a disconnected from Home & Co")
 
 # Real firewall lines ("Firewall Default Policy" content): a default-policy accept (RET) for a LAN
-# DNS query to the gateway, a TCP one, an IPv6 mDNS one, and what a drop looks like.
+# DNS query to the gateway, a TCP one, an IPv6 mDNS one, and the WAN default drop (a late packet
+# of a finished flow, the usual kind).
 REAL_FW_UDP = ('<13>Oct 15 19:25:16 gateway gateway [LAN_LOCAL-RET-2147483647] DESCR="no rule description" IN=br0 '
                'OUT= MAC=02:00:00:00:00:01:02:00:00:00:00:0a:08:00 SRC=192.168.50.18 DST=192.168.50.1 LEN=59 TOS=00 '
                'PREC=0x00 TTL=64 ID=1 DF PROTO=UDP SPT=61975 DPT=53 LEN=39 MARK=0 ')
@@ -45,9 +46,15 @@ REAL_FW_TCP = ('<13>Oct 15 19:27:03 gateway gateway [LAN_LOCAL-RET-2147483647] D
 REAL_FW_V6 = ('<13>Oct 15 19:27:39 gateway gateway [LAN_LOCAL-RET-2147483646] DESCR="no rule description" IN=br0 '
               'OUT= MAC=33:33:00:00:00:fb:02:00:00:00:00:0c:86:dd SRC=fe80::1 DST=ff02::fb LEN=106 TC=0 HOPLIMIT=255 '
               'FLOWLBL=657152 PROTO=UDP SPT=5353 DPT=5353 LEN=66 MARK=1a0000 ')
-FW_DROP = ('<13>Oct 15 19:40:00 gateway gateway [WAN_LOCAL-D-4000] DESCR="Block inbound" IN=eth8 OUT= '
-           'MAC=02:00:00:00:00:01:02:00:00:00:00:0d:08:00 SRC=198.51.100.7 DST=203.0.113.5 LEN=40 TOS=00 PREC=0x00 '
-           'TTL=240 ID=54321 PROTO=TCP SPT=40000 DPT=22 WINDOW=1024 RES=0x00 SYN URGP=0 MARK=0 ')
+REAL_FW_DROP = ('<13>Oct 15 20:09:47 gateway gateway [WAN_LOCAL-D-2147483647] DESCR="[WAN_LOCAL]Block All Other Tra" '
+                'IN=eth8 OUT= MAC=02:00:00:00:00:01:02:00:00:00:00:0d:08:00 SRC=198.51.100.7 DST=203.0.113.5 LEN=103 '
+                'TOS=00 PREC=0x00 TTL=58 ID=27807 DF PROTO=TCP SPT=443 DPT=38584 SEQ=658052053 ACK=589986118 '
+                'WINDOW=281 ACK PSH URGP=0 MARK=1a0000 ')
+# A real admin event ("Admin Activity" content): class 544, keyed by UNIFIadmin, not suser.
+REAL_ADMIN = ("Oct 15 19:34:48 gateway CEF:0|Ubiquiti|UniFi Network|10.6.106|544|Network Accessed|4|UNIFIcategory=Audit "
+              "UNIFIhost=UDM Pro UNIFIaccessMethod=web UNIFIadmin=Admin User src=192.168.50.10 "
+              "UNIFIutcTime=2026-10-16T00:34:48.590Z msg=Admin User accessed UniFi Network using the web. "
+              "Source IP: 192.168.50.10")
 # The gateway's own system log also arrives; none of it is an event.
 REAL_SYSTEM = "<30>Oct 15 19:28:01 gateway gateway earlyoom[1024]: mem avail:  1679 of  3946 MiB (42.55%)"
 
@@ -85,8 +92,11 @@ def test_firewall_lines_parse_to_chain_action_and_addresses():
     assert (tcp["proto"], tcp["dpt"], tcp["ttl"]) == ("TCP", 53, 64)
     v6 = syslogin.parse_line(REAL_FW_V6)[1]
     assert (v6["src"], v6["dst"], v6["dpt"], v6["rule"]) == ("fe80::1", "ff02::fb", 5353, "2147483646")
-    drop = syslogin.parse_line(FW_DROP)[1]
-    assert (drop["chain"], drop["action"], drop["descr"], drop["dpt"]) == ("WAN_LOCAL", "D", "Block inbound", 22)
+    drop = syslogin.parse_line(REAL_FW_DROP)[1]
+    assert (drop["chain"], drop["action"], drop["rule"]) == ("WAN_LOCAL", "D", "2147483647")
+    assert drop["descr"] == "[WAN_LOCAL]Block All Other Tra"  # iptables truncates the prefix; the rule name is cut
+    assert (drop["in"], drop["src"], drop["dst"], drop["proto"], drop["spt"], drop["dpt"]) == (
+        "eth8", "198.51.100.7", "203.0.113.5", "TCP", 443, 38584)
     assert syslogin.parse_line(REAL_SYSTEM) == ("system", None)
 
 
@@ -96,7 +106,7 @@ def test_firewall_accepts_and_system_lines_are_dropped_without_a_warning_each(tm
     for i in range(300):  # the real rate: hundreds of default-policy accepts a minute
         assert syslogin.handle(REAL_FW_UDP.encode(), "192.168.50.1", w, allow, now=T0 + i / 10, stats=st) is None
     assert syslogin.handle(REAL_SYSTEM.encode(), "192.168.50.1", w, allow, now=T0 + 31, stats=st) is None
-    assert syslogin.handle(FW_DROP.encode(), "192.168.50.1", w, allow, now=T0 + 32, stats=st) == "firewall"
+    assert syslogin.handle(REAL_FW_DROP.encode(), "192.168.50.1", w, allow, now=T0 + 32, stats=st) == "firewall"
     assert syslogin.handle(REAL_CEF.encode(), "192.168.50.1", w, allow, now=T0 + 33, stats=st) == "cef"
     assert syslogin.handle(REAL_CEF.encode(), "192.168.50.66", w, allow, now=T0 + 34, stats=st) is None
     assert syslogin.handle(REAL_CEF.encode(), "192.168.50.66", w, allow, now=T0 + 35, stats=st) is None
@@ -157,6 +167,18 @@ def test_router_ips_routing():
     assert (a.base_severity, a.must_alert, a.host) == (1, False, "192.168.50.20")
     assert (b.base_severity, b.must_alert, b.facts["direction"]) == (5, True, "outbound")
     assert det.feed(udm(name="Client connected", UNIFIcategory="Monitoring")) == []
+
+
+def test_real_admin_event_is_learned_then_alerts_from_a_new_place():
+    kind, rec = syslogin.parse_line(REAL_ADMIN)
+    assert kind == "cef" and rec["UNIFIadmin"] == "Admin User" and rec["src"] == "192.168.50.10"
+    det = UdmAdmin(Warmup(600))
+    assert det.feed(udm(**rec)) == []                                                    # warmup: learned
+    assert det.feed(udm(ts=T0 + 700, **rec)) == []                                       # same user, same PC
+    cases = det.feed(udm(ts=T0 + 800, **dict(rec, src="192.168.50.77")))
+    assert len(cases) == 1 and cases[0].must_alert and cases[0].host == "192.168.50.77"
+    assert cases[0].facts == {"failed": False, "from_lan": True, "method": "web", "dedupe": "Admin User|192.168.50.77"}
+    assert cases[0].indicators == ["Admin User"]
 
 
 def test_router_admin_new_place_and_failure_burst():
