@@ -1151,3 +1151,15 @@ def test_cleartext_to_a_rotating_cloud_broker_keeps_one_suppressable_key():
     http = {"_type": "http", "ts": T0 + 3, "id.orig_h": "192.168.50.19", "id.resp_h": "192.168.50.7",
             "username": "u", "host": "printer.lan"}
     assert run(det, [http])[0].facts["dedupe"] == "HTTP login (basic auth)|192.168.50.7"   # inside: the server matters
+
+
+def test_admin_devices_may_name_a_device_by_hostname_or_mac():
+    from tapwatch.detectors import Identity
+    ident = Identity()
+    det = ManagementAccess(Warmup(0), gateways=Gateways({GW}), admin_devices={"name:iPhone", "MAC:aa:bb:cc:dd:ee:21"})
+    det.ident = ident
+    feed_all([ident], [dict(dhcp(T0, mac="aa:bb:cc:dd:ee:20"), host_name="iPhone", assigned_addr="192.168.50.80"),
+                       dict(conn(T0 + 1, src="192.168.50.81"), orig_l2_addr="aa:bb:cc:dd:ee:21")])
+    app = [conn(T0 + 2, src="192.168.50.80", dst=GW, port=443), conn(T0 + 3, src="192.168.50.81", dst=GW, port=443),
+           conn(T0 + 4, src="192.168.50.82", dst=GW, port=443)]
+    assert [c.host for c in run(det, app)] == ["192.168.50.82"]          # the named phone and the MAC'd one pass

@@ -1312,7 +1312,11 @@ class ManagementAccess(Detector):
 
     def __init__(self, warmup: Warmup, gateways: Gateways | None = None, admin_devices: set[str] | None = None):
         self.warmup = warmup
-        self.gateways, self.admins = gateways or Gateways(), admin_devices or set()
+        # admin_devices entries are addresses or device ids (name:<DHCP hostname>, mac:<address>): the
+        # owner's phones run the UniFi app against the router's 443 and sit on private MACs, so an
+        # address entry is brittle (two phones alerted on 2026-10-15/16; both carry the name "iPhone").
+        self.gateways = gateways or Gateways()
+        self.admins = {a.lower() if str(a).lower().startswith(("name:", "mac:")) else a for a in (admin_devices or ())}
         self.known: set[tuple] = set()
         self.recent: dict[str, deque] = defaultdict(deque)  # source -> (ts, target) of its new admin pairs
         self.swept: dict[str, float] = {}                   # source -> until when its sweep is already reported
@@ -1324,7 +1328,7 @@ class ManagementAccess(Detector):
         if not is_unicast_lan(src) or not is_unicast_lan(dst) or src in self.gateways or src in self.admins:
             return []
         what = self.ADMIN_PORTS.get(port) or (self.GATEWAY_PORTS.get(port) if dst in self.gateways else None)
-        if what is None:
+        if what is None or self.dev_key(src) in self.admins:  # identity only for admin-port traffic
             return []
         key = (self.dev_key(src), dst, port)
         if key in self.known:
