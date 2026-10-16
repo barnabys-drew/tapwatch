@@ -1131,15 +1131,15 @@ def test_a_device_whose_every_connection_fails_is_offline_not_scanning():
     det = PortScan()
     run(det, [conn(T0 + i, dst="203.0.113.250", port=443) for i in range(5)])       # its own traffic works
     scanning = run(det, [conn(T0 + 10 + i * 0.5, dst=f"192.168.50.{i + 2}", port=22, state="REJ") for i in range(60)])
-    assert scanning[0].facts["all_failed"] and scanning[0].facts["max_route"] == "digest"   # nothing since the run began
+    assert not scanning[0].facts["all_failed"] and "max_route" not in scanning[0].facts   # refused = answered: online
     det = PortScan()
     recs = [conn(T0 + i * 0.5, dst=f"192.168.50.{i + 2}", port=22, state="REJ") for i in range(60)]
     recs.insert(30, conn(T0 + 15.2, dst="203.0.113.250", port=443))                # an answered one mid-run
     live = run(det, recs)
     assert not live[0].facts["all_failed"] and "max_route" not in live[0].facts
-    # a reset after the handshake (tarpits, banner-grab refusals) is still a failed probe, not an answer
+    # a reset after the handshake (tarpits, banner-grab refusals) counts as a failed probe, but it proves the target is reachable
     rst = run(PortScan(), [conn(T0 + i * 0.5, dst=f"192.168.50.{i + 2}", port=443, state="RSTR") for i in range(60)])
-    assert len(rst) == 1 and rst[0].facts["all_failed"]
+    assert len(rst) == 1 and not rst[0].facts["all_failed"] and "max_route" not in rst[0].facts
 
 
 def test_cleartext_to_a_rotating_cloud_broker_keeps_one_suppressable_key():
@@ -1163,3 +1163,14 @@ def test_admin_devices_may_name_a_device_by_hostname_or_mac():
     app = [conn(T0 + 2, src="192.168.50.80", dst=GW, port=443), conn(T0 + 3, src="192.168.50.81", dst=GW, port=443),
            conn(T0 + 4, src="192.168.50.82", dst=GW, port=443)]
     assert [c.host for c in run(det, app)] == ["192.168.50.82"]          # the named phone and the MAC'd one pass
+
+
+def test_a_few_failures_among_many_successes_is_not_a_scan_alert():
+    det = PortScan()
+    recs = [conn(T0 + i * 0.1, dst=f"203.0.113.{i % 200 + 1}", port=443) for i in range(336)]        # browsing works
+    recs += [conn(T0 + 10 + i * 0.1, dst=f"198.51.100.{i + 1}", port=443, state="S0") for i in range(60)]  # a few don't
+    recs.sort(key=lambda r: r["ts"])
+    c = run(det, recs)[0]
+    assert c.facts["failed_pct"] < 50 and c.facts["max_route"] == "digest" and not c.facts["all_failed"]
+    pure = run(PortScan(), [conn(T0 + i * 0.1, dst=f"192.168.50.{i % 20 + 2}", port=1000 + i, state="REJ") for i in range(60)])[0]
+    assert pure.facts["failed_pct"] == 100 and "max_route" not in pure.facts   # refusals are answers: online, scanning
