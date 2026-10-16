@@ -645,10 +645,13 @@ class PortScan(Detector):
     A reset ends many ordinary sessions: a phone leaving a news page tore down 87 TLS sessions to
     ad and CDN hosts with RST in one minute (2026-10-16 #363; median 2.5 KB sent, 8.5 KB received,
     80 s long; 199 such resets from that phone in the hour), which Zeek records as RSTO and this
-    rule alerted on as a 50-host sweep. A connect scan closes with a reset too, but it has sent and
-    received nothing. So a reset after data went both ways is an answered connection (the target
-    served something); a reset with nothing exchanged, or data only one way (a banner grab reads
-    the target's greeting and sends nothing), still counts as a probe.
+    rule alerted on as a 50-host sweep. A SYN scan closes with a reset too (SYN, SYN-ACK, RST), but
+    it has sent and received nothing. So a reset after data went both ways is an answered
+    connection (the target served something); a reset with nothing exchanged, or data only one way
+    (a banner grab reads the target's greeting and sends nothing; a ClientHello answered by a reset,
+    not seen on the home network as of 2026-10-16), still counts as a probe. The cost, a judgement
+    like the 50%: a service-version scan against open ports also exchanges data and resets, so
+    those rows count as answered and the sweep is carried by the closed ports' refusals.
 
     The router reports its Wi-Fi clients roaming between access points and disconnecting
     (udm.log, the syslog feed with the Clients content ticked, docs/setup/router-syslog.md). A
@@ -668,7 +671,7 @@ class PortScan(Detector):
     FAILED: ClassVar[set[str]] = {"S0", "REJ", "RSTO", "RSTR", "RSTOS0", "SH", "OTH"}
     SILENT: ClassVar[set[str]] = {"S0", "OTH", "SH", "RSTOS0"}  # the target never answered at all
     # Answered, as a scanner would see it. ESTABLISHED (defined below) also holds RSTO/RSTR, but a reset
-    # right after the handshake is how a connect scan closes and how tarpits answer a probe: a failure
+    # right after the handshake is how a SYN scan closes and how tarpits answer a probe: a failure
     # here unless data went both ways first (RESET, below).
     ANSWERED: ClassVar[set[str]] = {"SF", "S1", "S2", "S3"}
     RESET: ClassVar[set[str]] = {"RSTO", "RSTR"}  # answered when both sides sent data; a probe otherwise

@@ -1181,7 +1181,7 @@ def test_sessions_a_device_resets_after_data_are_not_a_scan():
     torn = [dict(conn(T0 + i * 0.1, dst=f"203.0.113.{i + 1}", port=443, state="RSTO", orig_bytes=2493), resp_bytes=8528)
             for i in range(60)]
     assert run(PortScan(), torn) == []
-    # a connect scan also closes with a reset, but sends and receives nothing; a banner grab only reads
+    # a SYN scan also closes with a reset, but sends and receives nothing; a banner grab only reads
     probes = [dict(conn(T0 + i * 0.1, dst=f"203.0.113.{i + 1}", port=22, state="RSTO", orig_bytes=0), resp_bytes=0)
               for i in range(30)]
     probes += [dict(conn(T0 + 3 + i * 0.1, dst=f"203.0.113.{i + 1}", port=25, state="RSTR", orig_bytes=0), resp_bytes=40)
