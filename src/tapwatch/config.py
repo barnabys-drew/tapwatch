@@ -173,7 +173,8 @@ def hostctx(cfg: dict) -> HostContext | None:
     logs = h.get("results_logs") or HOST_LOGS
     ps = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
     return HostContext(h["host"], bins, logs, h.get("transcripts"),
-                       powershell=str(ps) if win.exists() and ps.exists() else None)
+                       powershell=str(ps) if win.exists() and ps.exists() else None,
+                       hostname=h.get("hostname"))  # None: this machine's own name
 
 
 def thresholds(cfg: dict) -> Thresholds:
