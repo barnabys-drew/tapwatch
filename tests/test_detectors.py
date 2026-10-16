@@ -1137,7 +1137,7 @@ def test_a_device_whose_every_connection_fails_is_offline_not_scanning():
     recs.insert(30, conn(T0 + 15.2, dst="203.0.113.250", port=443))                # an answered one mid-run
     live = run(det, recs)
     assert not live[0].facts["all_failed"] and "max_route" not in live[0].facts
-    # a reset after the handshake (tarpits, banner-grab refusals) is still a failed probe, not an answer
+    # a reset after the handshake (tarpits, banner-grab refusals) counts as a failed probe, but it proves the target is reachable
     rst = run(PortScan(), [conn(T0 + i * 0.5, dst=f"192.168.50.{i + 2}", port=443, state="RSTR") for i in range(60)])
     assert len(rst) == 1 and not rst[0].facts["all_failed"] and "max_route" not in rst[0].facts
 

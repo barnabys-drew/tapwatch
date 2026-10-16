@@ -631,12 +631,21 @@ class PortScan(Detector):
 
     A device losing its network fails every connection at once, which on one port to many hosts
     is the sweep shape (a phone walking out of Wi-Fi range: 50 SYNs to 50 web servers in a minute,
-    alerted 2026-10-15 as #122). When nothing from the source has succeeded since its failures
-    began, the case carries `all_failed` and is capped at digest; a scanner's other traffic works.
+    alerted 2026-10-15 as #122). When the failures are silent (no SYN-ACK, no refusal: S0, OTH, SH,
+    RSTOS0) and nothing from the source has succeeded since they began, the case carries
+    `all_failed` and is capped at digest. A refusal or a reset is the target answering, which
+    proves the path works, so a refused-port scan from a quiet host still alerts.
+
+    `failed_pct` is the share of the source's connections in the window that failed, discovery
+    traffic left out of both sides. Under 50% is capped at digest: a phone on marginal Wi-Fi failed
+    48 SYNs to 47 CDN prefixes while 336 other connections succeeded (2026-10-16 #339, 12.5%).
+    The 50 is a judgement, not a measurement; a busy workstation that also probes 50 hosts can
+    stay under it, which is the trade-off against the day's phone cases.
     """
 
     name = "scan"
     FAILED: ClassVar[set[str]] = {"S0", "REJ", "RSTO", "RSTR", "RSTOS0", "SH", "OTH"}
+    SILENT: ClassVar[set[str]] = {"S0", "OTH", "SH", "RSTOS0"}  # the target never answered at all
     # Answered, as a scanner would see it. ESTABLISHED (defined below) also holds RSTO/RSTR, but a reset
     # right after the handshake is how tarpits and banner-grab refusals answer a probe: a failure here.
     ANSWERED: ClassVar[set[str]] = {"SF", "S1", "S2", "S3"}
@@ -653,16 +662,16 @@ class PortScan(Detector):
         if rec["_type"] != "conn":
             return []
         src, dst, ts = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec["ts"]
-        if rec.get("conn_state") in self.ANSWERED and is_internal(src):
+        proto, port = rec.get("proto") or "tcp", rec.get("id.resp_p")
+        if not is_internal(src) or (proto == "udp" and port in self.DISCOVERY_UDP):
+            return []  # discovery traffic is left out of both sides of failed_pct
+        if rec.get("conn_state") in self.ANSWERED:
             ok = self.ok[src]
             ok.append(ts)
             while ok and ts - ok[0] > self.window:
                 ok.popleft()
             return []
-        if rec.get("conn_state") not in self.FAILED:
-            return []
-        proto, port = rec.get("proto") or "tcp", rec.get("id.resp_p")
-        if not is_internal(src) or not unicast(dst) or (proto == "udp" and port in self.DISCOVERY_UDP):
+        if rec.get("conn_state") not in self.FAILED or not unicast(dst):
             return []
         ev = self.events[src]
         ev.append((ts, dst, port, proto, rec.get("conn_state")))
@@ -679,7 +688,7 @@ class PortScan(Detector):
         # Offline means silence: no answered connection since the failures began AND no refusal
         # either (a REJ or a reset is the target answering, which proves the path works).
         okq = self.ok.get(src)
-        silent = all(e[4] in ("S0", "OTH") for e in ev)
+        silent = all(e[4] in self.SILENT for e in ev)
         all_failed = silent and (not okq or okq[-1] < ev[0][0])
         # The share of the source's connections in the window that failed. A scanner's probes are
         # most of what it sends; a phone on marginal Wi-Fi fails a few dozen SYNs to CDN hosts while
