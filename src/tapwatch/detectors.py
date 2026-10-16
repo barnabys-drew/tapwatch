@@ -642,6 +642,14 @@ class PortScan(Detector):
     The 50 is a judgement, not a measurement; a busy workstation that also probes 50 hosts can
     stay under it, which is the trade-off against the day's phone cases.
 
+    A reset ends many ordinary sessions: a phone leaving a news page tore down 87 TLS sessions to
+    ad and CDN hosts with RST in one minute (2026-10-16 #363; median 2.5 KB sent, 8.5 KB received,
+    80 s long; 199 such resets from that phone in the hour), which Zeek records as RSTO and this
+    rule alerted on as a 50-host sweep. A connect scan closes with a reset too, but it has sent and
+    received nothing. So a reset after data went both ways is an answered connection (the target
+    served something); a reset with nothing exchanged, or data only one way (a banner grab reads
+    the target's greeting and sends nothing), still counts as a probe.
+
     The router reports its Wi-Fi clients roaming between access points and disconnecting
     (udm.log, the syslog feed with the Clients content ticked, docs/setup/router-syslog.md). A
     failure burst from a client the router moved or dropped within `WIFI_WINDOW` seconds of the
@@ -660,8 +668,10 @@ class PortScan(Detector):
     FAILED: ClassVar[set[str]] = {"S0", "REJ", "RSTO", "RSTR", "RSTOS0", "SH", "OTH"}
     SILENT: ClassVar[set[str]] = {"S0", "OTH", "SH", "RSTOS0"}  # the target never answered at all
     # Answered, as a scanner would see it. ESTABLISHED (defined below) also holds RSTO/RSTR, but a reset
-    # right after the handshake is how tarpits and banner-grab refusals answer a probe: a failure here.
+    # right after the handshake is how a connect scan closes and how tarpits answer a probe: a failure
+    # here unless data went both ways first (RESET, below).
     ANSWERED: ClassVar[set[str]] = {"SF", "S1", "S2", "S3"}
+    RESET: ClassVar[set[str]] = {"RSTO", "RSTR"}  # answered when both sides sent data; a probe otherwise
     # DNS, DHCP, NTP, NetBIOS, SSDP, WS-Discovery, mDNS, LLMNR, UniFi discovery
     DISCOVERY_UDP: ClassVar[set[int]] = {53, 67, 68, 123, 137, 138, 1900, 3702, 5353, 5355, 10001}
     # The router's CEF event names for a Wi-Fi client changing state (syslogin.py keeps `name` as sent).
@@ -686,7 +696,9 @@ class PortScan(Detector):
         proto, port = rec.get("proto") or "tcp", rec.get("id.resp_p")
         if not is_internal(src) or (proto == "udp" and port in self.DISCOVERY_UDP):
             return []  # discovery traffic is left out of both sides of failed_pct
-        if rec.get("conn_state") in self.ANSWERED:
+        state = rec.get("conn_state")
+        if state in self.ANSWERED or (state in self.RESET and int(rec.get("orig_bytes") or 0) > 0
+                                      and int(rec.get("resp_bytes") or 0) > 0):
             ok = self.ok[src]
             ok.append(ts)
             while ok and ts - ok[0] > self.window:
