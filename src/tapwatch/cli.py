@@ -356,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--apply", action="store_true", help="create the suggested suppressions and close those cases")
     s.set_defaults(fn=cmd_explain)
 
-    s = sub.add_parser("update-feeds", help="download Tranco, IEEE MAC vendors and IP-to-ASN lists (no data sent)")
+    s = sub.add_parser("update-feeds", help="download Tranco, IEEE MAC vendors, IP-to-ASN and UT1 site-category lists (no data sent)")
     s.add_argument("--dir", help="where to save them (default: feeds_dir, or ./feeds)")
     s.set_defaults(fn=cmd_update_feeds)
 

@@ -16,7 +16,8 @@ from .router import Thresholds
 from .summarizer import Assets
 from .triage import DEFAULT_MODEL, GATEWAY_MODEL, GATEWAY_URL, JevClient
 
-FEED_FILES = {"popular_domains_file": "top-100k.csv", "oui_file": "oui.csv", "asn_file": "ip2asn-v4.tsv.gz"}
+FEED_FILES = {"popular_domains_file": "top-100k.csv", "oui_file": "oui.csv", "asn_file": "ip2asn-v4.tsv.gz",
+              "categories_file": "categories.tsv"}
 
 
 def load(path: str | None) -> dict:
@@ -46,6 +47,8 @@ def missing_feeds(cfg: dict) -> str:
         lost.append("MAC vendors (new devices have no maker)")
     if not cfg.get("asn_file"):
         lost.append("IP-to-network (destinations have no owner)")
+    if not cfg.get("categories_file"):
+        lost.append("domain categories (new_domain, tls_odd and upload_spike say nothing about the kind of site)")
     if not lost:
         return ""
     return "public lists not downloaded, run `tapwatch update-feeds`: missing " + "; ".join(lost)
