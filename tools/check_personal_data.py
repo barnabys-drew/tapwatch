@@ -8,7 +8,8 @@ Two layers:
     MAC addresses outside documentation and test ranges
   * .personal-denylist (gitignored, never committed): one regular expression per line for your
     own specifics: hostnames, device addresses and MACs, names, employer and project names.
-    CI doesn't have it; run this locally before publishing.
+    CI doesn't have it; run this locally before publishing. It's read from the current directory,
+    or, in a git worktree that has no copy, from the repository's main worktree.
 """
 
 from __future__ import annotations
@@ -39,9 +40,24 @@ def tracked() -> list[str]:
     return [f for f in out.splitlines() if not f.endswith(SKIP_SUFFIXES) and f != SELF]
 
 
-def denylist(path: str = ".personal-denylist") -> list[re.Pattern]:
-    p = Path(path)
-    if not p.exists():
+def denylist_path(name: str = ".personal-denylist") -> Path | None:
+    """The denylist here, else the one in the repository's main worktree (a linked `git worktree`
+    doesn't get the gitignored file), else None."""
+    local = Path(name)
+    if local.exists():
+        return local
+    try:
+        common = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True,
+                                check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    shared = Path(common).resolve().parent / name  # <main worktree>/.git -> <main worktree>
+    return shared if common and shared.exists() and shared.resolve() != local.resolve() else None
+
+
+def denylist(path: str | Path | None = None) -> list[re.Pattern]:
+    p = Path(path) if path else denylist_path()
+    if p is None or not p.exists():
         return []
     return [re.compile(line.strip(), re.IGNORECASE) for line in p.read_text().splitlines()
             if line.strip() and not line.startswith("#")]
@@ -64,12 +80,13 @@ def scan(files: list[str], deny: list[re.Pattern]) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    deny = denylist()
+    path = denylist_path()
+    deny = denylist(path)
     found = scan(argv or tracked(), deny)
     for line in found:
         print(line)
     print(f"{len(found)} finding(s); personal denylist: {len(deny)} pattern(s)"
-          + ("" if deny else " (none: generic checks only)"))
+          + (f" from {path}" if deny else " (none: generic checks only)"))
     return 1 if found else 0
 
 
