@@ -14,6 +14,7 @@ import bisect
 import gzip
 import io
 import ipaddress
+import tarfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -24,6 +25,26 @@ SOURCES = {
     "ip2asn-v4.tsv.gz": "https://iptoasn.com/data/ip2asn-v4.tsv.gz",
 }
 TOP_N = 100_000
+
+# Domain categories: the UT1 blacklists (Université Toulouse Capitole, CC BY-SA), one small archive per
+# category with a `<category>/domains` member. Only the categories a home network's cases turn on; the
+# adult, press, shopping and games lists are large and say nothing tapwatch needs, and maliciousness
+# comes from the IOC feeds, not from here. The order is the precedence: a domain on two lists keeps the
+# first, so the ones that matter to a security case come before the ones that explain traffic away
+# (a cryptojacking host that also serves ads must not read as "an advertising site"). Measured
+# 2026-10-16: these 21 archives total under 1 MB and 43k domains; `redirector` (web proxies and
+# filter-bypass sites) was 130k domains on its own and is left out.
+UT1_URL = "https://dsi.ut-capitole.fr/blacklists/download/{}.tar.gz"
+UT1_TIMEOUT = 30  # s per archive: they are tiny, and `tapwatch init` waits on this
+UT1_CATEGORIES = {
+    "cryptojacking": "cryptojacking", "stalkerware": "stalkerware", "ddos": "ddos_service", "hacking": "hacking",
+    "dialer": "dialer", "residential-proxies": "residential_proxy", "doh": "doh_resolver", "vpn": "vpn",
+    "remote-control": "remote_control", "warez": "warez", "download": "download", "filehosting": "file_hosting",
+    "shortener": "url_shortener", "publicite": "advertising", "marketingware": "marketing", "chat": "chat",
+    "social_networks": "social", "webmail": "webmail", "audio-video": "media", "update": "software_update",
+    "webhosting": "web_hosting",
+}
+CATEGORIES_FILE = "categories.tsv"
 
 
 def _fetch(url: str, timeout: float = 120) -> bytes:
@@ -40,11 +61,57 @@ def _write(path: Path, data: bytes) -> None:
     tmp.replace(path)
 
 
+def _ut1_domains(archive: bytes, category: str) -> list[str]:
+    """The `<category>/domains` member of a UT1 archive, read in memory: nothing is extracted to disk."""
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        member = tar.getmember(f"{category}/domains")
+        fh = tar.extractfile(member)
+        text = fh.read().decode("utf-8", errors="replace") if fh else ""
+    return [line.strip().lower() for line in text.splitlines() if line.strip() and not line.startswith("#")]
+
+
+def categories_feed(fetch=_fetch, existing: Path | None = None) -> tuple[bytes, str]:
+    """Fetch the UT1 category archives and build `categories.tsv`: (file bytes, report line).
+    A category that fails to download is named in the report and its rows are carried over from the
+    `existing` file, so one bad mirror run does not silently drop a kind of site until next week."""
+    table: dict[str, str] = {}
+    failed = []
+    lost_labels = set()
+    for cat, label in UT1_CATEGORIES.items():
+        try:
+            data = fetch(UT1_URL.format(cat), UT1_TIMEOUT) if fetch is _fetch else fetch(UT1_URL.format(cat))
+            for dom in _ut1_domains(data, cat):
+                table.setdefault(dom, label)  # precedence: the first list in UT1_CATEGORIES wins
+        except Exception as e:  # noqa: BLE001 - one list failing must not lose the others
+            failed.append(f"{cat} ({e})")
+            lost_labels.add(label)
+    if lost_labels and existing and existing.exists():
+        for line in existing.read_text(errors="replace").splitlines():
+            dom, _, label = line.partition("\t")
+            if label in lost_labels and dom and not dom.startswith("#"):
+                table.setdefault(dom, label)
+    if not table:
+        raise OSError("no category list could be read: " + "; ".join(failed))
+    body = "".join(f"{dom}\t{label}\n" for dom, label in sorted(table.items()))
+    head = "# domain<TAB>category, from the UT1 blacklists (dsi.ut-capitole.fr, CC BY-SA); tapwatch update-feeds\n"
+    ok = len(UT1_CATEGORIES) - len(failed)
+    note = f"ok, {len(table):,} domains from {ok} of {len(UT1_CATEGORIES)} lists"
+    if failed:
+        note += "; failed: " + ", ".join(failed)
+    return (head + body).encode(), note
+
+
 def update(directory: str, fetch=_fetch) -> dict[str, str]:
     """Download every list into `directory`. Returns {file: "ok, N bytes" | "failed: reason"}."""
     d = Path(directory)
     d.mkdir(parents=True, exist_ok=True)
     report = {}
+    try:
+        data, note = categories_feed(fetch, existing=d / CATEGORIES_FILE)
+        _write(d / CATEGORIES_FILE, data)
+        report[CATEGORIES_FILE] = note
+    except Exception as e:  # noqa: BLE001 - report it, keep going
+        report[CATEGORIES_FILE] = f"failed: {e}"
     for name, url in SOURCES.items():
         try:
             data = fetch(url)
