@@ -1392,9 +1392,13 @@ class CleartextAuth(Detector):
         self.reported.add(key)
         outside = not is_internal(dst)
         severity = (4 if what in ("Telnet", "FTP login") else 2) if outside else 1
+        # The dedupe (and so the suppression indicator) names the protocol and "outside", not the server:
+        # a device's cloud broker rotates addresses (a photo frame's MQTT went to three AWS addresses in
+        # one day, 2026-10-15, and a per-address rule matched none of them). Inside the LAN the server
+        # is the point, so it stays in the key.
         return [Case(self.name, src, rec["ts"], "Unencrypted login or protocol",
-                     {"what": what, "port": rec.get("id.resp_p"), "outside": outside,
-                      "dedupe": f"{dst}|{what}"},
+                     {"what": what, "port": rec.get("id.resp_p"), "outside": outside, "server": dst,
+                      "dedupe": f"{what}|outside" if outside else f"{what}|{dst}"},
                      indicators, base_severity=severity)]
 
 

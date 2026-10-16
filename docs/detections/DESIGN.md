@@ -444,7 +444,9 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Logic:** `rules/R13-cleartext-credentials.yml` (Sigma).
 - **Baseline:** none. Measured: 0 HTTP auth and 0 ftp/telnet; **1 device** (the smart-home hub)
   uses cleartext MQTT to the internet.
-- **Dedupe:** `cleartext|host|proto|dst`, 30 days.
+- **Dedupe:** `proto|outside` for internet servers, `proto|dst` on the LAN; the server address is a fact.
+  Each (device, server, protocol) is raised once; a device rule on `MQTT|outside` covers a cloud broker
+  that rotates addresses (a photo frame's did, three AWS addresses in a day, 2026-10-15).
 - **FPs:** LAN-only cleartext to printers or UniFi (internal → LOG), and known IoT MQTT once acknowledged.
 - **Route:** internet-bound credentials → DIGEST (hygiene). Outbound **telnet/ftp from a computer** → ALERT.
 - **Jev:** none. It's a protocol fact, and Jev adds no judgment.
