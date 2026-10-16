@@ -56,7 +56,8 @@ settings for "SIEM" if neither is there.
 
 Contents to tick: **Admin Activity** (R11), **Security Detections** (`udm_ips`), **Critical**,
 **Devices**, **Updates**, **VPN**, **Triggers**. **Clients** adds a CEF event per Wi-Fi join,
-roam and leave (not used by a rule yet; a few a minute in a busy house). Leave **Firewall
+roam and leave (a few a minute in a busy house); `scan` uses the roam and leave events to hold a
+client's failure burst to the digest, so tick it. Leave **Firewall
 Default Policy** off unless you want the flood described below. Flow Logging ("Blocked Traffic
 Only") is separate from the SIEM export.
 
