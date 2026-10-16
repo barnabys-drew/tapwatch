@@ -1140,3 +1140,14 @@ def test_a_device_whose_every_connection_fails_is_offline_not_scanning():
     # a reset after the handshake (tarpits, banner-grab refusals) is still a failed probe, not an answer
     rst = run(PortScan(), [conn(T0 + i * 0.5, dst=f"192.168.50.{i + 2}", port=443, state="RSTR") for i in range(60)])
     assert len(rst) == 1 and rst[0].facts["all_failed"]
+
+
+def test_cleartext_to_a_rotating_cloud_broker_keeps_one_suppressable_key():
+    det = CleartextAuth()
+    mqtt = lambda ts, dst: dict(conn(ts, src="192.168.50.19", dst=dst, port=1883, service="mqtt"), proto="tcp")
+    cases = run(det, [mqtt(T0, "203.0.113.5"), mqtt(T0 + 1, "203.0.113.6")])   # the broker moved
+    assert [c.facts["dedupe"] for c in cases] == ["MQTT|outside", "MQTT|outside"]
+    assert all(c.indicator == c.facts["dedupe"] for c in cases)   # what a device rule is keyed on
+    http = {"_type": "http", "ts": T0 + 3, "id.orig_h": "192.168.50.19", "id.resp_h": "192.168.50.7",
+            "username": "u", "host": "printer.lan"}
+    assert run(det, [http])[0].facts["dedupe"] == "HTTP login (basic auth)|192.168.50.7"   # inside: the server matters
