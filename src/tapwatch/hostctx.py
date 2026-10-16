@@ -94,6 +94,7 @@ ADDRS = "host_addresses"
 ADDR_KEY = f'"{ADDRS}"'.encode()
 ADDR_WINDOW = 900             # an address is the PC's for cases within 15 minutes of a snapshot that holds it
 ADDR_KEEP = 6000              # snapshots kept in memory: about 8 days from two agents
+REJECTED_NAMES_MAX = 16       # distinct DHCP names warned about once each when they differ from the PC's own
 SLACK = 90                    # snapshot interval plus splay
 LIVE_WINDOW = 600             # a live osquery check only counts for cases this recent
 LOG_TAIL = 50_000_000         # bytes of a results log to read at most
@@ -637,6 +638,7 @@ class HostContext:
         # The PC's own name, to match against a case's DHCP hostname: an address alone can belong to another
         # device (a shared dock). Resolved here so tests can pass one; "" means unknown, and the name rule is off.
         self.hostname = first_label(hostname if hostname is not None else socket.gethostname())
+        self._rejected: set[str] = set()   # DHCP names turned away on this PC's address, warned about once each
         self.transcripts = Path(transcripts).expanduser() if transcripts else Path.home() / ".claude/projects"
         self.runner, self.timeout = runner, timeout
         self.powershell, self._sigs = powershell, {}
@@ -699,6 +701,12 @@ class HostContext:
             return False
         name = first_label(device_name)
         if name and self.hostname and name != self.hostname:
+            if name not in self._rejected and len(self._rejected) < REJECTED_NAMES_MAX:
+                # Once per name: if it is this PC's own DHCP name (WSL with its own hostname, a DHCP client that
+                # sends another name), every case here is losing host context, and the fix is a config line.
+                self._rejected.add(name)
+                log.warning("DHCP name %r on %s differs from this PC's name %r, so cases there get no host "
+                            "context; if that is this PC, set host_context.hostname", name, ip, self.hostname)
             log.debug("%s is this PC's address but the DHCP name there is another device's: not this PC", ip)
             return False
         return True

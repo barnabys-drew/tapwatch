@@ -167,14 +167,14 @@ def cmd_who(args, cfg) -> int:
     if row is None:
         print(f"no case #{args.case_id}", file=sys.stderr)
         return 1
-    if not hc.is_this_pc(row["host"], row["first_ts"]):
+    facts = json.loads(row["facts"])
+    if not hc.is_this_pc(row["host"], row["first_ts"], facts.get("device_name")):
         print(f"case #{args.case_id} is on {row['host']}, which wasn't this PC then; other devices need Fleet",
               file=sys.stderr)
         return 1
     if hc.config_mismatch():
         print(hc.config_mismatch(), file=sys.stderr)
-    case = Case(row["detector"], row["host"], row["first_ts"], row["title"], json.loads(row["facts"]),
-                json.loads(row["indicators"]))
+    case = Case(row["detector"], row["host"], row["first_ts"], row["title"], facts, json.loads(row["indicators"]))
     ev = evidence.lookup(args.zeek_dir, case.host, case.ts, window=180)
     case.facts = {k: v for k, v in case.facts.items() if not k.startswith("host_")}  # stored ones are stale
     case.facts.update(hc.collect(case, ev["conn"]["rows"], ev["dns"]["rows"]))

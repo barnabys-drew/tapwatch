@@ -101,9 +101,8 @@ a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwat
    MAC and DHCP address go to whichever machine is docked, and a lookup by the laptop's security agent was given
    the PC's programs until the name check. The alerter also keeps `admin_devices` and `dev_profile.hosts`
    entries for that IP on the PC's current addresses, and logs a warning when the configured IP is out of
-   date. An `admin_devices` entry
-   can also be a device identity (`name:<DHCP hostname>` or `mac:<address>`) instead of an IP, which is
-   how a phone on a private MAC stays exempt from the router-admin rule.
+   date. An `admin_devices` entry can also be a device identity (`name:<DHCP hostname>` or `mac:<address>`)
+   instead of an IP, which is how a phone on a private MAC stays exempt from the router-admin rule.
 3. **Summarize.** Turn the case into a short "state" in words for Jev.
 4. **Ask Jev**, if it's configured and the case is AI-eligible: who on the PC did it (only with
    host context), then the four triage questions.

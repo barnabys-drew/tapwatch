@@ -672,6 +672,22 @@ def test_device_name_must_match_the_pcs_own_name(tmp_path):
     assert HostContext(PC, None, []).hostname == socket.gethostname().split(".")[0].lower()   # default: this machine
 
 
+def test_a_rejected_name_warns_once_and_names_the_config_knob(caplog):
+    import logging
+
+    hc = HostContext(PC, None, [], hostname="pc-one")
+    with caplog.at_level(logging.DEBUG, logger="tapwatch"):
+        assert not hc.is_this_pc(PC, T0, "work-laptop") and not hc.is_this_pc(PC, T0 + 60, "work-laptop")
+        assert not hc.is_this_pc(PC, T0 + 120, "WORK-LAPTOP.lan")  # same name: still the one warning
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "host_context.hostname" in warnings[0].getMessage()
+    assert sum(r.levelno == logging.DEBUG for r in caplog.records) == 3      # the per-case line every time
+    with caplog.at_level(logging.WARNING, logger="tapwatch"):
+        for i in range(40):                                                  # bounded: new names stop warning
+            hc.is_this_pc(PC, T0, f"guest-{i}")
+    assert len(hc._rejected) == 16 and sum(r.levelno == logging.WARNING for r in caplog.records) == 16
+
+
 def test_half_written_and_rotated_logs(tmp_path):
     log = tmp_path / "osqueryd.results.log"
     log.write_text(addr_snap(T0, NEW_IP) + addr_snap(T0 + 300, NEW_IP)[:20])
