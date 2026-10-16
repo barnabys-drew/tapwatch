@@ -19,18 +19,18 @@ flowchart LR
 ## Where we are
 
 **v0.1.1** is the current release; tapwatch has been running on a real home network since v0.1.0 shipped. It watches a mirror
-port with Zeek, runs 21 case types from 19 plain-code detectors, and asks a small AI model (Jev) for
+port with Zeek, runs 26 case types from 24 plain-code detectors, and asks a small AI model (Jev) for
 triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
 the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Area | State |
 |---|---|
-| Network detection | **Solid.** 21 case types, baselines that survive restarts. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
+| Network detection | **Solid.** 21 network case types (plus 5 host ones), baselines that survive restarts. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
 | Linux install | **Solid.** `docker compose up`, verified end to end on a live interface |
 | Windows install | **Works on one PC.** WSL + Npcap services; a clean-machine test is still to do |
 | Host context (who on the PC made this traffic) | **Experimental, under test.** osquery on Linux/WSL and Windows, plus agent-session awareness. Measuring it over days of real traffic before trusting it to lower alerts |
-| Router syslog | **Partial.** IPS verdicts work; admin-login mapping still needs real samples |
+| Router syslog | **Verified on a live gateway** (2026-10-16). CEF events and firewall lines parsed as sent; admin logins checked against a real line. IPS verdicts still await a real detection |
 | macOS | **Later.** Waiting on a tester with a Mac; it won't ship untested |
 
 ### v0.1.1 (2026-10-14): host context grows up
@@ -68,8 +68,8 @@ the Windows path installs on a clean machine from the docs alone, and the README
 | [#15](https://github.com/barnabys-drew/tapwatch/issues/15) | Windows endpoints: command lines, connections and DNS lookups from Sysmon | **next** |
 | [#4](https://github.com/barnabys-drew/tapwatch/issues/4) | Long-running test of host context on an installed osquery agent | **in progress**, started 2026-10-13 |
 | [#6](https://github.com/barnabys-drew/tapwatch/issues/6) | Clean-machine test of the Windows (WSL + Npcap) path | planned |
-| [#7](https://github.com/barnabys-drew/tapwatch/issues/7) | Check the UniFi admin-login mapping against real events | planned |
-| [#8](https://github.com/barnabys-drew/tapwatch/issues/8) | Router port-forward and UPnP events enrich internet-exposure cases | planned |
+| [#7](https://github.com/barnabys-drew/tapwatch/issues/7) | Check the UniFi admin-login mapping against real events | **built** 2026-10-16 ([#88](https://github.com/barnabys-drew/tapwatch/pull/88)): verified against a real admin-access line |
+| [#8](https://github.com/barnabys-drew/tapwatch/issues/8) | Router port-forward and UPnP events enrich internet-exposure cases | **partial** 2026-10-16 ([#88](https://github.com/barnabys-drew/tapwatch/pull/88)): the feed now parses the gateway's real firewall lines; port-forward and UPnP change events still need samples |
 | [#10](https://github.com/barnabys-drew/tapwatch/issues/10) | Measure Jev with `audience: home` wording vs `office` | **done** |
 | [#12](https://github.com/barnabys-drew/tapwatch/issues/12) | Apply `tapwatch explain` suggestions from the case desk | planned |
 | [#9](https://github.com/barnabys-drew/tapwatch/issues/9) | Screenshots of the case desk on synthetic data | **done** |
@@ -93,8 +93,8 @@ agent's log locked down.
 
 | Issue | What | Status |
 |---|---|---|
-| [#26](https://github.com/barnabys-drew/tapwatch/issues/26) | Framework: osquery process events, host detectors, network correlation | planned |
-| [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | planned |
+| [#26](https://github.com/barnabys-drew/tapwatch/issues/26) | Framework: osquery process events, host detectors, network correlation | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): the agent's osquery logs are a log source and `hostrules.py` raises host cases; correlation still to do |
+| [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): R17–R21, 0 cases on 34.5 h of the main PC's agent log |
 | [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | planned |
 | [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools, drivers) | planned |
 

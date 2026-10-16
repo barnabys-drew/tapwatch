@@ -521,19 +521,22 @@ def _suppress_form(r, facts: dict, indicators: list, csrf: str) -> str:
         return ('<div class="card"><h2>Suppress similar</h2><p class="muted">Always-alert cases (threat-list hits, '
                 'IDS severity 1) can never be suppressed.</p></div>')
     from .detectors import base_domain
-    from .models import main_indicator
+    from .models import device_id, main_indicator
 
     ind = main_indicator(indicators, facts)
     port = facts.get("port")
     dom = base_domain(ind) if ind and "." in ind else ""
+    # The rule is keyed on the device identity (name:<DHCP hostname>, mac:<address> or the IP), so say
+    # which one it will follow when that isn't the address.
+    dev = device_id(r["host"], facts)
+    this = f"this device ({dev}, {r['host']})" if dev != r["host"] else f"this device ({r['host']})"
     choices = []
     if facts.get("host_program_path"):  # host context tied every connection to one program
-        label = f"{r['detector']} + this device ({r['host']}) + program {facts['host_program_path']}"
-        choices.append(("device_program", label))
+        choices.append(("device_program", f"{r['detector']} + {this} + program {facts['host_program_path']}"))
     if ind:
-        choices.append(("device_indicator", f"{r['detector']} + this device ({r['host']}) + {ind}"))
+        choices.append(("device_indicator", f"{r['detector']} + {this} + {ind}"))
         if dom and dom != ind:  # a named host: offer its whole domain too (zone-02 after zone-01)
-            choices.append(("device_domain", f"{r['detector']} + this device ({r['host']}) + any host under {dom}"))
+            choices.append(("device_domain", f"{r['detector']} + {this} + any host under {dom}"))
         choices.append(("indicator", f"{r['detector']} + {ind}, any device"))
         if dom and dom != ind:
             choices.append(("domain", f"{r['detector']} + any host under {dom}, any device"))

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Checks that the whole-house capture and the live alerter are both working, and
-# emails (via `tapwatch notify`) when that changes: once on failure, once on recovery.
+# Checks that the whole-house capture and the live alerter are both working (and the router
+# syslog listener, when its systemd unit is installed), and emails (via `tapwatch notify`) when
+# that changes: once on failure, once on recovery.
 #
 # It can't report its own death, or the whole machine being off (a Windows Update restart, a
 # power cut). For that, set TAPWATCH_HEARTBEAT_URL in .env to a dead man's switch such as a
@@ -17,6 +18,11 @@ stale=600   # conn.log untouched this long = capture stalled (a busy house write
 # The heartbeat URL is a secret (anyone holding it can fake "healthy"), so it lives in .env, not config.
 hb=${TAPWATCH_HEARTBEAT_URL:-$(sed -n 's/^TAPWATCH_HEARTBEAT_URL=//p' .env 2>/dev/null | tr -d '"' | tail -1)}
 case "$hb" in ""|https://*) ;; *) echo "TAPWATCH_HEARTBEAT_URL must be https; heartbeat off" >&2; hb="" ;; esac
+# Watch the router syslog listener only where `service install --syslog` created its unit
+# (`is-active` alone says "inactive" for a unit that was never installed, which isn't a failure).
+# Probed once at startup: restart the watchdog after `service install --syslog`.
+syslog_unit=no
+systemctl --user list-unit-files tapwatch-syslog.service 2>/dev/null | grep -q '^tapwatch-syslog\.service' && syslog_unit=yes
 
 heartbeat() {  # heartbeat <problems>: empty = healthy
   [ -n "$hb" ] || return 0
@@ -39,11 +45,17 @@ check() {
   fi
   local pid; pid=$(cat tapwatch-run.pid 2>/dev/null)
   { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; } || problems+=("tapwatch run (alerter) is not running")
+  # The syslog listener is optional: only a unit that exists and isn't active is a problem.
+  if [ "$syslog_unit" = yes ]; then
+    systemctl --user is-active --quiet tapwatch-syslog 2>/dev/null \
+      || problems+=("router syslog listener (tapwatch-syslog) is not running")
+  fi
   printf '%s\n' "${problems[@]}"
 }
 
 if [ "$interval" = "--once" ]; then
-  out=$(check); [ -z "$out" ] && echo "OK: capture running, logs fresh, alerter running" || echo "$out"; exit 0
+  ok="OK: capture running, logs fresh, alerter running"; [ "$syslog_unit" = yes ] && ok="$ok, syslog listener running"
+  out=$(check); [ -z "$out" ] && echo "$ok" || echo "$out"; exit 0
 fi
 
 last=ok
@@ -52,7 +64,8 @@ while true; do
   if [ -n "$out" ] && [ "$last" = ok ]; then
     $tw -c config.yaml notify "tapwatch: monitoring is DOWN" "$out" && last=down
   elif [ -z "$out" ] && [ "$last" = down ]; then
-    $tw -c config.yaml notify "tapwatch: monitoring recovered" "capture and alerter are running again" && last=ok
+    back="capture and alerter are running again"; [ "$syslog_unit" = yes ] && back="capture, alerter and syslog listener are running again"
+    $tw -c config.yaml notify "tapwatch: monitoring recovered" "$back" && last=ok
   fi
   heartbeat "$out"
   echo "$(date '+%F %T') ${out:-ok}" | tr '\n' ' '; echo
