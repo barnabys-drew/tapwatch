@@ -1131,7 +1131,7 @@ def test_a_device_whose_every_connection_fails_is_offline_not_scanning():
     det = PortScan()
     run(det, [conn(T0 + i, dst="203.0.113.250", port=443) for i in range(5)])       # its own traffic works
     scanning = run(det, [conn(T0 + 10 + i * 0.5, dst=f"192.168.50.{i + 2}", port=22, state="REJ") for i in range(60)])
-    assert scanning[0].facts["all_failed"] and scanning[0].facts["max_route"] == "digest"   # nothing since the run began
+    assert not scanning[0].facts["all_failed"] and "max_route" not in scanning[0].facts   # refused = answered: online
     det = PortScan()
     recs = [conn(T0 + i * 0.5, dst=f"192.168.50.{i + 2}", port=22, state="REJ") for i in range(60)]
     recs.insert(30, conn(T0 + 15.2, dst="203.0.113.250", port=443))                # an answered one mid-run
@@ -1139,7 +1139,7 @@ def test_a_device_whose_every_connection_fails_is_offline_not_scanning():
     assert not live[0].facts["all_failed"] and "max_route" not in live[0].facts
     # a reset after the handshake (tarpits, banner-grab refusals) is still a failed probe, not an answer
     rst = run(PortScan(), [conn(T0 + i * 0.5, dst=f"192.168.50.{i + 2}", port=443, state="RSTR") for i in range(60)])
-    assert len(rst) == 1 and rst[0].facts["all_failed"]
+    assert len(rst) == 1 and not rst[0].facts["all_failed"] and "max_route" not in rst[0].facts
 
 
 def test_cleartext_to_a_rotating_cloud_broker_keeps_one_suppressable_key():
