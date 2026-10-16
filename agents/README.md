@@ -75,7 +75,12 @@ one-second `curl` from a Claude Code shell has exited by then, and so has the sh
 `bpf_connections` row arrives with no markers and no parent name (measured 2026-10-15). `bpf_process_events`
 therefore logs every program start as it happens (pid, parent pid, program; **no command lines and no
 working directory**, both can name private things), and tapwatch walks that parent chain from the gone process up to the long-lived `claude` process
-whose own rows still carry the markers, and credits the connection to that session.
+whose own rows still carry the markers, and credits the connection to that session. Measured 2026-10-16: the eBPF rows
+carry *thread* ids, the shell under `claude` is spawned by one of its threads, and `process_envs` has no row for a
+thread, so the agent's own rows can arrive with empty markers too (the agent's environment never holds
+`CLAUDE_CODE_SESSION_ID` in any case: only its child shells do). The chain ending at the `claude` binary still counts
+as the agent; the session is then taken from the transcript that named the destination, and the case stays
+uncorroborated (the router does not lower it on that alone).
 
 On Windows, command lines can hold passwords or tokens, and osquery's results log is readable by every local
 account (osquery sets the file's permissions itself, and tapwatch has to read it without admin rights). So

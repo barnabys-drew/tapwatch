@@ -320,13 +320,16 @@ def _on_the_pc(f: dict) -> str:
     what = "holding the connection" if f.get("host_matched") else "that made the DNS lookups"
     parts = [f"On the PC itself (checked locally): the program {what} was {progs}."]
     if f.get("host_agent_session"):
-        who = "a person was attending" if f.get("host_attended") else "nobody was attending"
+        if f.get("host_attended_known", True):  # older cases carry no flag: their markers were read
+            who = "that a person was attending" if f.get("host_attended") else "that nobody was attending"
+        else:
+            who = "whose attendance could not be read (the agent was found by its program, not its session markers)"
         where = []
         if f.get("host_in_terminal"):
             where.append("inside the owner's terminal workspace")
         if f.get("host_via_ssh"):
             where.append("from a remote SSH login")
-        parts.append(f"It was started by a coding-agent session that {who}" + (", " + " and ".join(where) if where else "") + ".")
+        parts.append(f"It was started by a coding-agent session {who}" + (", " + " and ".join(where) if where else "") + ".")
         if f.get("host_transcript"):
             if f.get("host_agent_named_dest"):
                 mins = f.get("host_minutes_since_prompt")
@@ -334,6 +337,8 @@ def _on_the_pc(f: dict) -> str:
                              + (f" {mins} minutes after the owner's last message." if mins is not None else "."))
             else:
                 parts.append("The agent's log shows no command naming this destination.")
+            if f.get("host_session_guessed"):
+                parts.append("Which session that was is a best guess from the recent logs, not a process marker.")
             if "host_owner_named_dest" in f:
                 parts.append("The owner's message named this destination." if f["host_owner_named_dest"]
                              else "The owner's message did not name this destination.")

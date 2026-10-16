@@ -11,6 +11,12 @@ tapwatch, osquery can. For a case on that PC, this module answers in code:
     terminal, or from an SSH login? A process that exited before osquery could read its
     environment (a one-second `curl`; measured 2026-10-15, case #259) is credited to the
     nearest ancestor that still carries markers, through the eBPF exec events' parent chain.
+    When the chain ends at the agent's binary with no markers at all (measured 2026-10-16,
+    case #376: osquery's eBPF rows carry thread ids, a thread has no process_envs row, and
+    the agent's own environment never holds CLAUDE_CODE_SESSION_ID, only its child shells'
+    do), the connection still counts as the agent's; the transcript then names the session.
+    The agent binary's own connections (its API traffic) are judged by program name like any
+    other program's; the chain rule is about what the agent ran.
   * from that session's transcript (~/.claude/projects/*/<session>.jsonl): did the agent
     run a command naming this destination, did the owner's prompt name it, and did
     the agent read outside web content between the prompt and the command (the
@@ -69,6 +75,8 @@ PROCS = "bpf_process_events"  # Linux/WSL: every exec, with its parent pid, so a
 # Parent-chain walk for a connection whose process left no markers (it had exited before osquery read
 # /proc/<pid>/environ). A Claude Code shell runs commands as bash -> (tool) a few levels deep; 12 is plenty.
 CHAIN_MAX = 12
+AGENT_BINARIES = frozenset({"claude"})  # program names (after _name) that are the owner's coding agent
+AGENTS_KEEP = 10_000          # agent rows kept per index; one process's threads share a few hundred pids at most
 EXEC_KEEP = 50_000            # exec rows kept per index: ~an hour of a busy dev box, well under the 50 MB log tail
 SYSMON = "sysmon_events"   # Windows: Sysmon process starts (1), connections (3) and DNS lookups (22), as they happen
 # Command-line signals the sysmon_events query computes (agents/config/osquery.conf), so benign command lines never
@@ -114,6 +122,7 @@ class Owner:
     pid: int = 0             # Linux rows: the process, and its parent, for the exec-chain walk (0 = unknown)
     ppid: int = 0
     inherited: bool = False  # markers came from an ancestor (the process itself was gone before osquery looked)
+    agent: str = ""          # the agent binary found in the exec chain when no ancestor carried markers
 
 
 VERSION_NAME = re.compile(r"^\d+(\.\d+)+$")
@@ -290,6 +299,7 @@ class OwnerIndex:
     by_ip: dict | None = None                     # remote address -> owners, built on first who_ip
     execs: dict = field(default_factory=dict)     # eBPF exec: pid -> (parent pid, path, time), the latest per pid
     markers: dict = field(default_factory=dict)   # pid -> an Owner seen with Claude markers (the long-lived agent)
+    agents: dict = field(default_factory=dict)    # pid -> an Owner whose program is the agent itself, markers or not
 
     def who_dns(self, query: str, ts: float, answers=()) -> tuple[list[Owner], bool]:
         """Programs that looked up `query` around `ts`, and whether that's inferred. Sysmon event 22 names the
@@ -364,10 +374,11 @@ class OwnerIndex:
         seen: set[int] = set()
         while cur and cur not in seen and len(seen) < CHAIN_MAX:
             seen.add(cur)
-            anc = self._markers_of(cur, o.start)
+            anc = self._markers_of(cur, o.start) or self._agent_of(cur, o.start)
             if anc is not None:
                 o.session, o.attended, o.entrypoint = anc.session, anc.attended, anc.entrypoint
                 o.in_herdr, o.via_ssh, o.inherited = anc.in_herdr, anc.via_ssh, True
+                o.agent = anc.name if anc.name in AGENT_BINARIES else ""
                 return
             cur = self._parent_of(cur, o.start)
 
@@ -386,7 +397,17 @@ class OwnerIndex:
         logged for the pid, the markers must have been read after it (a live row is "now", so always after) and
         the exec must precede the connection; otherwise a pid reused after an agent exited would borrow the
         dead agent's session."""
-        anc = self.markers.get(pid)
+        return self._held_by(self.markers.get(pid), pid, before)
+
+    def _agent_of(self, pid: int, before: float) -> Owner | None:
+        """`pid`'s row as the agent binary itself, markers or not, under the same reuse rule. Measured
+        2026-10-16 (#376): the shell under a `claude` process is spawned by one of its threads, osquery's eBPF
+        rows carry that thread id as `pid`/`parent`, and process_envs has no row for a thread, so the agent's
+        484 connection rows that day all had empty markers. The binary's name is proof enough that an agent
+        ran the chain; which session is left to the transcript."""
+        return self._held_by(self.agents.get(pid), pid, before)
+
+    def _held_by(self, anc: Owner | None, pid: int, before: float) -> Owner | None:
         if anc is None:
             return None
         row = self.execs.get(pid)
@@ -405,6 +426,11 @@ class OwnerIndex:
         self.by_ip = None
         if owner.pid and owner.session and not owner.inherited:
             self.markers[owner.pid] = owner
+        if owner.pid and owner.name in AGENT_BINARIES and not owner.inherited:
+            if len(self.agents) > AGENTS_KEEP:
+                for old in list(self.agents)[: AGENTS_KEEP // 10]:
+                    del self.agents[old]
+            self.agents[owner.pid] = owner  # the latest row, as for markers: a reused pid belongs to the new process
         try:
             self.by_remote.setdefault((remote, int(port)), []).append(owner)
         except (TypeError, ValueError):
@@ -552,16 +578,18 @@ def transcript_facts(path: Path, needles: set[str], ts: float) -> dict:
     return facts
 
 
-def verdict(owners: list[Owner], tf: dict) -> tuple[str, bool]:
-    """Code's own answer: (who, corroborated). corroborated = safe for the router to lower the case."""
+def verdict(owners: list[Owner], tf: dict, session_guessed: bool = False) -> tuple[str, bool]:
+    """Code's own answer: (who, corroborated). corroborated = safe for the router to lower the case.
+    `session_guessed`: the transcript came from a search, not a marker, so its web-content reading is not
+    proof that *this* agent read outside content before acting."""
     if not owners:
         return "unknown", False
-    agent = [o for o in owners if o.session]
+    agent = [o for o in owners if o.session or o.agent]
     if not agent:
         return "other_program", False
     if any(o.via_ssh or o.attended == "0" for o in agent):
         return "agent_misused", False  # an SSH login or an unattended session drove the agent
-    if tf.get("outside_content") and not tf.get("owner_named_dest"):
+    if tf.get("outside_content") and not tf.get("owner_named_dest") and not session_guessed:
         return "agent_misused", False  # read web content, then acted on something the owner never named
     attended = all(o.attended == "1" and o.entrypoint == "cli" for o in agent)
     # Proof needs the owner to have named the destination. "The agent did it soon after a prompt" is not
@@ -569,6 +597,10 @@ def verdict(owners: list[Owner], tf: dict) -> tuple[str, bool]:
     # as outside content. Measured 2026-10-13: a mid-task command 9 minutes after an unrelated prompt.
     if attended and tf.get("owner_named_dest"):
         return "owner_using_agent", True
+    if tf.get("owner_named_dest") and all(o.agent and not o.session for o in agent):
+        # The agent's binary ran the chain and the owner named the destination, but the session's attendance
+        # is unknown (no markers reached): the owner's answer, without the router's permission to lower the case.
+        return "owner_using_agent", False
     return "agent_unconfirmed", False
 
 
@@ -733,15 +765,19 @@ class HostContext:
                 if tf.get("agent_named_dest"):
                     break
         transcript_only = False
-        if not sessions:  # no process proof (osquery missing, or too short to see): look at recent sessions
-            recent = [p for p in glob.glob(str(self.transcripts / "*" / "*.jsonl"))
-                      if Path(p).stat().st_mtime >= case.ts - BEFORE][:20]
+        session_guessed = False
+        agent_proof = any(o.agent for o in owners)  # the chain reached the agent binary, but no session marker
+        if not sessions:  # no session id from a process: look at recent sessions, newest first
+            stamped = [(Path(p).stat().st_mtime, p) for p in glob.glob(str(self.transcripts / "*" / "*.jsonl"))]
+            recent = [p for m, p in sorted(stamped, reverse=True) if m >= case.ts - BEFORE][:20]
             for path in recent:
                 found = transcript_facts(Path(path), needles, case.ts)
                 if found.get("agent_named_dest"):
-                    tf, transcript_only = found, True
+                    tf, transcript_only = found, not agent_proof
+                    if agent_proof:  # process proof says an agent; the transcript that named it is the best guess
+                        sessions, session_guessed = [Path(path).stem], True
                     break
-        who, corroborated = verdict(owners, {} if transcript_only else tf)
+        who, corroborated = verdict(owners, {} if transcript_only else tf, session_guessed)
         named = [o for o in owners if o.name.lower() not in WIN_PSEUDO]  # [System Process] etc. aren't programs
         programs = sorted({o.name for o in named}, key=lambda n: -sum(o.name == n for o in named))
         facts = {"host_who": who, "host_corroborated": corroborated, "host_conns": len(outbound),
@@ -750,6 +786,8 @@ class HostContext:
                  "host_programs": programs[:3],
                  "host_agent_session": bool(sessions), "host_session": sessions[0] if sessions else "",
                  "host_attended": any(o.attended == "1" for o in owners if o.session),
+                 "host_attended_known": any(o.attended in ("0", "1") for o in owners if o.session or o.agent),
+                 "host_session_guessed": session_guessed,  # the id came from a transcript search, not a marker
                  "host_inherited": any(o.inherited for o in owners),  # credited through the exec parent chain
                  "host_via_ssh": any(o.via_ssh for o in owners), "host_in_terminal": any(o.in_herdr for o in owners),
                  "host_transcript_only": transcript_only}
