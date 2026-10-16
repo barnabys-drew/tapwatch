@@ -642,14 +642,18 @@ class PortScan(Detector):
     The 50 is a judgement, not a measurement; a busy workstation that also probes 50 hosts can
     stay under it, which is the trade-off against the day's phone cases.
 
-    The router reports its Wi-Fi clients roaming between access points, disconnecting and
-    connecting (udm.log, the syslog feed). A failure burst from a client the router moved or
-    dropped within `WIFI_WINDOW` seconds of the trigger is that move, not a scan: measured
-    2026-10-16, a phone's "scan" (#321) came 3 seconds after its roam between two access points.
-    The case keeps the `wifi_event` (roamed / disconnected / connected) and how many seconds
-    before the trigger it was, and is capped at digest. Only events the router has already
-    reported by the time the case is raised can match; the same phone's disconnect, logged 215 s
-    later, is not seen, and a device the router never mentions is judged on the other facts.
+    The router reports its Wi-Fi clients roaming between access points and disconnecting
+    (udm.log, the syslog feed with the Clients content ticked, docs/setup/router-syslog.md). A
+    failure burst from a client the router moved or dropped within `WIFI_WINDOW` seconds of the
+    trigger is that move, not a scan: measured 2026-10-16, a phone's "scan" (#321) came 3 seconds
+    after its roam between two access points. The case keeps the `wifi_event` (roamed /
+    disconnected) and how many seconds before the trigger it was, and is capped at digest. A
+    join ("WiFi Client Connected") explains nothing: a device that joins and sweeps the LAN is
+    the strongest scan shape, so it does not count. Only events the router has already reported
+    by the time the case is raised can match (each poll is sorted by ts, and Zeek writes an
+    unanswered attempt 5 s or more after its ts, so an event a moment after the trigger is
+    usually in); the same phone's disconnect, logged 215 s later, is not seen, and a device the
+    router never mentions is judged on the other facts.
     """
 
     name = "scan"
@@ -661,10 +665,9 @@ class PortScan(Detector):
     # DNS, DHCP, NTP, NetBIOS, SSDP, WS-Discovery, mDNS, LLMNR, UniFi discovery
     DISCOVERY_UDP: ClassVar[set[int]] = {53, 67, 68, 123, 137, 138, 1900, 3702, 5353, 5355, 10001}
     # The router's CEF event names for a Wi-Fi client changing state (syslogin.py keeps `name` as sent).
-    WIFI_EVENTS: ClassVar[dict[str, str]] = {"WiFi Client Roamed": "roamed", "WiFi Client Disconnected": "disconnected",
-                                             "WiFi Client Connected": "connected"}
+    WIFI_EVENTS: ClassVar[dict[str, str]] = {"WiFi Client Roamed": "roamed", "WiFi Client Disconnected": "disconnected"}
     WIFI_WINDOW: ClassVar[float] = 180     # s: the failure window plus two minutes either side of the trigger
-    WIFI_KEEP: ClassVar[int] = 200         # events remembered; a home router sends a few per hour
+    WIFI_KEEP: ClassVar[int] = 200         # events remembered: a few a minute in a busy house (measured 2026-10-16)
 
     def __init__(self, window: float = 60, threshold: int = 50):
         self.window, self.threshold = window, threshold
@@ -718,7 +721,8 @@ class PortScan(Detector):
                  "failed_pct": failed_pct, "internal_targets": internal == len(hosts), "window_s": round(self.window)}
         if all_failed or failed_pct < 50:
             facts["max_route"] = "digest"
-        if wifi := self._wifi_near(src, (rec.get("orig_l2_addr") or "").lower(), ts):
+        mac = (rec.get("orig_l2_addr") or "").lower()
+        if wifi := self._wifi_near(src, mac if mac_ok(mac) else "", ts):
             facts["wifi_event"], facts["wifi_event_age_s"] = wifi
             facts["max_route"] = "digest"
         return [Case(self.name, src, ts, "Possible port or host scan", facts, base_severity=3)]
