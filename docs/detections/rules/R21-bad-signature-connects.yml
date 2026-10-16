@@ -1,0 +1,35 @@
+title: Program with an invalid or untrusted code signature holds an internet connection
+id: 2e9c6b4d-8f1a-4d73-b6e5-0a7c3d9e1f42
+status: experimental
+description: |
+  R21. A tampered or self-signed binary talking out: a patched updater, a repacked installer, a trusted
+  program whose file no longer matches its signature. Source: the Windows endpoint agent's
+  `outbound_connections` query (osquery, every minute), which joins process_open_sockets to the authenticode
+  table (agents/config/osquery.conf). Not a Sysmon event, so the log source below is osquery's own.
+  Measured 2026-10-14/15 on a dev PC (34.5 h): 0 invalid or untrusted signatures. 7 distinct programs had a
+  missing or unreadable signature, and all were installed apps (Program Files, AppData\Local\Programs): osquery
+  can't read some valid signatures, so `missing` is deliberately not a match.
+  tapwatch (hostrules.BadSignatureConnects): invalid or distrusted -> severity 4 (ALERT); untrusted or
+  expired -> 3 (digest, once per program per 7 days). Code-only. Jev: none; the signer name is quoted as
+  untrusted data.
+references:
+  - docs/detections/DESIGN.md
+  - https://attack.mitre.org/techniques/T1036/001/
+  - https://osquery.io/schema/current/#authenticode
+logsource:
+  product: osquery
+  service: outbound_connections
+detection:
+  bad:
+    signature: ['invalid', 'distrusted', 'untrusted', 'expired']
+  internal:
+    remote_address|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', 'fc00::/7', 'fe80::/10', '::1/128']
+  dns:
+    remote_port: 53
+  condition: bad and not internal and not dns
+fields: [name, path, parent_name, signature, signer, remote_address, remote_port]
+falsepositives:
+  - Self-built tools and dev builds (untrusted: a digest item; suppress per program)
+  - Old but legitimate software with an expired certificate (digest)
+level: medium
+tags: [attack.defense_evasion, attack.t1036.001, attack.t1553.002]

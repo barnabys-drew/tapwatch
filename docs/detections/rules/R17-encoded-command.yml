@@ -1,0 +1,58 @@
+title: Encoded, base64-decoding, download-and-run or Invoke-Expression command on a shell or script host
+id: 6f0b1c2d-7a3e-4d89-9b1f-2c4e5a6d7f81
+status: experimental
+description: |
+  R17. The first stage of commodity malware and of macro or attachment payloads hides what it runs:
+  -EncodedCommand, FromBase64String, DownloadString / Start-BitsTransfer / certutil -urlcache, IEX, usually
+  with -w hidden -ep bypass. Scoped to shells and script hosts: measured 2026-10-14/15 on a dev PC (34.5 h,
+  9,709 process starts), the only encoded-payload match was msiexec passing a long base64-looking argument
+  to itself. On shells every signal fired 0 times.
+  tapwatch (hostrules.EncodedCommand) reads osquery's reduced rows, where these regexes are already yes/no
+  signals (agents/config/osquery.conf) and the command line itself never leaves the PC. Severity 5 and
+  must_alert for two suspicious signals, one plus hidden/bypass, or a document or mail app as the parent;
+  4 for an encoded payload or download-and-run alone, or any signal with a browser parent; base64 or IEX
+  alone from another parent raises nothing (dev tooling installs itself with `iex (irm ...)`).
+  Route: ALERT, code-only. Jev: none.
+references:
+  - docs/detections/DESIGN.md
+  - https://attack.mitre.org/techniques/T1059/001/
+  - https://attack.mitre.org/techniques/T1027/
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  shell:
+    Image|endswith: ['\powershell.exe', '\pwsh.exe', '\cmd.exe', '\wscript.exe', '\cscript.exe', '\mshta.exe',
+                     '\rundll32.exe', '\regsvr32.exe', '\bitsadmin.exe', '\certutil.exe']
+  enc:
+    CommandLine|re: '(?i)\s-e[a-z]*\s+[a-z0-9+/=]{20,}'
+  b64:
+    CommandLine|contains: 'FromBase64String'
+  dl:
+    CommandLine|re: '(?i)downloadstring|downloadfile|start-bitstransfer|bitsadmin[^|]*/transfer|certutil[^|]*urlcache'
+  iex:
+    CommandLine|re: '(?i)(^|[^a-z])iex([^a-z]|$)|invoke-expression'
+  hidden:
+    CommandLine|re: '(?i)\s-w[a-z]*\s+h[a-z]*'
+  bypass:
+    CommandLine|re: '(?i)\s-(ep|ex[a-z]*)\s+bypass'
+  doc_parent:
+    ParentImage|endswith: ['\WINWORD.EXE', '\EXCEL.EXE', '\POWERPNT.EXE', '\OUTLOOK.EXE', '\ONENOTE.EXE',
+                           '\MSACCESS.EXE', '\MSPUB.EXE', '\AcroRd32.exe', '\Acrobat.exe', '\FoxitPDFReader.exe',
+                           '\HxOutlook.exe', '\olk.exe']
+  browser_parent:
+    ParentImage|endswith: ['\chrome.exe', '\msedge.exe', '\firefox.exe', '\brave.exe', '\opera.exe',
+                           '\vivaldi.exe', '\arc.exe', '\iexplore.exe', '\chromium.exe']
+  condition: >
+    shell and (
+      (2 of (enc, b64, dl, iex)) or
+      (1 of (enc, b64, dl, iex) and (hidden or bypass or doc_parent or browser_parent)) or
+      enc or dl
+    )
+fields: [Image, ParentImage, User]
+falsepositives:
+  - Installers run with -ExecutionPolicy Bypass -w hidden (hidden and bypass alone are not a match)
+  - Dev tooling one-liners such as `iex (irm https://...)` (IEX alone is not a match; with a download-and-run it is)
+  - A browser extension's helper that decodes base64 (suppress per program)
+level: high
+tags: [attack.execution, attack.t1059.001, attack.defense_evasion, attack.t1027, attack.command_and_control, attack.t1105]

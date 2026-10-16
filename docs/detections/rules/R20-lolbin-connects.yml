@@ -1,0 +1,38 @@
+title: Built-in Windows tool (LOLBin) connects to the internet
+id: 7d5a3c9e-1b8f-4e62-93a4-c6e0d2b7f518
+status: experimental
+description: |
+  R20. Built-in tools that fetch or proxy-execute code: certutil -urlcache -f, bitsadmin /transfer,
+  mshta https://..., regsvr32 /i:http... scrobj.dll (Squiblydoo), rundll32 javascript:, msbuild inline tasks,
+  wmic /format:https. Measured 2026-10-14/15 on a dev PC: 0 of 108,423 connections (rundll32 started 19
+  times, by svchost and msiexec, and never connected).
+  tapwatch (hostrules.LolbinConnects): certutil, bitsadmin, mshta and regsvr32 exist to fetch or run remote
+  content and have no home use on the internet -> severity 5, must_alert. The rest -> 4, suppressible per
+  program. Code-only. Jev: none.
+references:
+  - docs/detections/DESIGN.md
+  - https://lolbas-project.github.io/
+  - https://attack.mitre.org/techniques/T1218/
+logsource:
+  product: windows
+  category: network_connection
+detection:
+  downloader:
+    Image|endswith: ['\certutil.exe', '\bitsadmin.exe', '\mshta.exe', '\regsvr32.exe']
+  lolbin:
+    Image|endswith: ['\rundll32.exe', '\msbuild.exe', '\installutil.exe', '\cmstp.exe', '\wmic.exe', '\regasm.exe',
+                     '\regsvcs.exe', '\cscript.exe', '\wscript.exe', '\odbcconf.exe', '\msxsl.exe', '\ieexec.exe',
+                     '\presentationhost.exe', '\forfiles.exe']
+  outgoing:
+    Initiated: 'true'
+  internal:
+    DestinationIp|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', 'fc00::/7', 'fe80::/10', '::1/128']
+  dns:
+    DestinationPort: 53
+  condition: (downloader or lolbin) and outgoing and not internal and not dns
+fields: [Image, DestinationIp, DestinationPort, ProcessGuid]
+falsepositives:
+  - rundll32 hosting a vendor DLL that phones home (some driver installers): one alert, then a program-scoped suppression
+  - wmic in administration scripts (rare on a home PC)
+level: critical
+tags: [attack.defense_evasion, attack.t1218, attack.command_and_control, attack.t1105, attack.t1197]

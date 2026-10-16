@@ -169,9 +169,11 @@ flowchart TD
   after repeated failures (`udm_admin`), and router IPS matches rated high or critical that
   weren't blocked.
 - **Code-only (`router.CODE_ONLY`)**: `new_domain`, `mgmt_access`, `cleartext_auth`, `takeover`,
-  `dns_bypass`, `upload_stopped`, `udm_admin`, `tls_odd`. These are rules where the fact *is* the
-  verdict, or where the question would be "is this destination normal?", which is Jev's measured
-  weak spot. The comments in `router.py` record the measurement behind each one.
+  `dns_bypass`, `upload_stopped`, `udm_admin`, `tls_odd`, and the endpoint rules R17–R21
+  (`hostrules.py`: `host_encoded_cmd`, `host_app_shell`, `host_temp_exec`, `host_lolbin`, `host_bad_sig`).
+  These are rules where the fact *is* the verdict, or where the question would be "is this destination
+  (or program) normal?", which is Jev's measured weak spot. The comments in `router.py` record the
+  measurement behind each one.
 - **Everything else** is AI-assisted when a key is configured. Without one, everything is
   routed by code.
 
@@ -443,5 +445,7 @@ caveats and the tuning history: from 26 items and 4 false alerts down to 8 items
 **Other seams:**
 
 - **A notifier**: a `post_*` function and an entry in `Notifier.send`.
-- **A log source**: a file name in `zeek.LOG_TYPES`. `syslogin.py` is the worked example.
+- **A log source**: a file name in `zeek.LOG_TYPES`. `syslogin.py` is the worked example; the endpoint
+  agent's osquery logs are read the same way (`_type: osquery`), and `hostrules.py` is the detector
+  base for rules over them.
 - **An AI provider**: anything that speaks the System One API shape. `triage.JevClient` takes a `url`.
