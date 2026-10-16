@@ -123,7 +123,7 @@ treat it as a sanity check, not a benchmark.
 | `iot_drift` | a camera, TV, hub or other fixed-function device talks to new networks, countries or ports |
 | `odd_port` | outbound on a port no device in the house uses, or an unusually long connection |
 | `dns_bypass` | a device starts resolving names outside your resolver (plain, DoT, DoQ, DoH) |
-| `upload_spike` | an hour of uploads far above that device's normal for that hour |
+| `upload_spike` | an hour of uploads far above that device's normal for that hour; capped at the digest when assets.yaml marks it employer-managed |
 | `upload_stopped` | a steady uploader (a camera) goes quiet for hours |
 | `off_hours` | a device busy at an hour it's normally idle |
 | `tls_odd` | encrypted sessions stacking weak oddities (no name, unexplained IP, odd port, bad cert) |

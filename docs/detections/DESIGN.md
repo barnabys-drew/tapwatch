@@ -374,6 +374,12 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Dedupe:** `upload|host|hour`.
 - **Category:** `top_category`, the main destination's kind from the offline UT1 list (media, file
   hosting, ...); a fact for the summary, not routing.
+- **Managed devices:** a device whose assets.yaml role says employer-managed or security agent / EDR
+  (`MANAGED_ROLE_WORDS`) is capped at digest whatever the destination, the role in `managed_device`.
+  Measured: the work laptop's EDR agent sends ~1 GB to plain AWS most mornings (#139, #325, EDR
+  telemetry) and 1.5 GB to a Meet address on 2026-10-16 (#371); no destination cap fit, and Jev
+  scored them exfiltration. Digest, not log: the employer's tooling watches that device, the digest
+  keeps it visible.
 - **FPs:** phone photo backup, PC cloud sync and game uploads. Code tags the destination as "known
   sync service" from a curated map. That's a lookup, not Jev's guess.
   When no name was visible (Apple relays, ECH), the destination's network owner from the offline ASN
