@@ -131,6 +131,9 @@ def _observed(c: Case, words: dict) -> str:
         if f.get("symmetric"):
             text += (f" It also downloaded about {f.get('down_mb', 0)} MB in the same hour, the shape of a video "
                      "call rather than an upload.")
+        if f.get("managed_device"):
+            text += (f" The device is labelled \"{f['managed_device']}\" in assets.yaml, so its employer's "
+                     "tooling watches it.")
         return text
     if c.detector == "upload_stopped":
         return (f"It normally uploads about {f['normal_mb']} MB every hour, but sent almost nothing for "

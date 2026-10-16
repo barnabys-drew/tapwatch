@@ -825,6 +825,16 @@ class HourlyProfile(Detector):
         `stop_hours` hours in a row (camera offline, unplugged or jammed). Once a day per device.
       * off_hours: an hour of the day when the device is normally near-idle (median < 5
         connections over 7+ days) with >= `busy_min` connections and >= 20x that median.
+
+    Managed devices: a device whose assets.yaml role says it is employer-managed or carries a
+    security agent (MANAGED_ROLE_WORDS) has its upload_spike capped at digest whatever the
+    destination, with the role in `managed_device`. Measured at home: the work laptop (employer-
+    managed, runs an EDR agent) uploads ~1 GB to plain AWS addresses most mornings (#139, #325,
+    closed as the EDR agent's telemetry) and 1.5 GB to a Google Meet address on
+    2026-10-16 (#371, a video call). Neither destination is a sync service or a vendor domain,
+    so the destination caps never applied and Jev scored them as exfiltration. Digest, not log:
+    the device stays visible in the daily digest; its employer's tooling is what watches it, and a
+    home monitor should not page the owner for a managed laptop's telemetry.
     """
 
     name = "hourly"
@@ -842,8 +852,9 @@ class HourlyProfile(Detector):
 
     def __init__(self, multiple: float = 10, floor_bytes: int = 500_000_000, min_hours: int = 6,
                  steady_mb: float = 50, stop_hours: int = 2, busy_min: int = 200, timezone: str | None = None,
-                 asn: AsnTable | None = None):
+                 asn: AsnTable | None = None, managed: dict[str, str] | None = None):
         self.multiple, self.floor, self.min_hours, self.asn = multiple, floor_bytes, min_hours, asn
+        self.managed = managed or {}  # device key or address -> assets role (managed_hosts)
         self.tz = ZoneInfo(timezone) if timezone else None  # None = this machine's local time
         self.steady, self.stop_hours, self.busy_min = steady_mb * 1e6, stop_hours, busy_min
         self.current: dict[str, list] = {}                       # host -> [conns, upload bytes, download bytes] this hour
@@ -933,6 +944,13 @@ class HourlyProfile(Detector):
                      "top_category": category(top)}  # dests is keyed by name whenever one is known
             if (facts["to_sync_service"] or facts["to_security_vendor"] or sync_network or symmetric) and share >= 0.6:
                 facts["max_route"] = "digest"  # home eval: a 700 MB OneDrive hour was Jev's "exfiltration 1.00"
+            # host is the device key (name:/mac:/IP); the assets entry may be under it, the address, or
+            # the MAC when the device's key is its DHCP hostname
+            mac = self.ident.mac_for(ip) if self.ident else ""
+            role = self.managed.get(host) or self.managed.get(ip) or (mac and self.managed.get(f"mac:{mac.lower()}"))
+            if role:
+                facts["managed_device"] = role  # employer-managed / security agent: see the class docstring
+                facts["max_route"] = "digest"
             out.append(Case("upload_spike", ip, ts, "Unusually large upload", facts,
                             [top] if top else [], base_severity=3))
         day = datetime.fromtimestamp(ts, self.tz).date().isoformat()
@@ -1678,6 +1696,26 @@ def fixed_function_hosts(assets_table: dict | None) -> dict[str, str]:
     return out
 
 
+# Roles whose device an employer's tooling already watches: an EDR/security agent uploads telemetry
+# (the work laptop's ~1 GB a morning to plain AWS, #139/#325) that a home monitor should not page
+# the owner for. HourlyProfile caps that device's upload_spike at digest whatever the destination.
+# Not the bare word "managed": it would match a "managed switch" or a "self-managed NAS".
+MANAGED_ROLE_WORDS = ("employer-managed", "security agent", "edr", "work laptop", "corporate")
+
+
+def managed_hosts(assets_table: dict | None) -> dict[str, str]:
+    """Device key or IP -> role for devices whose assets.yaml role marks them employer-managed or
+    as carrying a security agent. Keys may be an address, `name:<dhcp hostname>` or `mac:<address>`
+    (the ids lowercased, as Identity keys them)."""
+    out = {}
+    for key, a in (assets_table or {}).items():
+        role = str((a or {}).get("role", "")).lower()
+        if any(re.search(rf"\b{re.escape(w)}\b", role) for w in MANAGED_ROLE_WORDS):
+            key = str(key)
+            out[key.lower() if key.lower().startswith(("name:", "mac:")) else key] = role
+    return out
+
+
 class IotDrift(Detector):
     """R02. A camera, TV, hub or other fixed-function device talks to networks it never used.
 
@@ -2151,7 +2189,8 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
                   **d.get("beaconing", {})),
         SuspiciousDNS(popular=popular, dev=dev, **d.get("dns_anomaly", {})),
         PortScan(**d.get("scan", {})),
-        HourlyProfile(**{"timezone": tz, "asn": asn_table, **d.get("upload_spike", {}), **d.get("hourly", {})}),
+        HourlyProfile(**{"timezone": tz, "asn": asn_table, "managed": managed_hosts(assets_table),
+                         **d.get("upload_spike", {}), **d.get("hourly", {})}),
         NewExternalDomain(warmup, popular=popular, dev=dev, **d.get("new_domain", {})),
         NewDevice(warmup, load_oui(cfg.get("oui_file")), timezone=tz),
         InternetExposure(warmup, **d.get("exposure", {})),

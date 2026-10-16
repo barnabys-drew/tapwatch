@@ -168,8 +168,9 @@ class Pipeline:
         """For a case on the tapwatch PC: which program, and was it the owner's coding agent (hostctx.py)."""
         if case.facts.get("source") == "endpoint":
             return  # a host rule's case already says what ran; the network programs around it would only confuse it
-        if not (self.hostctx and self.zeek_dirs and self.hostctx.is_this_pc(case.host, case.ts)):
-            return
+        if not (self.hostctx and self.zeek_dirs
+                and self.hostctx.is_this_pc(case.host, case.ts, case.facts.get("device_name"))):
+            return  # not this PC's address, or another device (a shared dock) holds it now
         try:
             ev = evidence.lookup(self.zeek_dirs, case.host, case.ts, window=180)
             case.facts.update(self.hostctx.collect(case, ev["conn"]["rows"], ev["dns"]["rows"]))

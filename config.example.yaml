@@ -54,6 +54,9 @@ herdr:                               # pop critical cases up in the Herdr termin
 host_context:                        # "who on this PC did it?" for cases on the tapwatch PC itself
   host: ""                           # this PC's IP as Zeek sees it; empty = off. If DHCP moves the PC, tapwatch
                                      # follows the addresses its agent reports (and warns): still, fix the IP in the router
+  # hostname: my-pc                  # this PC's DHCP hostname; default: this machine's own name; empty = name check
+                                     # off. A case whose DHCP name differs (another device on a shared dock's address)
+                                     # gets no host context; set this when the warning says the PC's own name differs
   # osquery_bin: /opt/osquery/bin/osqueryd   # default: osqueryi/osqueryd on PATH (live check)
   # results_logs: [/var/log/osquery/osqueryd.results.log, "/mnt/c/Program Files/osquery/log/osqueryd.results.log"]
   #                                  # the endpoint rules (R17-R21, hostrules.py) follow these logs' directories too
