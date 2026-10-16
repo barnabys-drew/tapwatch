@@ -405,7 +405,10 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 ### R11 UDM admin login from a new source (`udm_admin`, from UDM syslog) — **built**
 - **Threat:** stolen UniFi credentials or a compromised admin device. The UDM controls everything else.
 - **Data:** UDM syslog/CEF admin-login and SSH events (user, source IP, method, success/fail),
-  config-change events.
+  config-change events. On UniFi Network 10.x these come from the SIEM export's **Admin Activity**
+  content (CyberSecure → Traffic Logging → Activity Logging): CEF class 544 `Network Accessed` with
+  `UNIFIadmin`, `src` and `UNIFIaccessMethod`, verified 2026-10-15. The same export also sends iptables
+  firewall lines and the gateway's system log, which `syslogin.py` counts and drops (docs/setup/router-syslog.md).
 - **Logic:** tapwatch detector on the syslog input. Raise on a (user, source) never seen in 30 days;
   ≥5 failures in 10 min; any SSH login; any config change within 30 min of a new-source login.
 - **Baseline:** 30 days of admin sources (few).

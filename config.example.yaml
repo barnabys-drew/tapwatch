@@ -60,7 +60,8 @@ host_context:                        # "who on this PC did it?" for cases on the
   # transcripts: ~/.claude/projects  # Claude Code session logs, read locally, never sent anywhere
 
 syslog:                              # `tapwatch syslog`: the router's CEF events (IPS, admin logins)
-  listen: 0.0.0.0:5514               # UniFi: Control Plane > Integrations > Activity Logging > SIEM Server
+  listen: 0.0.0.0:5514               # UniFi 10.x: CyberSecure > Traffic Logging > Activity Logging > SIEM Server
+                                     # (docs/setup/router-syslog.md: untick "Firewall Default Policy", it floods)
   out: /logs                         # same dir `run` watches
   allow: []                          # senders to accept; default network.gateways (UDP can be spoofed)
 timezone: America/Chicago            # for time-of-day rules (night joins, off-hours, business hours); default: local
