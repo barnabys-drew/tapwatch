@@ -107,6 +107,8 @@ def _observed(c: Case, words: dict) -> str:
                 f"{f['ports']} ports) {where}; {f['failed_pct']}% of attempts were refused or unanswered.")
         if f.get("all_failed"):
             text += " Nothing else it tried in that time succeeded either, which is what a device losing its network looks like."
+        elif f.get("failed_pct", 100) < 50:
+            text += " Most of what it tried in that time succeeded, so the failures are a small part of its traffic."
         return text
     if c.detector == "upload_spike":
         text = (f"In one hour it uploaded about {f['mb']} MB to the internet, roughly {f['times_normal']} times "
