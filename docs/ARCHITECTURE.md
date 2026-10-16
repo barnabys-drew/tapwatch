@@ -96,7 +96,9 @@ a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwat
    Claude Code transcripts. "The tapwatch machine" means whatever addresses its agents reported around the case
    time (`host_addresses`, every 5 minutes), since DHCP moves PCs; `host_context.host` counts only when no agent
    reported. The alerter also keeps `admin_devices` and `dev_profile.hosts` entries for that IP on the PC's
-   current addresses, and logs a warning when the configured IP is out of date.
+   current addresses, and logs a warning when the configured IP is out of date. An `admin_devices` entry
+   can also be a device identity (`name:<DHCP hostname>` or `mac:<address>`) instead of an IP, which is
+   how a phone on a private MAC stays exempt from the router-admin rule.
 3. **Summarize.** Turn the case into a short "state" in words for Jev.
 4. **Ask Jev**, if it's configured and the case is AI-eligible: who on the PC did it (only with
    host context), then the four triage questions.
@@ -109,11 +111,12 @@ a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwat
 | Component | Responsibility | Key files |
 |---|---|---|
 | **Capture** | Zeek turns mirrored packets into JSON protocol logs, with MACs in `conn.log` and hourly rotation. On Windows, Npcap's dumpcap streams into Zeek in WSL. | `deploy/zeek/`, `deploy/docker-compose.yml`, `eval/capture_mirror.sh` |
-| **Router syslog** | A UDP listener for CEF syslog (UniFi), with a sender allow-list. It writes `udm.log` beside Zeek's logs: the router's IPS verdicts and admin logins, which the mirror can't see. | `syslogin.py`, [setup/router-syslog.md](setup/router-syslog.md) |
+| **Router syslog** | A UDP listener for the router's syslog (UniFi), with a sender allow-list. It classifies each datagram as a CEF event, an iptables-style firewall line or a system line, and writes `udm.log` beside Zeek's logs: the router's IPS verdicts, admin logins and firewall drops, which the mirror can't see. Accepts and system lines are only counted. | `syslogin.py`, [setup/router-syslog.md](setup/router-syslog.md) |
 | **Log reader** | `replay` merges finished logs in time order. `Follower` tails live logs, survives rotation and emits idle ticks, so the digest clock runs on a quiet network. `prune` deletes rotated logs after `zeek_retention_days`. | `zeek.py` |
-| **Detectors** | 19 detector classes that emit 21 case types. Each one is plain code over time windows, per-device baselines, first-seen sets and household prevalence. `Gateways` emits no cases: it learns which address is each LAN's router, for the other rules. | `detectors.py` |
+| **Detectors** | 19 network detector classes that emit 21 case types, plus the five endpoint rules below (26 case types from 24 detectors). Each one is plain code over time windows, per-device baselines, first-seen sets and household prevalence. `Gateways` emits no cases: it learns which address is each LAN's router, for the other rules. | `detectors.py` |
 | **Offline feeds** | Tranco top domains, IEEE MAC vendors, and iptoasn IP-to-network/country tables. They're downloaded by `update-feeds` and never queried live. | `feeds.py` |
 | **Host context** | For cases on the tapwatch machine: which program held the connection, whether a coding-agent session started it, and what the session transcript shows. | `hostctx.py`, `agents/` |
+| **Endpoint rules** | Five host detectors (R17–R21) over the agent's own osquery rows, read as a log source like Zeek's: encoded or download-and-run commands, a document app or browser spawning a shell, and temp-folder, LOLBin or badly signed programs connecting out. Cases carry program names, never command lines or paths. | `hostrules.py`, [detections/DESIGN.md](detections/DESIGN.md) |
 | **Summarizer** | Turns a case into 3–4 sentences: device name and role instead of an IP, numbers as words, and network strings quoted and labelled untrusted. | `summarizer.py` |
 | **Triage client** | A single HTTP call per case to Jev (TypeSafe System One), with typed questions: category (choice), severity (score), routine and interrupt (probabilities), plus `who` with host context. The model is pinned, retries back off, and it's stdlib `urllib` only. | `triage.py` |
 | **Router** | Decides alert, digest or log from code facts, suppressions and the verdict. It owns every guardrail described below. | `router.py` |
@@ -123,7 +126,7 @@ a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwat
 | **Explain** | Finds groups of repeat cases that host context marked likely benign (same detector, device, program and destination). It suggests or applies expiring `device_program` suppressions. | `explain.py` |
 | **Setup wizard** | `tapwatch init` detects the gateway, this machine, the timezone and the capture path, then writes `config.yaml`, `assets.yaml` and `.env` (mode 600). It never overwrites without `--force`. | `wizard.py` |
 | **Services** | systemd *user* units: alerter, case desk, watchdog, plus capture and syslog when asked for. | `service.py` |
-| **Watchdog** | Every 5 minutes it checks that the capture container is up, `conn.log` is fresh and the alerter PID is alive. It notifies once on failure and once on recovery. | `eval/watchdog.sh` |
+| **Watchdog** | Every 5 minutes it checks that the capture container is up, `conn.log` is fresh, the alerter PID is alive and, where its unit is installed, the syslog listener is active. It notifies once on failure and once on recovery. | `eval/watchdog.sh` |
 | **Eval harness** | Routes the same cases two ways, rules-only and with Jev, against labelled hosts, and reports what each surfaced, alerted on and cost. | `evaluate.py`, `eval/` |
 
 All Python lives in [`src/tapwatch/`](../src/tapwatch/). [`cli.py`](../src/tapwatch/cli.py) wires

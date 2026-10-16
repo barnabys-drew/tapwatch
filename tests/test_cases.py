@@ -132,6 +132,29 @@ def test_suppression_scopes_match_what_they_say():
     assert store.match_suppression(Case("odd_port", "192.168.50.99", T0, "t", {}, ["itv.co.uk"])) is None
 
 
+def test_suppress_form_names_the_device_identity_the_rule_will_follow():
+    # The rule is keyed on models.device_id (DHCP hostname, then MAC, then IP), so the label shows that
+    # identity next to the address when they differ, and only the address when the IP is the identity.
+    store = Store(":memory:")
+    named, _ = make_case(store, detector="odd_port", host="192.168.50.19", indicators=["ch-zone-01.mgmt.example.net"],
+                         facts={"device_name": "Office-PC", "device_mac": "00:00:5e:00:53:19", "port": 8443})
+    html = ui._suppress_form(store.get(named), {"device_name": "Office-PC", "device_mac": "00:00:5e:00:53:19", "port": 8443},
+                             ["ch-zone-01.mgmt.example.net"], "csrf")
+    assert "odd_port + this device (name:office-pc, 192.168.50.19) + ch-zone-01.mgmt.example.net" in html
+    assert "this device (name:office-pc, 192.168.50.19) + any host under example.net" in html
+    assert "this device (192.168.50.19)" not in html
+    assert "odd_port + ch-zone-01.mgmt.example.net, any device" in html  # device-less scopes are unchanged
+
+    by_mac, _ = make_case(store, host="192.168.50.20", indicators=["x.example.com"],
+                          facts={"device_mac": "00:00:5E:00:53:20", "port": 3478})
+    html = ui._suppress_form(store.get(by_mac), {"device_mac": "00:00:5E:00:53:20", "port": 3478}, ["x.example.com"], "c")
+    assert "this device (mac:00:00:5e:00:53:20, 192.168.50.20)" in html
+
+    plain, _ = make_case(store, host="192.168.50.21", indicators=["x.example.com"], facts={"port": 3478})
+    html = ui._suppress_form(store.get(plain), {"port": 3478}, ["x.example.com"], "c")
+    assert "this device (192.168.50.21) + x.example.com" in html and "name:" not in html and "mac:" not in html
+
+
 def test_expired_suppressions_stop_matching():
     store = Store(":memory:")
     cid, case = make_case(store)
