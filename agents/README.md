@@ -73,8 +73,8 @@ those rows and relies on the 1-minute snapshots for them. After a reboot osquery
 The markers are read from `/proc/<pid>/environ` when the query runs, up to a minute after the connection. A
 one-second `curl` from a Claude Code shell has exited by then, and so has the shell that ran it, so its
 `bpf_connections` row arrives with no markers and no parent name (measured 2026-10-15). `bpf_process_events`
-therefore logs every program start as it happens (pid, parent pid, program, working directory; **no command
-lines**), and tapwatch walks that parent chain from the gone process up to the long-lived `claude` process
+therefore logs every program start as it happens (pid, parent pid, program; **no command lines and no
+working directory**, both can name private things), and tapwatch walks that parent chain from the gone process up to the long-lived `claude` process
 whose own rows still carry the markers, and credits the connection to that session.
 
 On Windows, command lines can hold passwords or tokens, and osquery's results log is readable by every local

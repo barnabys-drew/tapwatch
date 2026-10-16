@@ -522,7 +522,7 @@ rules below raise cases of their own, for living-off-the-land activity that neve
 the new file is read); a replay reads only the live file, because osquery's rotated names (`.log.1`) are not
 Zeek's dated pattern. Until an agent snapshot or `host_context.host` names the PC's address, a case names it
 "this PC". This first set is Windows-only; Linux rules (#28) will reuse the same base over
-`bpf_connections` and `process_events` rows.
+`bpf_connections` and `bpf_process_events` rows.
 
 Three rules hold for every one of them. **A case never carries a command line or a path**: it names the
 program and the *class* of folder it runs from (a temp folder, an installed location), because a Windows path

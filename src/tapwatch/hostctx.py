@@ -360,20 +360,46 @@ class OwnerIndex:
         events still hold each pid's parent. An exec logged after the connection is a reused pid: stop there."""
         cur = o.ppid or self._parent_of(o.pid, o.start)
         if not o.parent and cur:
-            o.parent = _basename(self.execs.get(cur, (0, "", 0))[1]) or (self.markers[cur].name if cur in self.markers else "")
+            o.parent = self._name_of(cur, o.start)
         seen: set[int] = set()
         while cur and cur not in seen and len(seen) < CHAIN_MAX:
             seen.add(cur)
-            anc = self.markers.get(cur)
+            anc = self._markers_of(cur, o.start)
             if anc is not None:
                 o.session, o.attended, o.entrypoint = anc.session, anc.attended, anc.entrypoint
                 o.in_herdr, o.via_ssh, o.inherited = anc.in_herdr, anc.via_ssh, True
                 return
             cur = self._parent_of(cur, o.start)
 
+    def _exec_of(self, pid: int, before: float) -> tuple[int, str, float] | None:
+        """The exec that made `pid` the process it was at `before`; None if the only exec known came later (a
+        reused pid) or none was logged (a process older than the log window, such as a long-running agent)."""
+        row = self.execs.get(pid)
+        return row if row and row[2] <= before + 1 else None
+
     def _parent_of(self, pid: int, before: float) -> int:
-        ppid, _path, t = self.execs.get(pid, (0, "", 0.0))
-        return ppid if t <= before + 1 else 0
+        row = self._exec_of(pid, before)
+        return row[0] if row else 0
+
+    def _markers_of(self, pid: int, before: float) -> Owner | None:
+        """`pid`'s marker-bearing row, if it belongs to the process that held the pid at `before`. With an exec
+        logged for the pid, the markers must have been read after it (a live row is "now", so always after) and
+        the exec must precede the connection; otherwise a pid reused after an agent exited would borrow the
+        dead agent's session."""
+        anc = self.markers.get(pid)
+        if anc is None:
+            return None
+        row = self.execs.get(pid)
+        if row and (row[2] > before + 1 or 0 < anc.start < row[2] - 1):
+            return None
+        return anc
+
+    def _name_of(self, pid: int, before: float) -> str:
+        row = self._exec_of(pid, before)
+        if row and row[1]:
+            return _name({"name": _basename(row[1]), "path": row[1]})  # Claude's binary is named after its version
+        anc = self._markers_of(pid, before)
+        return anc.name if anc else ""
 
     def add(self, remote: str, port, owner: Owner) -> None:
         self.by_ip = None
