@@ -99,6 +99,15 @@ def test_one_strong_signal_alerts_and_hidden_window_makes_it_must_alert():
     assert (enc.base_severity, enc.must_alert) == (4, False)
     (hidden,) = run(EncodedCommand(st()), start(T0, PS, EXPLORER, cmd_dl="1", cmd_hidden="1"))
     assert (hidden.base_severity, hidden.must_alert) == (5, True) and hidden.facts["unusual"] == ["a hidden window"]
+    (enc2,) = run(EncodedCommand(st()), start(T0, PS, EXPLORER, cmd_enc="1", cmd_b64="1"))
+    assert enc2.must_alert
+
+
+def test_chocolateys_install_line_alerts_but_is_suppressible():
+    """dl + iex + an execution-policy bypass is Chocolatey's documented install command: a benign reading
+    exists, and must_alert can't be suppressed, so it stays at severity 4 (review of PR #87)."""
+    (choco,) = run(EncodedCommand(st()), start(T0, PS, EXPLORER, cmd_dl="1", cmd_iex="1", cmd_bypass="1", cmd_url="1"))
+    assert (choco.base_severity, choco.must_alert) == (4, False) and choco.facts["unusual"] == ["an execution-policy bypass"]
 
 
 def test_a_weak_signal_alone_raises_nothing_unless_a_browser_started_it():
@@ -107,7 +116,7 @@ def test_a_weak_signal_alone_raises_nothing_unless_a_browser_started_it():
     (c,) = run(EncodedCommand(st()), start(T0, PS, CHROME, cmd_iex="1"))
     assert (c.base_severity, c.must_alert, c.facts["parent_class"]) == (4, False, "browser")
     (both,) = run(EncodedCommand(st()), start(T0, PS, EXPLORER, cmd_iex="1", cmd_b64="1"))
-    assert both.must_alert                                                                 # two weak ones together: not dev tooling
+    assert (both.base_severity, both.must_alert) == (4, False)                              # two weak ones together: an alert
 
 
 def test_signals_on_programs_that_are_not_shells_are_ignored():
@@ -200,6 +209,16 @@ def test_download_lolbins_are_must_alert_and_the_rest_alert():
     assert r.facts["parent"] == "WINWORD.EXE" and r.facts["url"] and r.facts["parent_class"] == "document"
 
 
+def test_msbuild_is_a_weekly_digest_item_not_an_hourly_alert():
+    """MSBuild restores NuGet packages on any Visual Studio PC (review of PR #87)."""
+    d = LolbinConnects(st())
+    msbuild = r"C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+    (c,) = run(d, connect(T0, msbuild))
+    assert (c.base_severity, c.must_alert, c.facts["downloader"]) == (3, False, False)
+    assert run(d, connect(T0 + 3600, msbuild, guid="{g2}")) == []
+    assert len(run(d, connect(T0 + 8 * 86400, msbuild, guid="{g3}"))) == 1
+
+
 def test_lolbins_on_the_lan_and_ordinary_programs_are_ignored():
     rundll = r"C:\Windows\System32\rundll32.exe"
     assert run(LolbinConnects(st()), connect(T0, rundll, remote="192.168.50.2"), connect(T0, rundll, port=53),
@@ -208,18 +227,19 @@ def test_lolbins_on_the_lan_and_ordinary_programs_are_ignored():
 
 # ------------------------------------------------------------ R21 bad code signature connects out
 
-def test_invalid_signature_alerts_untrusted_digests_missing_is_ignored():
+def test_untrusted_and_distrusted_signatures_alert_missing_is_ignored():
+    """osquery's authenticode says trusted, missing, untrusted or distrusted; a tampered file is `untrusted`."""
     app = r"C:\Program Files\App\app.exe"
-    (bad,) = run(BadSignatureConnects(st()), snapshot_conn(T0, "app.exe", app, "invalid", "App Maker"))
-    assert bad.base_severity == 4 and bad.facts["signature"] == "invalid" and bad.facts["signer"] == "App Maker"
-    assert bad.facts["folder"] == "installed" and bad.facts["parent"] == "explorer.exe"
+    (bad,) = run(BadSignatureConnects(st()), snapshot_conn(T0, "app.exe", app, "untrusted", "App Maker"))
+    assert (bad.base_severity, bad.must_alert) == (4, False) and bad.facts["signature"] == "untrusted"
+    assert bad.facts["signer"] == "App Maker" and bad.facts["folder"] == "installed" and bad.facts["parent"] == "explorer.exe"
     no_paths(bad)
-    (weak,) = run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, "untrusted"))
-    assert weak.base_severity == 3
+    (blocked,) = run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, "Distrusted"))
+    assert blocked.base_severity == 4
     # measured: every "missing" or unreadable signature in 34.5 h was an installed app osquery couldn't read
     assert run(BadSignatureConnects(st()), snapshot_conn(T0, "a.exe", app, "missing"), snapshot_conn(T0, "b.exe", app, ""),
-               snapshot_conn(T0, "c.exe", app, "trusted"), snapshot_conn(T0, "d.exe", app, "invalid", action="removed"),
-               snapshot_conn(T0, "e.exe", app, "invalid", remote="192.168.50.9")) == []
+               snapshot_conn(T0, "c.exe", app, "trusted"), snapshot_conn(T0, "d.exe", app, "untrusted", action="removed"),
+               snapshot_conn(T0, "e.exe", app, "untrusted", remote="192.168.50.9")) == []
 
 
 # ------------------------------------------------------------ the framework
@@ -227,6 +247,7 @@ def test_invalid_signature_alerts_untrusted_digests_missing_is_ignored():
 def test_pc_address_follows_the_agents_snapshots_and_prefers_the_lan():
     s = EndpointState("")
     d = EncodedCommand(s)
+    assert s.host == "this PC"                                                              # never an empty host
     d.feed(addrs(T0, "172.28.0.1", "192.168.50.77", "fe80::1", "100.64.0.5"))
     assert s.host == "192.168.50.77"
     d.feed(addrs(T0 + 300, "172.28.0.1", "10.0.0.5"))
@@ -236,6 +257,23 @@ def test_pc_address_follows_the_agents_snapshots_and_prefers_the_lan():
     assert configured.host == PC                                                            # the configured one wins
     (c,) = run(EncodedCommand(s), start(T0, PS, WORD, cmd_enc="1", cmd_dl="1"))
     assert c.host == "10.0.0.5"
+
+
+def test_wsl_nat_snapshot_never_moves_the_host_off_the_lan():
+    """Two agents report for one PC: WSL in NAT mode lists only its 172.x address. Taking it at face value gave
+    about half the cases the wrong host (review of PR #87), splitting dedupe keys and suppressions."""
+    s = EndpointState("")
+    d = EncodedCommand(s)
+    d.feed(addrs(T0, "192.168.50.77", "172.28.0.1"))                                       # Windows agent
+    d.feed(addrs(T0 + 10, "172.28.5.2"))                                                    # WSL agent, NAT mode
+    assert s.host == "192.168.50.77"
+    fresh = EndpointState("")
+    EncodedCommand(fresh).feed(addrs(T0, "172.28.5.2"))
+    assert fresh.host == "172.28.5.2"                                                       # better than "this PC"...
+    EncodedCommand(fresh).feed(addrs(T0 + 10, "192.168.50.77", "172.28.0.1"))
+    assert fresh.host == "192.168.50.77"                                                    # ...until the LAN address shows
+    (c,) = run(EncodedCommand(EndpointState("")), start(T0, PS, WORD, cmd_enc="1", cmd_dl="1"))
+    assert c.host == "this PC" and c.must_alert                                             # no address yet: still raised
 
 
 def test_names_are_code_only_and_build_wires_them():
@@ -291,7 +329,7 @@ def test_summaries_quote_programs_and_never_state_paths_or_command_lines():
     cases += run(AppSpawnsShell(st()), start(T0, CMD, CHROME), connect(T0 + 1, CMD))
     cases += run(TempFolderConnects(st()), start(T0, TEMP_EXE, OUTLOOK, cmd_dl="1"), connect(T0 + 1, TEMP_EXE))
     cases += run(LolbinConnects(st()), connect(T0, r"C:\Windows\System32\certutil.exe"))
-    cases += run(BadSignatureConnects(st()), snapshot_conn(T0, "app.exe", r"C:\Program Files\App\app.exe", "invalid",
+    cases += run(BadSignatureConnects(st()), snapshot_conn(T0, "app.exe", r"C:\Program Files\App\app.exe", "untrusted",
                                                            'Evil "Corp'))
     assert len(cases) == 6
     texts = [summarize(c, Assets()) for c in cases]
@@ -304,7 +342,7 @@ def test_summaries_quote_programs_and_never_state_paths_or_command_lines():
     assert "connected to the internet on port 443" in texts[2] and "helper program" in texts[2]
     assert "a temporary folder" in texts[3] and '"OUTLOOK.EXE"' in texts[3] and "a download-and-run" in texts[3]
     assert '"certutil.exe"' in texts[4] and "download or run remote content" in texts[4]
-    assert 'Evil \\"Corp' in texts[5] and "no longer matches" in texts[5]
+    assert 'Evil \\"Corp' in texts[5] and "changed after it was signed" in texts[5]
 
 
 # ------------------------------------------------------------ the osquery log as a log source

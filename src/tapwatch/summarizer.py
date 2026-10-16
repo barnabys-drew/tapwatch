@@ -218,10 +218,11 @@ def _observed(c: Case, words: dict) -> str:
 
 PARENT_WORDS = {"document": "a document or mail app", "browser": "a browser", "shell": "another shell",
                 "other": "another program"}
-SIGNATURE_WORDS = {"invalid": "the file no longer matches what its publisher signed",
-                   "distrusted": "its publisher is blocked by Windows",
-                   "untrusted": "Windows does not trust its signing chain (self-built or self-signed software)",
-                   "expired": "its signing certificate has expired"}
+# osquery's authenticode results. "untrusted" covers a file changed after signing, a self-signed or self-built
+# binary and an expired certificate alike; Windows itself (hostctx.check_signatures) tells them apart.
+SIGNATURE_WORDS = {"untrusted": "Windows rejects it (the file was changed after it was signed, it is self-signed "
+                                "or self-built, or its certificate has expired)",
+                   "distrusted": "its publisher is blocked by Windows"}
 
 
 def _program(name: str) -> str:
@@ -272,7 +273,7 @@ def _endpoint(c: Case) -> str:
                 f"internet{port}.{started_by}{cmdline} Ordinary programs connect out; on a home PC this tool has no "
                 "reason to.")
     if c.detector == "host_bad_sig":
-        signer = f" The signer it names is {_program(f['signer'])}." if f.get("signer") else ""
+        signer = f" The signer it names is {_program(f['signer'])}." if f.get("signer") else ""  # local only; may be a person's name on a self-signed cert
         return (f"On the PC itself, the program {prog} held a connection to the internet{port} while its code signature "
                 f"was {f.get('signature', 'bad')}: {SIGNATURE_WORDS.get(f.get('signature'), 'it could not be verified')}."
                 f"{signer}{started_by}{folder}")

@@ -8,7 +8,8 @@ description: |
   times, by svchost and msiexec, and never connected).
   tapwatch (hostrules.LolbinConnects): certutil, bitsadmin, mshta and regsvr32 exist to fetch or run remote
   content and have no home use on the internet -> severity 5, must_alert. The rest -> 4, suppressible per
-  program. Code-only. Jev: none.
+  program, except msbuild -> 3 (digest, once a week: MSBuild restores NuGet packages on any Visual Studio
+  PC). Code-only. Jev: none.
 references:
   - docs/detections/DESIGN.md
   - https://lolbas-project.github.io/
@@ -33,6 +34,7 @@ detection:
 fields: [Image, DestinationIp, DestinationPort, ProcessGuid]
 falsepositives:
   - rundll32 hosting a vendor DLL that phones home (some driver installers): one alert, then a program-scoped suppression
+  - MSBuild's NuGet restores on a Visual Studio PC (a digest item in tapwatch, by design)
   - wmic in administration scripts (rare on a home PC)
 level: critical
 tags: [attack.defense_evasion, attack.t1218, attack.command_and_control, attack.t1105, attack.t1197]

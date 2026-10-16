@@ -513,7 +513,10 @@ readable reaches the world-readable results log. Host context uses those rows to
 rules below raise cases of their own, for living-off-the-land activity that never looks odd on the wire
 (#26, #27). They read the osquery results and snapshots logs as a log source (`_type: osquery`, named in
 `zeek.LOG_TYPES`; `run` follows their directories next to Zeek's, and a replay takes the directory as a
-`--zeek-dir`). This first set is Windows-only; Linux rules (#28) will reuse the same base over
+`--zeek-dir`). `run` survives osquery's rotation the way it survives Zeek's (the open handle is drained before
+the new file is read); a replay reads only the live file, because osquery's rotated names (`.log.1`) are not
+Zeek's dated pattern. Until an agent snapshot or `host_context.host` names the PC's address, a case names it
+"this PC". This first set is Windows-only; Linux rules (#28) will reuse the same base over
 `bpf_connections` and `process_events` rows.
 
 Three rules hold for every one of them. **A case never carries a command line or a path**: it names the
@@ -536,7 +539,7 @@ with no benign reading on a home PC.
 | Built-in tools (LOLBins) connecting to the internet | **0** (rundll32 started 19 times, by svchost and msiexec, and never connected) |
 | Connections from a temp, Downloads or shared folder | **0**; 6 process starts from a temp folder (installers unpacking), none connected |
 | Shells connecting to the internet | 1 (`powershell.exe`) |
-| Code signatures on the 1-minute socket snapshot (`outbound_connections`) | trusted for most; `missing` or unreadable: **7 distinct programs, all installed apps** (Program Files, AppData\Local\Programs); `invalid`, `untrusted`: **0** |
+| Code signatures on the 1-minute socket snapshot (`outbound_connections`) | trusted for most; `missing` or unreadable: **7 distinct programs, all installed apps** (Program Files, AppData\Local\Programs); `untrusted`, `distrusted`: **0** |
 | `tapwatch replay` of the five rules over the 34.5 h | **0 cases** |
 
 The implications: the data supports strict rules with no learning period (every shape fires 0 times on a day
@@ -551,15 +554,19 @@ can't read a quarter of valid signatures, and the encoded-command signal must be
 - **Data:** `sysmon_events` event 1: `path`, `parent_path`, and the signals `cmd_enc`, `cmd_b64`, `cmd_dl`,
   `cmd_iex`, `cmd_hidden`, `cmd_bypass`, `cmd_url`. The raw command line is never read by this rule.
 - **Logic:** `rules/R17-encoded-command.yml`. The program is a shell or script host (`hostctx.WIN_SHELLS`:
-  powershell, pwsh, cmd, wscript, cscript, mshta, rundll32, regsvr32, bitsadmin, certutil). Two suspicious
-  signals, or one plus a hidden window or policy bypass, or a document/mail/PDF app as the parent → severity 5,
-  **must_alert**. One strong signal alone (`enc`, `dl`), or any suspicious signal with a browser parent →
-  severity 4. `b64` or `iex` alone from any other parent → nothing.
+  powershell, pwsh, cmd, wscript, cscript, mshta, rundll32, regsvr32, bitsadmin, certutil). An encoded payload
+  with a second signal, any suspicious signal in a hidden window, or a document/mail/PDF app as the parent →
+  severity 5, **must_alert**. Two signals (`dl` + `iex`, with or without a policy bypass), one strong signal
+  alone (`enc`, `dl`), or any suspicious signal with a browser parent → severity 4, suppressible. `b64` or
+  `iex` alone from any other parent → nothing. The must_alert bar stops below `dl` + `iex` on purpose:
+  that is Chocolatey's documented install line, and must_alert can't be suppressed.
 - **Baseline:** none. Measured: 0 on shells in 34.5 h. The one `enc` hit was msiexec; scoping to shells removed it.
 - **Dedupe:** `host_encoded_cmd|pc|program`, the store's hour.
 - **FPs:** installers run with `-ExecutionPolicy Bypass -w hidden` (measured on tapwatch's own installer:
   hidden and bypass alone raise nothing); dev tooling's `iex (irm https://...)` one-liners (nothing alone);
-  a browser extension's helper that decodes base64 (alert, suppressible per program).
+  Chocolatey's install command (`Set-ExecutionPolicy Bypass ...; iex (... DownloadString(...))`: a severity-4
+  alert once, then a program-scoped suppression); a browser extension's helper that decodes base64 (alert,
+  suppressible per program).
 - **Route:** ALERT, code-only; must_alert for the combinations above.
 - **Jev:** none.
 - **Safe test:** `powershell -enc <base64 of "Write-Host hi">` from a terminal → severity 4 alert. Add
@@ -608,11 +615,14 @@ can't read a quarter of valid signatures, and the encoded-command signal must be
 - **Logic:** `rules/R20-lolbin-connects.yml`. The program is in `hostctx.WIN_LOLBINS`, the remote is not the
   LAN or loopback, the port is not 53. certutil, bitsadmin, mshta and regsvr32 exist to fetch or run remote
   content and have no home use on the internet → severity 5, **must_alert**. The rest (rundll32, wmic, wscript,
-  cscript, msbuild, installutil, cmstp, regasm, regsvcs, odbcconf…) → 4, suppressible per program.
+  cscript, installutil, cmstp, regasm, regsvcs, odbcconf…) → 4, suppressible per program. `msbuild` → 3, once
+  per 7 days: on a Visual Studio PC it connects out for every NuGet restore, so a severity-4 alert would
+  repeat hourly there.
 - **Baseline:** none. Measured: 0 in 108,423 connections.
 - **Dedupe:** `host_lolbin|pc|program`.
 - **FPs:** rundll32 hosting a vendor DLL that phones home (some driver installers): one alert, then a
-  program-scoped suppression; wmic in admin scripts (rare on a home PC).
+  program-scoped suppression; MSBuild's NuGet restores (digest, by design); wmic in admin scripts (rare on a
+  home PC).
 - **Route:** ALERT, code-only; must_alert for the four downloaders. Critical (Herdr pop-up) at severity 4+.
 - **Jev:** none.
 - **Safe test:** `certutil -urlcache -split -f https://example.com/ %TEMP%\x.txt` → must_alert and a pop-up.
@@ -623,20 +633,24 @@ can't read a quarter of valid signatures, and the encoded-command signal must be
   program whose file no longer matches its signature (T1036.001, T1553.002).
 - **Data:** the Windows agent's `outbound_connections` snapshot (every minute): `name`, `path`, `parent_name`,
   authenticode `signature` and `signer`, remote address, port.
-- **Logic:** `rules/R21-bad-signature-connects.yml`. `invalid` or `distrusted` → severity 4; `untrusted` or
-  `expired` → 3, once per (program, result) per 7 days. `missing` and unreadable signatures raise **nothing**:
-  all 7 measured were installed apps osquery couldn't read (the Signal Desktop case host context settles by
-  asking Windows), and a standalone "unsigned program" rule waits until the stream carries PowerShell-verified
-  results.
+- **Logic:** `rules/R21-bad-signature-connects.yml`. osquery's authenticode reports four results: `trusted`,
+  `missing`, `untrusted` and `distrusted`. A file changed after it was signed (a hash mismatch), a self-signed
+  or self-built binary and an expired certificate all come back `untrusted`; `distrusted` is a publisher
+  Windows blocks. Both → severity 4, suppressible per program: the tampered-binary case lives inside
+  `untrusted`, and a dev build is a one-time suppression. `missing` and unreadable signatures raise
+  **nothing**: all 7 measured were installed apps osquery couldn't read (the Signal Desktop case host context
+  settles by asking Windows), and a standalone "unsigned program" rule waits until the stream carries
+  PowerShell-verified results.
 - **Baseline:** none. Measured: 0 bad signatures in 34.5 h.
 - **Dedupe:** `host_bad_sig|pc|program`.
-- **FPs:** self-built tools and dev builds (`untrusted` → digest; suppress per program); old but legitimate
-  software with an expired certificate (digest).
-- **Route:** ALERT for invalid/distrusted, DIGEST for untrusted/expired. Code-only.
-- **Jev:** none. The signer name is an untrusted string and is quoted like a program name.
+- **FPs:** self-built tools and dev builds, and old but legitimate software with an expired certificate (both
+  `untrusted`: one alert, then a program-scoped suppression).
+- **Route:** ALERT, code-only, suppressible.
+- **Jev:** none (the summary stays on the box). The signer name is kept as a local fact, quoted like a program
+  name: on a self-signed certificate it can be the owner's own name, so it is never a title or an indicator.
 - **Safe test:** sign a copy of `curl.exe` with a test certificate (`New-SelfSignedCertificate` and
-  `Set-AuthenticodeSignature`) and fetch example.com → digest (`untrusted`). Append one byte to a copy of a
-  signed program and run it → `invalid` → alert.
+  `Set-AuthenticodeSignature`) and fetch example.com → `untrusted` → alert. Appending one byte to a copy of a
+  signed program gives the same result (osquery folds the hash mismatch into `untrusted`).
 
 **Not built yet, deliberately:** a standalone unsigned-program rule (see R21), the persistence snapshots
 (`scheduled_tasks`, `services`, `startup_items` diffs: they need a learned baseline and the warmup plumbing),
@@ -677,8 +691,8 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R17 Encoded / download-and-run command (built) | osquery + Sysmon | alert | code-only; must_alert for combinations and document parents |
 | — | R18 Document app or browser → shell (built) | osquery + Sysmon | alert | code-only |
 | — | R19 Temp-folder program connects out (built) | osquery + Sysmon | digest / alert | code-only |
-| — | R20 Built-in tool (LOLBin) connects out (built) | osquery + Sysmon | alert | code-only; must_alert for the downloaders |
-| — | R21 Bad code signature connects out (built) | osquery snapshot | digest / alert | code-only |
+| — | R20 Built-in tool (LOLBin) connects out (built) | osquery + Sysmon | alert (msbuild: digest) | code-only; must_alert for the downloaders |
+| — | R21 Bad code signature connects out (built) | osquery snapshot | alert | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 

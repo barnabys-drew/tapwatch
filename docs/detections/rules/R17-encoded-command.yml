@@ -9,9 +9,11 @@ description: |
   to itself. On shells every signal fired 0 times.
   tapwatch (hostrules.EncodedCommand) reads osquery's reduced rows, where these regexes are already yes/no
   signals (agents/config/osquery.conf) and the command line itself never leaves the PC. Severity 5 and
-  must_alert for two suspicious signals, one plus hidden/bypass, or a document or mail app as the parent;
-  4 for an encoded payload or download-and-run alone, or any signal with a browser parent; base64 or IEX
-  alone from another parent raises nothing (dev tooling installs itself with `iex (irm ...)`).
+  must_alert for an encoded payload with a second signal, any suspicious signal in a hidden window, or a
+  document or mail app as the parent; 4 (suppressible) for two signals such as download-and-run plus IEX
+  (Chocolatey's install line), an encoded payload or download-and-run alone, or any signal with a browser
+  parent; base64 or IEX alone from another parent raises nothing (dev tooling installs itself with
+  `iex (irm ...)`).
   Route: ALERT, code-only. Jev: none.
 references:
   - docs/detections/DESIGN.md
@@ -46,13 +48,14 @@ detection:
   condition: >
     shell and (
       (2 of (enc, b64, dl, iex)) or
-      (1 of (enc, b64, dl, iex) and (hidden or bypass or doc_parent or browser_parent)) or
+      (1 of (enc, b64, dl, iex) and (hidden or doc_parent or browser_parent)) or
       enc or dl
     )
 fields: [Image, ParentImage, User]
 falsepositives:
   - Installers run with -ExecutionPolicy Bypass -w hidden (hidden and bypass alone are not a match)
   - Dev tooling one-liners such as `iex (irm https://...)` (IEX alone is not a match; with a download-and-run it is)
+  - Chocolatey's documented install command (download-and-run plus IEX plus an execution-policy bypass): a match, suppress per program
   - A browser extension's helper that decodes base64 (suppress per program)
 level: high
 tags: [attack.execution, attack.t1059.001, attack.defense_evasion, attack.t1027, attack.command_and_control, attack.t1105]

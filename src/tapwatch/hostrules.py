@@ -50,6 +50,9 @@ WIN_BROWSERS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.e
 # Built-in tools whose only use on the internet is to fetch or run remote content (certutil -urlcache,
 # bitsadmin /transfer, mshta http://..., regsvr32 /i:http... scrobj.dll). Measured 0 connections in 34.5 h.
 LOLBIN_DOWNLOADERS = {"certutil.exe", "bitsadmin.exe", "mshta.exe", "regsvr32.exe"}
+# Built-in tools that connect out legitimately in dev work: MSBuild restores NuGet packages on any Visual Studio
+# PC, so an hourly severity-4 alert would be noise there. A digest item once per reported_days instead.
+LOLBIN_DEV_TOOLS = {"msbuild.exe"}
 # Command-line signals that are weak alone on a dev PC: `iex (irm ...)` installs tools, scripts decode base64.
 WEAK_SIGNALS = {"b64", "iex"}
 GUID_WINDOW = 600            # seconds a process start is remembered, to join the connections it makes next
@@ -58,6 +61,8 @@ TEMP_DIRS = ("/appdata/local/temp/", "c:/windows/temp/")
 SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable by every account, never an install
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig")
+LAN_PREFIXES = ("192.168.", "10.")   # where home LANs live; 172.16/12 is where Hyper-V and WSL put their switches
+PC_UNKNOWN = "this PC"               # the case's host until an agent snapshot or host_context.host names the address
 
 
 def folder_class(path: str) -> str:
@@ -131,24 +136,35 @@ class Start:
 class EndpointState:
     """What every host rule shares: the PC's address, and recent process starts by ProcessGuid.
 
-    The address comes from the agent's `host_addresses` snapshots (every 5 minutes); `host_context.host` is
-    the fallback and the tie-breaker. Windows also reports its Hyper-V and WSL virtual-switch addresses,
-    so a LAN address (192.168/16, 10/8) is preferred over 172.16/12 and the carrier-grade range."""
+    The address comes from the agents' `host_addresses` snapshots (every 5 minutes); `host_context.host` is
+    the fallback and the tie-breaker. Two agents report for one PC: Windows lists the LAN address with its
+    Hyper-V and WSL virtual switches (172.x), and WSL in NAT mode lists only its own 172.x address. So a
+    snapshot moves the host only to a LAN address (192.168/16, 10/8), and a 172.x-only snapshot is accepted
+    only while no address is known at all. Taking the WSL snapshot at face value gave about half the cases
+    the wrong host (review of PR #87), which splits the dedupe key and misses same-device suppressions.
+    Until an address is known the cases name the PC as `PC_UNKNOWN`, never an empty string."""
 
     def __init__(self, host: str = ""):
-        self.host = self.configured = host
+        self.configured = host
+        self._host = host
         self.starts: dict[str, Start] = {}
         self.latest = 0.0
+
+    @property
+    def host(self) -> str:
+        return self._host or PC_UNKNOWN
 
     def update_addresses(self, rows: list[dict]) -> None:
         addrs = {str(r.get("address")) for r in rows if r.get("address")}
         if self.configured and self.configured in addrs:
-            self.host = self.configured
+            self._host = self.configured
             return
-        lan = sorted((a for a in addrs if ":" not in a and is_internal(a)),
-                     key=lambda a: (not a.startswith(("192.168.", "10.")), a))
+        v4 = [a for a in addrs if ":" not in a and is_internal(a)]
+        lan = sorted(a for a in v4 if a.startswith(LAN_PREFIXES))
         if lan:
-            self.host = lan[0]
+            self._host = lan[0]
+        elif v4 and not self._host:
+            self._host = min(v4)   # better than nothing, replaced by the first LAN address seen
 
     def remember(self, guid: str, start: Start) -> None:
         if not guid:
@@ -262,12 +278,14 @@ class EncodedCommand(HostDetector):
         parent = _basename(c.get("parent_path") or "")
         pclass = parent_class(parent)
         keys = {f for f in flags if f in CMD_SUSPICIOUS}
-        if len(sus) >= 2 or unusual or pclass == "document":
-            # Two suspicious signals, or one plus a hidden window or policy bypass, or a document or mail app as
-            # the parent: the shape of a macro or attachment payload. Nothing the owner types looks like this.
+        if ("enc" in keys and len(keys) >= 2) or "hidden" in flags or pclass == "document":
+            # An encoded payload with a second signal, any suspicious signal in a hidden window, or a document or
+            # mail app as the parent: the shape of a macro or attachment payload, with no benign reading on a home
+            # PC. must_alert can't be suppressed, so the bar stops here: download-and-run plus Invoke-Expression
+            # (plus a policy bypass) is Chocolatey's documented install line, and alerts suppressibly below.
             severity, must = 5, True
-        elif keys - WEAK_SIGNALS or pclass == "browser":
-            severity, must = 4, False   # an encoded payload or a download-and-run alone; suppressible per program
+        elif len(keys) >= 2 or keys - WEAK_SIGNALS or pclass == "browser":
+            severity, must = 4, False   # two signals, or an encoded payload or download-and-run alone, or a browser parent
         else:
             return []
         facts = {"program": prog, "parent": parent, "parent_class": pclass, "folder": folder_class(path),
@@ -355,8 +373,9 @@ class LolbinConnects(HostDetector):
 
     Measured 0 of 108,423 connections in 34.5 h (rundll32 started 19 times, by svchost and msiexec, and
     never connected). certutil, bitsadmin, mshta and regsvr32 exist to fetch or run remote content and
-    have no home use on the internet: must_alert. The rest (rundll32, wmic, wscript, cscript, msbuild,
-    installutil, cmstp...) alert, suppressible per program for a tool the owner's software relies on.
+    have no home use on the internet: must_alert. The rest (rundll32, wmic, wscript, cscript, installutil,
+    cmstp...) alert, suppressible per program for a tool the owner's software relies on. msbuild is a digest
+    item: on a Visual Studio PC it connects out for every NuGet restore.
     """
 
     name = "host_lolbin"
@@ -370,26 +389,31 @@ class LolbinConnects(HostDetector):
         if prog not in WIN_LOLBINS:
             return []
         must = prog in LOLBIN_DOWNLOADERS
+        severity = 5 if must else 3 if prog in LOLBIN_DEV_TOOLS else 4
         facts = {"program": prog, "folder": folder_class(path), "port": _port(c.get("remote_port")),
                  "downloader": must, **_start_facts(self.state.start_of(c.get("guid") or "", ts))}
-        return self.emit(ts, "Built-in Windows tool connected to the internet", facts, 5 if must else 4, prog,
-                         must_alert=must)
+        return self.emit(ts, "Built-in Windows tool connected to the internet", facts, severity, prog,
+                         (self.state.host, prog), must_alert=must)
 
 
 class BadSignatureConnects(HostDetector):
-    """R21. A program whose code signature is invalid or untrusted held an outside connection, from the
-    Windows agent's 1-minute `outbound_connections` snapshot, which carries osquery's authenticode result.
+    """R21. A program whose code signature Windows rejects held an outside connection, from the Windows
+    agent's 1-minute `outbound_connections` snapshot, which carries osquery's authenticode result.
 
-    Missing or unreadable signatures don't count: in 34.5 h, all 7 programs osquery reported without a
-    readable signature were installed apps (Program Files, AppData\\Local\\Programs), the Signal Desktop
-    case that hostctx settles by asking Windows itself. `invalid` or `distrusted` (the file no longer
-    matches what its publisher signed, or the publisher is blocked): alert. `untrusted` or `expired`
-    (a chain Windows doesn't trust: self-built or self-signed software): digest.
+    osquery reports four results: trusted, missing, untrusted and distrusted. A file changed after it was
+    signed (a hash mismatch), a self-signed or self-built binary and an expired certificate all come back
+    `untrusted`; `distrusted` is a publisher Windows blocks. Both alert, suppressible per program, because
+    the tampered-binary case is inside `untrusted` and a dev build is a one-time suppression. Missing or
+    unreadable signatures don't count: in 34.5 h, all 7 programs osquery reported without a readable
+    signature were installed apps (Program Files, AppData\\Local\\Programs), the Signal Desktop case
+    that hostctx settles by asking Windows itself. The signer name is kept as a fact for the local case
+    page and summary (this rule is code-only, so the summary never leaves the box); for a self-signed
+    certificate that can be the owner's own name, which is why it is quoted and never a title.
     """
 
     name = "host_bad_sig"
     QUERIES: ClassVar[tuple[str, ...]] = (SNAPSHOT,)
-    BAD: ClassVar[dict[str, int]] = {"invalid": 4, "distrusted": 4, "untrusted": 3, "expired": 3}
+    BAD: ClassVar[dict[str, int]] = {"untrusted": 4, "distrusted": 4}
 
     def row(self, query: str, c: dict, ts: float) -> list[Case]:
         sig = (c.get("signature") or "").lower()
