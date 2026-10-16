@@ -114,12 +114,20 @@ def test_firewall_accepts_and_system_lines_are_dropped_without_a_warning_each(tm
     assert [r["kind"] for r in recs] == ["firewall", "cef"]
     assert recs[0]["chain"] == "WAN_LOCAL" and recs[0]["src"] == "198.51.100.7" and recs[1]["class_id"] == "401"
     assert st.counts == {"firewall_accept": 300, "system": 1, "firewall_drop": 1, "cef": 1, "refused": 2}
+    for i in range(50):  # spoofed sources: one warning a period, no per-sender state
+        syslogin.handle(REAL_CEF.encode(), f"198.51.100.{i}", w, allow, now=T0 + 36, stats=st)
     assert [r.message for r in caplog.records if "refusing" in r.message] == [
-        "syslog: refusing datagrams from 192.168.50.66 (not in syslog.allow / network.gateways)"]  # once
+        "syslog: refusing datagrams from 192.168.50.66 (not in syslog.allow / network.gateways)"]
+    assert st.counts["refused"] == 52 and not hasattr(st, "refused")
     syslogin.handle(REAL_FW_UDP.encode(), "192.168.50.1", w, allow, now=T0 + 700, stats=st)  # the period ends
     assert st.counts == {"firewall_accept": 1}
     summary = [r.message for r in caplog.records if r.message.startswith("syslog: ")][-1]
-    assert "firewall_accept 300" in summary and "cef 1" in summary and "last 12 min" in summary
+    assert "firewall_accept 300" in summary and "cef 1" in summary and "refused 52" in summary and "last 12 min" in summary
+    syslogin.handle(REAL_CEF.encode(), "192.168.50.66", w, allow, now=T0 + 701, stats=st)
+    assert sum("refusing" in r.message for r in caplog.records) == 2  # a new period warns again
+    st.flush(T0 + 1300)  # what the listener does on a receive timeout: silence is reported, not hidden
+    assert st.flush(T0 + 1900) is None
+    assert [r.message for r in caplog.records][-1] == "syslog: nothing arrived in the last 10 min"
 
 
 def test_only_allowed_senders_are_written_and_the_file_rotates(tmp_path):

@@ -153,7 +153,7 @@ class Stats:
 
     def __init__(self, every: float = STATS_EVERY):
         self.every, self.counts, self.since = every, Counter(), None
-        self.refused: set[str] = set()
+        self.warned_refused = False  # one warning per period, not per sender: UDP sources are spoofable
 
     def add(self, outcome: str, now: float) -> None:
         if self.since is None:
@@ -163,11 +163,14 @@ class Stats:
         self.counts[outcome] += 1
 
     def flush(self, now: float) -> None:
+        minutes = max(1, round((now - (self.since if self.since is not None else now)) / 60))
         if self.counts:
             summary = ", ".join(f"{k} {v}" for k, v in sorted(self.counts.items()))
-            log.info("syslog: %s in the last %d min (kept: cef, firewall_drop)", summary,
-                     max(1, round((now - self.since) / 60)))
+            log.info("syslog: %s in the last %d min (kept: cef, firewall_drop)", summary, minutes)
+        else:  # a silent feed must look different from a quiet one: the router or the firewall rule is off
+            log.info("syslog: nothing arrived in the last %d min", minutes)
         self.counts.clear()
+        self.warned_refused = False
         self.since = now
 
 
@@ -177,17 +180,17 @@ def handle(data: bytes, sender: str, writer: UdmWriter, allow: set[str], now: fl
     now = time.time() if now is None else now
     stats = Stats() if stats is None else stats
     if allow and sender not in allow:
-        if sender not in stats.refused:  # once per sender: a spoofer or a misconfigured device, not a flood
-            stats.refused.add(sender)
-            log.warning("syslog: refusing datagrams from %s (not in syslog.allow / network.gateways)", sender)
         stats.add("refused", now)
+        if not stats.warned_refused:  # the count is in the summary; the warning just names one sender
+            stats.warned_refused = True
+            log.warning("syslog: refusing datagrams from %s (not in syslog.allow / network.gateways)", sender)
         return None
     kind, rec = parse_line(data[:MAX_LINE].decode("utf-8", errors="replace"))
-    if kind == "firewall" and rec["action"] not in FW_KEEP_ACTIONS:
-        stats.add("firewall_accept", now)
-        return None
     if rec is None:
         stats.add(kind, now)
+        return None
+    if kind == "firewall" and rec["action"] not in FW_KEEP_ACTIONS:
+        stats.add("firewall_accept", now)
         return None
     stats.add("firewall_drop" if kind == "firewall" else kind, now)
     writer.write({"ts": now, "sender": sender, "kind": kind, **rec}, now)
@@ -199,8 +202,16 @@ def serve(listen: str, out_dir: str, allow: set[str]) -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((host or "0.0.0.0", int(port)))
     writer, stats = UdmWriter(out_dir), Stats()
+    sock.settimeout(stats.every)  # so a feed that stops still gets its summary line
     log.info("syslog listening on %s, writing %s (accepting from: %s)", listen, writer.path,
              ", ".join(sorted(allow)) or "anyone")
     while True:
-        data, (sender, _) = sock.recvfrom(65535)
-        handle(data, sender, writer, allow, stats=stats)
+        try:
+            data, (sender, _) = sock.recvfrom(65535)
+        except TimeoutError:
+            stats.flush(time.time())
+            continue
+        try:
+            handle(data, sender, writer, allow, stats=stats)
+        except Exception:  # parsing can't raise; writing can (disk full, a rename race at rotation)
+            log.exception("syslog: could not store a datagram from %s", sender)
