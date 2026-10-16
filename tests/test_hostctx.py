@@ -1,6 +1,7 @@
 """Host context: which program on the tapwatch PC made a case's traffic, and was it the owner's agent."""
 
 import json
+import socket
 import subprocess
 from datetime import datetime, timezone
 
@@ -277,6 +278,25 @@ def test_pipeline_adds_host_context_and_jev_who(tmp_path):
     assert case.facts["host_who"] == "agent_misused"           # web content, then a tunnel nobody asked for
     assert case.facts["host_jev_who"] == "agent_misused" and r is Route.ALERT
     assert "read content from the web" in jev.asked[0] and SID not in jev.asked[0]
+
+
+def test_pipeline_skips_host_context_for_another_device_on_the_pcs_address(tmp_path):
+    from conftest import dhcp, dns, write_logs
+
+    from tapwatch.detectors import Identity, TakeoverChannel
+    from tapwatch.pipeline import Pipeline
+    from tapwatch.store import Store
+
+    zeek = write_logs(tmp_path, conn=[dict(out_conn(T0), _type="conn")])
+    hc = HostContext(PC, "osqueryi", [], str(tmp_path / "t"), runner=FakeRunner([socket_row()]), hostname="pc-one")
+    p = Pipeline([Identity(), TakeoverChannel()], Assets(), Store(":memory:"), hostctx=hc, zeek_dirs=[str(zeek)])
+    p.process(dict(dhcp(T0 - 60, mac="02:00:00:00:00:02"), host_name="work-laptop", assigned_addr=PC))
+    _, case, _, _ = p.process(dns(T0, "abc.ngrok.io", src=PC))[0]
+    assert case.facts["device_name"] == "work-laptop"             # the dock's address, but the laptop is docked now
+    assert not [k for k in case.facts if k.startswith("host_")]   # so none of the PC's programs are attached
+    p.process(dict(dhcp(T0 + 100, mac="02:00:00:00:00:03"), host_name="PC-ONE", assigned_addr=PC))
+    _, case, _, _ = p.process(dns(T0 + 200, "xyz.trycloudflare.com", src=PC))[0]
+    assert case.facts["device_name"] == "PC-ONE" and "host_who" in case.facts   # the PC is back on the dock
 
 
 def test_jev_can_hold_an_unconfirmed_agent_alert_to_digest_but_not_log():
@@ -631,6 +651,25 @@ def test_agent_reported_addresses_beat_the_configured_ip(tmp_path):
     with log.open("a") as fh:                          # appended later: read incrementally
         fh.write(addr_snap(T0 + 3600, PC))
     assert hc.is_this_pc(PC, T0 + 3600) and hc.config_mismatch(T0 + 3600) is None
+
+
+def test_device_name_must_match_the_pcs_own_name(tmp_path):
+    # Measured 2026-10-16, case #373: a dock shared between the PC and a work laptop hands its MAC and DHCP
+    # address to whichever machine is docked, so the address alone can't say which device made the traffic.
+    log = tmp_path / "osqueryd.snapshots.log"
+    log.write_text(addr_snap(T0, NEW_IP))
+    hc = HostContext(PC, None, [tmp_path / "osqueryd.results.log"], hostname="pc-one")
+    assert hc.hostname == "pc-one"
+    assert hc.is_this_pc(NEW_IP, T0 + 60, "pc-one")                  # reported address, same name
+    assert hc.is_this_pc(NEW_IP, T0 + 60, "PC-ONE.lan")              # first label, any case
+    assert not hc.is_this_pc(NEW_IP, T0 + 60, "work-laptop")         # the dock changed hands
+    assert not hc.is_this_pc(NEW_IP, T0 + 60, "pc-one-two")          # a different name, not a prefix match
+    assert hc.is_this_pc(NEW_IP, T0 + 60, None) and hc.is_this_pc(NEW_IP, T0 + 60, "")   # no DHCP seen: as before
+    assert hc.is_this_pc(PC, T0 - 86400, "pc-one") and not hc.is_this_pc(PC, T0 - 86400, "work-laptop")  # configured IP
+    assert not hc.is_this_pc("192.168.50.99", T0 + 60, "pc-one")     # the name never widens the address rule
+    assert HostContext(PC, None, [], hostname="PC-One.home.arpa").hostname == "pc-one"
+    assert HostContext(PC, None, [], hostname="").is_this_pc(PC, T0, "work-laptop")   # own name unknown: address only
+    assert HostContext(PC, None, []).hostname == socket.gethostname().split(".")[0].lower()   # default: this machine
 
 
 def test_half_written_and_rotated_logs(tmp_path):

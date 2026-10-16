@@ -95,8 +95,13 @@ a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwat
 2. **Host context.** For a case on the tapwatch machine, attach `host_*` facts from osquery and
    Claude Code transcripts. "The tapwatch machine" means whatever addresses its agents reported around the case
    time (`host_addresses`, every 5 minutes), since DHCP moves PCs; `host_context.host` counts only when no agent
-   reported. The alerter also keeps `admin_devices` and `dev_profile.hosts` entries for that IP on the PC's
-   current addresses, and logs a warning when the configured IP is out of date. An `admin_devices` entry
+   reported. The case's DHCP hostname (`device_name`) must also match the PC's own name (`host_context.hostname`,
+   default `socket.gethostname()`; first label, any case) when both are known: an address can be another
+   device's. Measured 2026-10-16 (case #373): the PC and a work laptop share a docking station, so the dock's
+   MAC and DHCP address go to whichever machine is docked, and a lookup by the laptop's security agent was given
+   the PC's programs until the name check. The alerter also keeps `admin_devices` and `dev_profile.hosts`
+   entries for that IP on the PC's current addresses, and logs a warning when the configured IP is out of
+   date. An `admin_devices` entry
    can also be a device identity (`name:<DHCP hostname>` or `mac:<address>`) instead of an IP, which is
    how a phone on a private MAC stays exempt from the router-admin rule.
 3. **Summarize.** Turn the case into a short "state" in words for Jev.

@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import glob
 import json
+import logging
 import os
 import re
+import socket
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -44,6 +46,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .detectors import base_domain, is_internal
+
+log = logging.getLogger("tapwatch")
 
 # Same columns as agents/config/osquery.conf `outbound_connections_ctx`. Selects named
 # environment variables only: the Claude messaging token sits in the same environment.
@@ -615,15 +619,24 @@ WIN_SIG_STATUS = {"Valid": "trusted", "NotSigned": "missing", "HashMismatch": "i
 WIN_SIG_MAX = 8  # paths per case
 
 
+def first_label(name: str | None) -> str:
+    """A hostname's first label, lower-cased: `PC-ONE.lan` and `pc-one` are the same machine."""
+    return (name or "").strip().split(".", 1)[0].lower()
+
+
 class HostContext:
     def __init__(self, host: str, osquery_bin=None, results_logs=(), transcripts: str | None = None,
-                 runner=subprocess.run, timeout: float = 20.0, powershell: str | None = None):
+                 runner=subprocess.run, timeout: float = 20.0, powershell: str | None = None,
+                 hostname: str | None = None):
         # One binary or several: on a Windows PC with WSL, both osqueryi (Linux processes) and
         # osqueryi.exe (Windows processes) answer for the same IP address.
         bins = osquery_bin if isinstance(osquery_bin, (list, tuple)) else [osquery_bin] if osquery_bin else []
         self.osquery_bins = [b for b in bins if b]
         self.osquery_bin = self.osquery_bins[0] if self.osquery_bins else None
         self.host, self.results_logs = host, [Path(p) for p in results_logs]
+        # The PC's own name, to match against a case's DHCP hostname: an address alone can belong to another
+        # device (a shared dock). Resolved here so tests can pass one; "" means unknown, and the name rule is off.
+        self.hostname = first_label(hostname if hostname is not None else socket.gethostname())
         self.transcripts = Path(transcripts).expanduser() if transcripts else Path.home() / ".claude/projects"
         self.runner, self.timeout = runner, timeout
         self.powershell, self._sigs = powershell, {}
@@ -673,10 +686,22 @@ class HostContext:
         near = [a for t, a in self._snaps if abs(t - ts) <= ADDR_WINDOW]
         return set().union(*near) if near else None
 
-    def is_this_pc(self, ip: str, ts: float) -> bool:
-        """Was `ip` this PC at `ts`? The agents' reports win; the configured IP counts only without them."""
+    def is_this_pc(self, ip: str, ts: float, device_name: str | None = None) -> bool:
+        """Was `ip` this PC at `ts`? The agents' reports win; the configured IP counts only without them.
+
+        `device_name` is the DHCP hostname seen on that address. When it and the PC's own name are both known,
+        they must match (first label, any case): the address can belong to another device. Measured 2026-10-16,
+        case #373: the PC and a work laptop share a docking station, so the dock's MAC and DHCP address go to
+        whichever machine is docked, and a lookup by the laptop's own security agent got the PC's programs
+        attached. No DHCP name seen: the address rule alone, as before."""
         near = self.addresses_near(ts)
-        return ip in near if near is not None else ip == self.host
+        if not (ip in near if near is not None else ip == self.host):
+            return False
+        name = first_label(device_name)
+        if name and self.hostname and name != self.hostname:
+            log.debug("%s is this PC's address but the DHCP name there is another device's: not this PC", ip)
+            return False
+        return True
 
     def config_mismatch(self, now: float | None = None) -> str | None:
         """A warning when the configured IP isn't one of the PC's addresses any more (DHCP moved it)."""
