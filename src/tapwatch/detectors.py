@@ -678,10 +678,15 @@ class PortScan(Detector):
         # a minute, alerted 2026-10-15 as #122). A scanner's other traffic keeps working.
         okq = self.ok.get(src)
         all_failed = not okq or okq[-1] < ev[0][0]  # nothing has succeeded since the failures began
+        # The share of the source's connections in the window that failed. A scanner's probes are
+        # most of what it sends; a phone on marginal Wi-Fi fails a few dozen SYNs to CDN hosts while
+        # hundreds of others succeed (measured 2026-10-16 #339: 48 failed, 336 succeeded, 12.5%).
+        answered = sum(1 for t in (okq or ()) if ts - t <= self.window)
+        failed_pct = round(100 * len(ev) / (len(ev) + answered))
         facts = {"targets": len(targets), "hosts": len(hosts), "ports": len({e[2] for e in ev}),
                  "proto": protos.pop() if len(protos) == 1 else "mixed", "all_failed": all_failed,
-                 "failed_pct": 100, "internal_targets": internal == len(hosts), "window_s": round(self.window)}
-        if all_failed:
+                 "failed_pct": failed_pct, "internal_targets": internal == len(hosts), "window_s": round(self.window)}
+        if all_failed or failed_pct < 50:
             facts["max_route"] = "digest"
         return [Case(self.name, src, ts, "Possible port or host scan", facts, base_severity=3)]
 

@@ -1163,3 +1163,14 @@ def test_admin_devices_may_name_a_device_by_hostname_or_mac():
     app = [conn(T0 + 2, src="192.168.50.80", dst=GW, port=443), conn(T0 + 3, src="192.168.50.81", dst=GW, port=443),
            conn(T0 + 4, src="192.168.50.82", dst=GW, port=443)]
     assert [c.host for c in run(det, app)] == ["192.168.50.82"]          # the named phone and the MAC'd one pass
+
+
+def test_a_few_failures_among_many_successes_is_not_a_scan_alert():
+    det = PortScan()
+    recs = [conn(T0 + i * 0.1, dst=f"203.0.113.{i % 200 + 1}", port=443) for i in range(336)]        # browsing works
+    recs += [conn(T0 + 10 + i * 0.1, dst=f"198.51.100.{i + 1}", port=443, state="S0") for i in range(60)]  # a few don't
+    recs.sort(key=lambda r: r["ts"])
+    c = run(det, recs)[0]
+    assert c.facts["failed_pct"] < 50 and c.facts["max_route"] == "digest" and not c.facts["all_failed"]
+    pure = run(PortScan(), [conn(T0 + i * 0.1, dst=f"192.168.50.{i % 20 + 2}", port=1000 + i, state="REJ") for i in range(60)])[0]
+    assert pure.facts["failed_pct"] == 100 and "max_route" not in pure.facts
