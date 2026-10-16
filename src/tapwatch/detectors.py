@@ -665,7 +665,7 @@ class PortScan(Detector):
         if not is_internal(src) or not unicast(dst) or (proto == "udp" and port in self.DISCOVERY_UDP):
             return []
         ev = self.events[src]
-        ev.append((ts, dst, port, proto))
+        ev.append((ts, dst, port, proto, rec.get("conn_state")))
         while ev and ts - ev[0][0] > self.window:
             ev.popleft()
         if ts < self.cooldown.get(src, 0) or not self._sweep(ev):
@@ -676,8 +676,11 @@ class PortScan(Detector):
         # A device losing its network fails every connection at once, which on one port to many
         # hosts is the sweep shape (a phone walking out of Wi-Fi range: 50 SYNs to 50 web servers in
         # a minute, alerted 2026-10-15 as #122). A scanner's other traffic keeps working.
+        # Offline means silence: no answered connection since the failures began AND no refusal
+        # either (a REJ or a reset is the target answering, which proves the path works).
         okq = self.ok.get(src)
-        all_failed = not okq or okq[-1] < ev[0][0]  # nothing has succeeded since the failures began
+        silent = all(e[4] in ("S0", "OTH") for e in ev)
+        all_failed = silent and (not okq or okq[-1] < ev[0][0])
         # The share of the source's connections in the window that failed. A scanner's probes are
         # most of what it sends; a phone on marginal Wi-Fi fails a few dozen SYNs to CDN hosts while
         # hundreds of others succeed (measured 2026-10-16 #339: 48 failed, 336 succeeded, 12.5%).
@@ -692,10 +695,10 @@ class PortScan(Detector):
 
     def _sweep(self, ev: deque) -> bool:
         """TCP: `threshold` distinct (host, port) targets. UDP: that many ports on one host or hosts on one port."""
-        if len({(h, p) for _, h, p, pr in ev if pr != "udp"}) >= self.threshold:
+        if len({(h, p) for _, h, p, pr, _s in ev if pr != "udp"}) >= self.threshold:
             return True
         ports_by_host, hosts_by_port = defaultdict(set), defaultdict(set)
-        for _, h, p, pr in ev:
+        for _, h, p, pr, _s in ev:
             if pr == "udp":
                 ports_by_host[h].add(p)
                 hosts_by_port[p].add(h)

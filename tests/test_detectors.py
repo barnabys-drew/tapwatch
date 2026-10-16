@@ -1173,4 +1173,4 @@ def test_a_few_failures_among_many_successes_is_not_a_scan_alert():
     c = run(det, recs)[0]
     assert c.facts["failed_pct"] < 50 and c.facts["max_route"] == "digest" and not c.facts["all_failed"]
     pure = run(PortScan(), [conn(T0 + i * 0.1, dst=f"192.168.50.{i % 20 + 2}", port=1000 + i, state="REJ") for i in range(60)])[0]
-    assert pure.facts["failed_pct"] == 100 and "max_route" not in pure.facts
+    assert pure.facts["failed_pct"] == 100 and "max_route" not in pure.facts   # refusals are answers: online, scanning
