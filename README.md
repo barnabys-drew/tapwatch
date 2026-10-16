@@ -60,7 +60,8 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
   0.75 confidence to alert on its own. Without an API key, it runs rules-only.
 - **Agent-aware host context.** For traffic from the tapwatch machine, osquery names the program
   and Claude Code session markers and transcripts show whether the owner asked for it. Process
-  proof outranks transcript context.
+  proof outranks transcript context, and five host rules read the agent's own rows for shapes the
+  wire can't show.
 - **A case desk with no JavaScript.** It's a queue, a case page with ±5 minutes of Zeek evidence,
   workflow, notes, an audit trail, expiring "suppress similar" rules and stats. The CSP allows no
   scripts, and every change carries a CSRF token.
@@ -129,7 +130,8 @@ treat it as a sanity check, not a benchmark.
 | `cleartext_auth` | HTTP basic auth, FTP logins, telnet, POP3/IMAP or MQTT without encryption |
 | `new_domain` | first contact with a rarely used domain (code-routed; log-only, kept out of the queue by default) |
 | `scan` | one host probing many hosts or ports |
-| `udm_ips`, `udm_admin` | the router's own IPS verdicts, and admin logins (new source or repeated failures **always alert**), from its syslog |
+| `udm_ips`, `udm_admin` | the router's own IPS verdicts, and admin logins (new source or repeated failures **always alert**), from its syslog; the feed is parsed against lines a real UniFi gateway sends |
+| `host_encoded_cmd`, `host_app_shell`, `host_temp_exec`, `host_lolbin`, `host_bad_sig` | on a PC with the [osquery agent](agents/README.md): an encoded or download-and-run command, a document app or browser starting a shell, a program in a temp folder, a built-in Windows tool, or a badly signed program connecting out (the first two **always alert** in their clearest shapes) |
 | `ioc_match`, `ids_alert` | your threat lists (**always alert**), and Suricata alerts if you run it |
 
 Design notes and rule specs (Sigma and SQL) are in [docs/detections/](docs/detections/DESIGN.md).
@@ -181,7 +183,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch mark 42 fp` | close case 42 as a false (`fp`) or true (`tp`) positive |
 | `tapwatch update-feeds` | refresh the public lists (weekly is plenty) |
 | `tapwatch syslog` | receive the router's CEF syslog into `udm.log` |
-| `tapwatch service install` | install systemd user services (alerter, case desk, watchdog, optional capture and syslog) |
+| `tapwatch service install` | install systemd user services (alerter, case desk, watchdog; `--capture-iface` adds capture, `--syslog` the router syslog listener) |
 | `tapwatch who 42 --zeek-dir DIR` | ask the PC (osquery and agent transcripts) who made case 42's traffic |
 | `tapwatch explain [--apply]` | find repeat cases host context explains, and suggest or apply suppressions |
 | `tapwatch replay` / `tapwatch eval` | push finished logs through the pipeline, or score rules-only vs Jev on labelled traffic |
@@ -189,7 +191,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 
 Optional extras: [router syslog](docs/setup/router-syslog.md) adds the router's own IPS verdicts
 and admin logins, and the [endpoint agents](agents/README.md) (osquery) name the program behind a
-connection.
+connection and feed the five host rules.
 
 ## What leaves the network
 
@@ -233,7 +235,7 @@ tools/               personal-data gate
 | Doc | What's in it |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | data flow, components, routing guardrails, host context, security model, design decisions |
-| [docs/detections/DESIGN.md](docs/detections/DESIGN.md) | the detection catalogue (R01–R16), with measured baselines and how Jev is used |
+| [docs/detections/DESIGN.md](docs/detections/DESIGN.md) | the detection catalogue (R01–R21), with measured baselines and how Jev is used |
 | [docs/detections/rules/](docs/detections/rules/README.md) | Sigma and DuckDB SQL versions of the rules |
 | [eval/RESULTS.md](eval/RESULTS.md) | eval method, numbers, tuning history and caveats |
 | [docs/setup/](docs/README.md#setup-guides) | mirror port, router syslog, Windows |
@@ -256,9 +258,10 @@ on PRs into `main`.
 
 **v0.1.1**, running on a real home network, so expect rough edges. The Linux paths (a bare
 container following this README, and the Compose stack) were installed from scratch and run on
-2026-10-15. Next up, per the [roadmap](docs/ROADMAP.md): a long-running test of host context (in
-progress), a clean-machine Windows test, and endpoint rules from osquery process events. macOS
-waits until there's a Mac to test on.
+2026-10-15. The router syslog feed is verified against a live UniFi gateway, and the first endpoint
+rules (R17–R21) are in. Next up, per the [roadmap](docs/ROADMAP.md): a long-running test of host
+context (in progress), a clean-machine Windows test, and Linux endpoint rules. macOS waits until
+there's a Mac to test on.
 
 ## License
 
