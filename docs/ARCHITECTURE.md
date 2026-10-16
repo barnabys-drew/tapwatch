@@ -237,6 +237,7 @@ When the case is on the tapwatch machine, `hostctx.py` asks the machine itself
 | Program holding the connection, its path, parent, redacted command line, on-disk state, container | live osquery (cases under 10 min old) + the agent's 1-minute `outbound_connections_ctx` history | **process proof** |
 | Windows: the program behind every connection and DNS lookup, however short, with its parent and command-line signals (encoded, download-and-run...) | Sysmon events 1, 3 and 22, collected by the osquery service (`sysmon_events`) | **process proof** |
 | Linux/WSL: the program behind every outgoing connection, however short, with its parent and Claude/Herdr/SSH markers | osquery's eBPF publisher (`bpf_connections`, flags in `agents/config/linux.flags`) | **process proof** |
+| Linux/WSL: a connection whose process had already exited when osquery read its environment (a one-second `curl` from an agent's shell: no markers, no parent name; measured 2026-10-15) is credited to the nearest ancestor that still carries markers, walking pid -> parent through the eBPF exec events | `bpf_process_events` (program starts: pid, parent, path; no command lines) + the marker-bearing rows of the running `claude` process (`host_inherited`) | **process proof** |
 | A DNS lookup made through a proxy (WSL's) or a resolver Windows doesn't see (Chrome's own): the program that connected to one of its answers within 30 s | Zeek DNS answers + the connection owners above (`host_lookups_followed`) | **inferred** |
 | Started by a Claude Code session, attended, interactive entrypoint | `CLAUDE_CODE_*` environment markers on the process (they survive reparenting) | **process proof** |
 | Started from the owner's Herdr terminal, or from an SSH login | `HERDR_PANE_ID`, `SSH_CONNECTION` markers | **process proof** |
@@ -257,6 +258,8 @@ Code reaches its own verdict (`hostctx.verdict`):
 missing, or the connection too short to see), tapwatch still searches recent transcripts. A
 transcript match is shown to Jev as context but **never feeds code's verdict** (`transcript_only`).
 A transcript that merely mentions a destination doesn't prove the agent made the connection.
+The parent-chain walk keeps a short connection on the process-proof side: the session is read from a running
+process's environment, not guessed from timing, so `host_who` and the transcript lookup work as for a marker-bearing row.
 
 **Why Jev's misuse vote needs a code-seen risk.** Jev answers a `who` question and only sees
 code's facts as sentences. Its `agent_misused` answer counts only if all three hold:
