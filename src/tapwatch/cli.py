@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, detectors, evaluate, evidence, zeek
+from . import config, detectors, evaluate, evidence, hostrules, zeek
 from .pipeline import Pipeline
 from .store import Store
 from .summarizer import summarize
@@ -30,7 +30,8 @@ from .summarizer import summarize
 
 def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=None) -> Pipeline:
     ips, doms = config.iocs(cfg)
-    return Pipeline(detectors.build(cfg, ips, doms, config.popular_domains(cfg), config.assets(cfg).table), config.assets(cfg), Store(cfg.get("db_path", "tapwatch.db")),
+    dets = detectors.build(cfg, ips, doms, config.popular_domains(cfg), config.assets(cfg).table) + hostrules.build(cfg)
+    return Pipeline(dets, config.assets(cfg), Store(cfg.get("db_path", "tapwatch.db")),
                     client=config.jev_client(cfg) if use_ai else None,
                     notifier=config.notifier(cfg) if notify else None,
                     thresholds=config.thresholds(cfg), dedupe_seconds=cfg.get("dedupe_seconds", 3600),
@@ -60,7 +61,8 @@ def cmd_run(args, cfg) -> int:
     Path("tapwatch-run.pid").write_text(str(os.getpid()))  # the watchdog checks this process is alive
     p = _pipeline(cfg, zeek_dirs=args.zeek_dir)
     log = logging.getLogger("tapwatch")
-    log.info("watching %s (AI triage: %s, notifications: %s)", args.zeek_dir,
+    host_dirs = config.host_log_dirs(cfg)  # the endpoint agents' osquery logs, for the host rules (R17+)
+    log.info("watching %s (AI triage: %s, notifications: %s)", args.zeek_dir + host_dirs,
              "on" if p.client else "OFF - rules only", "on" if p.notifier else "OFF")
     if config.missing_feeds(cfg):
         log.warning(config.missing_feeds(cfg))
@@ -81,7 +83,7 @@ def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
     digest = DigestClock(cfg.get("digest_hour_utc", 13))
     keep_days, next_prune = cfg.get("zeek_retention_days", 30), 0.0
     next_save, next_follow = time.time() + STATE_SAVE_EVERY, 0.0
-    for rec in zeek.Follower(args.zeek_dir).follow(idle_ticks=True):
+    for rec in zeek.Follower(args.zeek_dir + config.host_log_dirs(cfg)).follow(idle_ticks=True):
         if time.time() >= next_follow:  # DHCP moves the PC: keep its rules on the address it has now
             p.follow_this_pc()
             next_follow = time.time() + FOLLOW_PC_EVERY
