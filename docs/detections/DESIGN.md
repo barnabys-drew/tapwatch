@@ -348,6 +348,10 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Baseline:** 3-day warmup. Measured: **~150 first-seen pairs/h** on an active evening after
   warmup. Only **7 of 167** base domains were off the Tranco list, and 124 were single-device.
 - **Dedupe:** `new_domain|host|base_domain`; window-grouped as now.
+- **Category:** each name is looked up in the offline UT1 category list (`categories.py`, from
+  `update-feeds`): the case carries the distinct kinds found (advertising, media, remote control,
+  ...) as a fact for the summary. A fact only, not routing: measured first (2026-10-16, the day's
+  false alarms were ad-tech, a security vendor and a video call), routing on it comes after.
 - **FPs:** small business and personal sites, work domains and SaaS tenants (allowlist the
   work laptop's corporate suffixes in config, not in git), and fresh legit CDNs. Use the Public Suffix List
   (`co.uk`) instead of last-two-labels.

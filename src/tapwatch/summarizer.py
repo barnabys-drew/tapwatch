@@ -118,6 +118,8 @@ def _observed(c: Case, words: dict) -> str:
     if c.detector == "upload_spike":
         text = (f"In one hour it uploaded about {f['mb']} MB to the internet, roughly {f['times_normal']} times "
                 f"its normal of {f['normal_mb']} MB (compared with {f.get('basis', 'recent hours')}).")
+        if f.get("top_category"):
+            text += f" The main destination is listed as a {f['top_category'].replace('_', ' ')} site."
         if f.get("to_sync_service"):
             text += f" {f.get('top_share_pct', 0)}% went to a well-known cloud sync or backup service."
         elif f.get("to_security_vendor"):
@@ -191,7 +193,10 @@ def _observed(c: Case, words: dict) -> str:
         signs = [s for s, on in (("no server name", f["no_name"]), ("an address no DNS lookup explains", f["unexplained_ip"]),
                                  (f"port {f['port']} instead of 443", f["odd_port"]),
                                  ("a self-signed or expired certificate", f["bad_cert"])) if on]
-        return "It opened an encrypted connection with " + ", ".join(signs) + ". Each is common alone; together they are unusual."
+        text = "It opened an encrypted connection with " + ", ".join(signs) + ". Each is common alone; together they are unusual."
+        if f.get("category"):
+            text += f" The server name is listed as a {f['category'].replace('_', ' ')} site."
+        return text
     if c.detector == "udm_ips":
         return (f"The router's intrusion prevention matched signature {json.dumps(clean_untrusted(f['signature']))} "
                 f"(risk: {f['risk']}, {f['direction']} traffic) and "
@@ -297,6 +302,8 @@ def _new_domains(f: dict) -> str:
         if f["popular_known"]:
             parts.append("It is on the list of widely used internet domains." if f["popular"]
                          else "It is not on the list of widely used internet domains.")
+        if f.get("categories"):
+            parts.append(f"It is listed as a {f['categories'][0].replace('_', ' ')} site.")
         return " ".join(parts)
     parts = [f"Within {f['window_min']} minutes it contacted {n} domains it had never used before."]
     parts.append(f"{f['random']} of them look randomly generated." if f["random"]
@@ -304,6 +311,8 @@ def _new_domains(f: dict) -> str:
     parts.append(f"{f['shared']} of them are already used by other devices on this network.")
     if f["popular_known"]:
         parts.append(f"{f['popular']} of them are on the list of widely used internet domains.")
+    if f.get("categories"):
+        parts.append("The listed kinds among them: " + ", ".join(c.replace("_", " ") for c in f["categories"]) + ".")
     return " ".join(parts)
 
 

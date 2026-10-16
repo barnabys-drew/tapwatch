@@ -181,6 +181,28 @@ def test_upload_spike_against_own_baseline():
     cases = [c for c in run(det, recs) if c.detector == "upload_spike"]
     assert len(cases) == 1 and cases[0].facts["mb"] == 1000 and cases[0].facts["basis"] == "recent hours"
 
+def test_cases_carry_the_site_category_from_the_offline_list():
+    from tapwatch.categories import set_categories
+    from tapwatch.detectors import TlsOddities
+    set_categories({"ads.example": "advertising", "tube.example": "media"})
+    try:
+        nd = NewExternalDomain(Warmup(0), window=300)
+        (c,) = run(nd, [dns(T0, "a.ads.example"), dns(T0 + 1, "b.tube.example"), dns(T0 + 2, "plain.example")]) + nd.flush()
+        assert c.facts["categories"] == ["advertising", "media"] and c.facts["count"] == 3   # distinct kinds, unlisted left out
+        odd = {"_type": "ssl", "ts": T0, "id.orig_h": "192.168.50.10", "id.resp_h": "198.51.100.7", "id.resp_p": 4443,
+               "established": True, "server_name": "x.ads.example", "validation_status": "self signed certificate"}
+        (t,) = run(TlsOddities(Warmup(0)), [odd])
+        assert t.facts["category"] == "advertising" and t.facts["score"] == 3
+        up = HourlyProfile()
+        recs = [dict(dns(T0 - 10, "big.tube.example"), answers=["203.0.113.5"])]
+        recs += [conn(T0 + h * 3600, orig_bytes=10_000_000) for h in range(8)]
+        recs += [conn(T0 + 8 * 3600 + 60, orig_bytes=1_000_000_000), conn(T0 + 9 * 3600)]
+        (u,) = [c for c in run(up, recs) if c.detector == "upload_spike"]
+        assert u.facts["top_category"] == "media"
+    finally:
+        set_categories({})
+
+
 def test_first_seen_rules_quiet_during_warmup():
     w = Warmup(600)
     nd, dev = NewExternalDomain(w), NewDevice(w)

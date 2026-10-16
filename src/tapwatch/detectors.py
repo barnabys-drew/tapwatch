@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import ClassVar
 from zoneinfo import ZoneInfo
 
+from .categories import category
+from .categories import load as load_categories
 from .feeds import AsnTable
 from .models import Case, device_id
 
@@ -927,7 +929,8 @@ class HourlyProfile(Detector):
                      "symmetric": symmetric,
                      "top_share_pct": round(100 * share), "to_sync_service": bool(top) and sync_service(top),
                      "to_security_vendor": bool(top) and suffix_match(top, SECURITY_TELEMETRY) is not None,
-                     "to_sync_network": sync_network}
+                     "to_sync_network": sync_network,
+                     "top_category": category(top if top and not _is_ip(top) else self.names.get(top, ""))}
             if (facts["to_sync_service"] or facts["to_security_vendor"] or sync_network or symmetric) and share >= 0.6:
                 facts["max_route"] = "digest"  # home eval: a 700 MB OneDrive hour was Jev's "exfiltration 1.00"
             out.append(Case("upload_spike", ip, ts, "Unusually large upload", facts,
@@ -1024,7 +1027,7 @@ class NewExternalDomain(Detector):
                              # numbered CDN hosts under widely used domains aren't DGA (home eval 2026-10-13:
                              # googlevideo, microsoftaik, cdn77 made 16 of 26 digest items)
                              "random": looks_random(name) and dom not in self.popular,
-                             "others": others, "popular": dom in self.popular})
+                             "others": others, "popular": dom in self.popular, "category": category(name)})
         return out
 
     def _close_due(self, now: float) -> list[Case]:
@@ -1043,7 +1046,9 @@ class NewExternalDomain(Detector):
                  "popular": sum(i["popular"] for i in items),
                  "popular_known": bool(self.popular),
                  "via": items[0]["via"], "max_others": max(i["others"] for i in items),
-                 "dedupe": f"{int(win['start'] // self.window)}"}
+                 "dedupe": f"{int(win['start'] // self.window)}",
+                 # what kind of sites, from the offline category list: distinct, most frequent first
+                 "categories": [c for c, _ in Counter(i["category"] for i in items if i.get("category")).most_common(3)]}
         title = "First contact with a new domain" if n == 1 else f"First contact with {n} new domains"
         # Show the odd ones first: random-looking, then ones no other device uses.
         shown = sorted(items, key=lambda i: (not i["random"], i["others"] > 0))[:3]
@@ -1828,7 +1833,8 @@ class TlsOddities(Detector):
         if learning:
             return []
         return [Case(self.name, src, ts, "Unusual encrypted connection",
-                     {**signs, "score": score, "port": port, "dedupe": f"{dst}:{port}"},
+                     {**signs, "score": score, "port": port, "dedupe": f"{dst}:{port}",
+                      "category": category(rec.get("server_name"))},
                      [rec["server_name"]] if rec.get("server_name") else [], base_severity=2 if score < 4 else 3)]
 
 
@@ -2128,6 +2134,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     d = cfg.get("detectors", {})
     net = cfg.get("network", {})
     set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
+    load_categories(cfg.get("categories_file"))  # domain -> kind of site (categories.py), offline
     gateways = Gateways(set(net.get("gateways") or ()))  # learned from the logs when not configured
     identity = Identity()
     asn_table = AsnTable.load(cfg.get("asn_file"))  # IP -> (ASN, country), offline
