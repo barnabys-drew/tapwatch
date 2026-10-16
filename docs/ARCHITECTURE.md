@@ -254,6 +254,7 @@ Code reaches its own verdict (`hostctx.verdict`):
 |---|---|---|
 | `agent_misused` | The session was unattended or SSH-driven, **or** the agent read web content and then acted on a destination the owner never named | ALERT, ahead of suppressions |
 | `owner_using_agent` (corroborated) | An attended interactive session made it **and** the owner's prompt named the destination | LOG, unless Jev disagrees |
+| `owner_using_agent` (uncorroborated) | The exec chain ends at the agent's binary with no markers (attendance unknown), and the transcript that named the destination is the best guess at the session (`host_session_guessed`) | normal routing; never lowered on this alone |
 | `agent_unconfirmed` | An agent did it, but nothing proves the owner asked | normal routing. Jev can hold an alert to the digest, never log it |
 | `other_program` / `unknown` | No agent session involved, or nothing matched | normal routing, plus the program floor/cap |
 

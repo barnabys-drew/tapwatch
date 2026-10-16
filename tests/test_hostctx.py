@@ -816,7 +816,27 @@ def test_gone_curl_under_an_agent_thread_without_markers_is_still_the_agents(tmp
     facts = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0 + 3600)
     assert facts["host_who"] == "owner_using_agent" and not facts["host_corroborated"]
     assert facts["host_agent_session"] and facts["host_session"] == SID and facts["host_inherited"]
-    assert not facts["host_transcript_only"]
+    assert not facts["host_transcript_only"] and facts["host_session_guessed"]
+    assert not facts["host_attended_known"] and not facts["host_attended"]   # unknown, not "nobody"
+    from tapwatch.summarizer import Assets, summarize
+    text = summarize(case(indicators=[], facts={"channel": "callback", "via": "DNS", **facts}), Assets())
+    assert "attendance could not be read" in text and "nobody was attending" not in text
+
+
+def test_a_reused_agent_thread_id_does_not_credit_a_later_process(tmp_path):
+    log = write_rows(tmp_path, [
+        bpf(T0 - 600, path=CLAUDE, pid="4000", parent="3000", parent_name="JITWorker", remote="198.51.100.7",
+            claude_session="", claude_attended="", claude_entrypoint="", in_herdr="0"),  # the agent's thread...
+        exec_row(T0 - 60, 4000, 1, "/usr/bin/bash"),       # ...gone; a cron shell got pid 4000 afterwards
+        exec_row(T0 - 4, 4300, 4000, "/usr/bin/curl"),
+        gone_curl(T0, pid=4300, parent=4000),
+    ])
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (o,) = idx.who(DST, 443, T0)
+    assert (o.agent, o.inherited, o.parent) == ("", False, "bash")
+    assert verdict([o], {})[0] == "other_program"
 
 
 def test_chain_that_reaches_no_agent_stays_other_program(tmp_path):

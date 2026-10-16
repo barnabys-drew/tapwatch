@@ -133,13 +133,15 @@ def agent_misused(case: Case) -> bool:
 def agent_risks(f: dict) -> list[str]:
     """Facts that make an agent-made connection worth a second look, short of code's own 'misused'."""
     risks = []
-    if not f.get("host_attended"):
+    if not f.get("host_attended_known", True):  # the agent was found by its binary: no marker to read
+        risks.append("the session's attendance could not be read")
+    elif not f.get("host_attended"):
         risks.append("no one was attending the session")
     if not f.get("host_in_terminal"):
         risks.append("the session wasn't in the owner's terminal")
     if f.get("host_minutes_since_prompt", 0) >= STALE_PROMPT_MIN:
         risks.append("the owner's last prompt was long before")
-    if f.get("host_outside_content"):
+    if f.get("host_outside_content") and not f.get("host_session_guessed"):  # a guessed session's reading is not this agent's
         risks.append("the agent read outside content first")
     return risks
 

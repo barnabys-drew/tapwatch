@@ -715,7 +715,9 @@ Network data can't tell the owner's coding agent from an attacker. On the tapwat
 
 Code verdict: **agent_misused** (unattended or SSH-driven session, or web content then an unrequested
 action) → ALERT past suppressions, and a Herdr pop-up. **owner_using_agent** only when an attended
-interactive session made it and the owner's prompt named the destination → LOG. **other_program**
+interactive session made it and the owner's prompt named the destination → LOG; when the agent is known
+only by its binary in the exec chain (no markers reached, so attendance unknown) and the owner's prompt
+named the destination, the same verdict is issued uncorroborated → normal routing. **other_program**
 → normal routing. **agent_unconfirmed** → normal routing. Jev (`WHO` choice question) can hold it to
 DIGEST, never LOG. Must-alert cases are never lowered. Jev gets sentences only: no session ids,
 paths, command lines or prompt text.
