@@ -166,6 +166,8 @@ class Pipeline:
 
     def add_host_context(self, case: Case) -> None:
         """For a case on the tapwatch PC: which program, and was it the owner's coding agent (hostctx.py)."""
+        if case.facts.get("source") == "endpoint":
+            return  # a host rule's case already says what ran; the network programs around it would only confuse it
         if not (self.hostctx and self.zeek_dirs and self.hostctx.is_this_pc(case.host, case.ts)):
             return
         try:

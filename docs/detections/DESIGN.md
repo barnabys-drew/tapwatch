@@ -3,7 +3,9 @@
 _Written 2026-10-12 as a design, before the rules were built. Status as of v0.1: R01–R07 and R09–R16
 are built in `src/tapwatch/detectors.py`, and R08 is the code-routed `new_domain`. See
 [Built in M2](#built-in-m2-2026-10-13-what-changed-from-the-specs-above) for how the code differs
-from these specs, and [ARCHITECTURE.md](../ARCHITECTURE.md) for how cases are routed._
+from these specs, and [ARCHITECTURE.md](../ARCHITECTURE.md) for how cases are routed. R17–R21, the
+first [endpoint rules](#endpoint-rules-r17r21-what-the-pc-itself-says-built-2026-10-15-hostrulespy), were
+designed and built 2026-10-15 in `src/tapwatch/hostrules.py` (issues #26, #27)._
 
 **Scope.** This is a home network with limited telemetry. There is no EDR raw-event
 feed (no CrowdStrike FDR or Sysmon pipeline) and no SaaS audit logs (no GitHub,
@@ -85,7 +87,7 @@ What these numbers imply:
 | **Zeek on the USW mirror (port 23 ← uplink port 1)** | Every LAN↔internet and inter-VLAN flow, pre-NAT (real device IPs). DNS to the UDM, TLS SNI and certs, HTTP, DHCP broadcasts, MQTT, SSDP/NAT-PMP requests | Already running. ~17 MB/h. One PC, Npcap and Docker; the PC must stay awake | R01–R10, R12–R15 |
 | **UDM Pro syslog / SIEM (CEF)** | UDM's own events: admin and SSH logins, config changes (port forwards, firewall rules), UPnP mappings *granted*, IPS (Suricata) alerts, firewall drops, Wi-Fi client connect/disconnect with AP/SSID, DHCP leases (including devices on the UDM's own ports) | Free. One UDP listener in tapwatch plus a CEF parser. Tens of KB/h. Enable it under the UniFi Network SIEM/syslog integration (the menu moves between versions; verify) | R01 (mapping granted), R05 (Wi-Fi joins), R11, R14 (lease source), IPS pass-through |
 | UDM NetFlow/IPFIX | Flows from devices **plugged into the UDM's own LAN ports** (not on the mirror) | Free, sampled, no names | Volume and port profiles for those few devices only. **Skip** unless something lives on a UDM port |
-| Windows Security/Sysmon on the main PC | Process ↔ socket (which app beaconed), logons, new services, PowerShell | Sysmon install plus a forwarder; ~1 GB/day; covers **one** of 21 devices | Turns "the PC beacons" into "which process". **Defer:** it's EDR-lite for one box, which is out of the stated scope |
+| Windows Security/Sysmon on the main PC | Process ↔ socket (which app beaconed), logons, new services, PowerShell | Sysmon install plus a forwarder; ~1 GB/day; covers **one** of 21 devices | Turns "the PC beacons" into "which process". **Defer:** it's EDR-lite for one box, which is out of the stated scope. _Superseded 2026-10-15: the endpoint agent reads Sysmon through osquery, with command lines reduced to signals on the PC; host context and R17–R21 run on those rows_ |
 | UniFi Protect | Camera motion and stream events, NVR health | Webhooks or API | R09 context: upload stops while Protect says the camera is online. Low priority |
 | Offline enrichment feeds (pull-only) | ASN and country per IP (iptoasn.com TSV or a GeoLite2 ASN DB), Tranco (already have it), daily newly-registered-domain (NRD) list, OUI vendor table | Daily download. **Nothing about the house is sent out** | R02, R08, R05 vendor, R10 |
 
@@ -403,7 +405,10 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 ### R11 UDM admin login from a new source (`udm_admin`, from UDM syslog) — **built**
 - **Threat:** stolen UniFi credentials or a compromised admin device. The UDM controls everything else.
 - **Data:** UDM syslog/CEF admin-login and SSH events (user, source IP, method, success/fail),
-  config-change events.
+  config-change events. On UniFi Network 10.x these come from the SIEM export's **Admin Activity**
+  content (CyberSecure → Traffic Logging → Activity Logging): CEF class 544 `Network Accessed` with
+  `UNIFIadmin`, `src` and `UNIFIaccessMethod`, verified 2026-10-15. The same export also sends iptables
+  firewall lines and the gateway's system log, which `syslogin.py` counts and drops (docs/setup/router-syslog.md).
 - **Logic:** tapwatch detector on the syslog input. Raise on a (user, source) never seen in 30 days;
   ≥5 failures in 10 min; any SSH login; any config change within 30 min of a new-source login.
 - **Baseline:** 30 days of admin sources (few).
@@ -500,6 +505,161 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Safe test:** `nslookup webhook.site` from the PC (a lookup only, nothing is posted), or
   `ssh -R` to `localhost.run` with no local service behind it, then close it.
 
+
+### Endpoint rules R17–R21: what the PC itself says (built 2026-10-15, `hostrules.py`)
+
+The §2 inventory deferred Sysmon as "EDR-lite for one box". The endpoint agent ([agents/](../../agents/README.md))
+changed the cost side: osquery's `sysmon_events` query reduces Sysmon's process starts (event 1), outgoing
+connections (3) and DNS lookups (22) to rows tapwatch reads, and turns every command line into yes/no signals
+**on the PC** (`cmd_enc`, `cmd_b64`, `cmd_dl`, `cmd_iex`, `cmd_hidden`, `cmd_bypass`, `cmd_url`), so nothing
+readable reaches the world-readable results log. Host context uses those rows to explain network cases. The
+rules below raise cases of their own, for living-off-the-land activity that never looks odd on the wire
+(#26, #27). They read the osquery results and snapshots logs as a log source (`_type: osquery`, named in
+`zeek.LOG_TYPES`; `run` follows their directories next to Zeek's, and a replay takes the directory as a
+`--zeek-dir`). `run` survives osquery's rotation the way it survives Zeek's (the open handle is drained before
+the new file is read); a replay reads only the live file, because osquery's rotated names (`.log.1`) are not
+Zeek's dated pattern. Until an agent snapshot or `host_context.host` names the PC's address, a case names it
+"this PC". This first set is Windows-only; Linux rules (#28) will reuse the same base over
+`bpf_connections` and `process_events` rows.
+
+Three rules hold for every one of them. **A case never carries a command line or a path**: it names the
+program and the *class* of folder it runs from (a temp folder, an installed location), because a Windows path
+holds the user's name and a command line holds tokens. **Program names are indicators**: attacker-chosen
+strings, quoted and labelled untrusted for Jev, defanged in notifications, and the handle a suppression keys on.
+**Code decides every route** (`router.CODE_ONLY`): "is this program normal?" is the same question as "is this
+domain normal?", Jev's measured weak spot, and it is never asked. `must_alert` is reserved for the two shapes
+with no benign reading on a home PC.
+
+**Measured baseline** (2026-10-14/15, the main PC's agent log, 34.5 h; aggregates only):
+
+| Measure | Value |
+|---|---|
+| Process starts (Sysmon 1) | 9,709 (197 distinct program names); outgoing connections (3): 108,423; DNS lookups (22): 7,423 |
+| Command-line signals on starts | `url` 197; `enc` **1**, on msiexec passing a long base64-looking argument to itself (not a shell); `b64`, `dl`, `iex`, `hidden`, `bypass`: **0** |
+| Shell or script host started by a browser | **37**, all `cmd.exe` from Chrome, none with a URL on the command line, **none that connected anywhere** (native-messaging hosts are often batch files) |
+| …by a document, mail or PDF app | 0 (no Office on this PC) |
+| …by WSL's host process, a game updater, coding agents | 134, 30, 7: ordinary parents, ignored by the rules |
+| Built-in tools (LOLBins) connecting to the internet | **0** (rundll32 started 19 times, by svchost and msiexec, and never connected) |
+| Connections from a temp, Downloads or shared folder | **0**; 6 process starts from a temp folder (installers unpacking), none connected |
+| Shells connecting to the internet | 1 (`powershell.exe`) |
+| Code signatures on the 1-minute socket snapshot (`outbound_connections`) | trusted for most; `missing` or unreadable: **7 distinct programs, all installed apps** (Program Files, AppData\Local\Programs); `untrusted`, `distrusted`: **0** |
+| `tapwatch replay` of the five rules over the 34.5 h | **0 cases** |
+
+The implications: the data supports strict rules with no learning period (every shape fires 0 times on a day
+of a dev PC), a browser's child is not evidence until it connects, "unsigned" cannot be a rule while osquery
+can't read a quarter of valid signatures, and the encoded-command signal must be scoped to shells.
+
+### R17 Encoded or download-and-run command (`host_encoded_cmd`) — **built**
+- **Threat:** a PowerShell, cmd or script-host payload that hides what it runs: `-EncodedCommand`,
+  `FromBase64String`, `DownloadString`/`Start-BitsTransfer`/`certutil -urlcache`, `IEX`, usually with
+  `-w hidden -ep bypass`. The first stage of most commodity malware and of macro and attachment payloads
+  (T1059.001, T1027, T1105).
+- **Data:** `sysmon_events` event 1: `path`, `parent_path`, and the signals `cmd_enc`, `cmd_b64`, `cmd_dl`,
+  `cmd_iex`, `cmd_hidden`, `cmd_bypass`, `cmd_url`. The raw command line is never read by this rule.
+- **Logic:** `rules/R17-encoded-command.yml`. The program is a shell or script host (`hostctx.WIN_SHELLS`:
+  powershell, pwsh, cmd, wscript, cscript, mshta, rundll32, regsvr32, bitsadmin, certutil). An encoded payload
+  with a second signal, any suspicious signal in a hidden window, or a document/mail/PDF app as the parent →
+  severity 5, **must_alert**. Two signals (`dl` + `iex`, with or without a policy bypass), one strong signal
+  alone (`enc`, `dl`), or any suspicious signal with a browser parent → severity 4, suppressible. `b64` or
+  `iex` alone from any other parent → nothing. The must_alert bar stops below `dl` + `iex` on purpose:
+  that is Chocolatey's documented install line, and must_alert can't be suppressed.
+- **Baseline:** none. Measured: 0 on shells in 34.5 h. The one `enc` hit was msiexec; scoping to shells removed it.
+- **Dedupe:** `host_encoded_cmd|pc|program`, the store's hour.
+- **FPs:** installers run with `-ExecutionPolicy Bypass -w hidden` (measured on tapwatch's own installer:
+  hidden and bypass alone raise nothing); dev tooling's `iex (irm https://...)` one-liners (nothing alone);
+  Chocolatey's install command (`Set-ExecutionPolicy Bypass ...; iex (... DownloadString(...))`: a severity-4
+  alert once, then a program-scoped suppression); a browser extension's helper that decodes base64 (alert,
+  suppressible per program).
+- **Route:** ALERT, code-only; must_alert for the combinations above.
+- **Jev:** none.
+- **Safe test:** `powershell -enc <base64 of "Write-Host hi">` from a terminal → severity 4 alert. Add
+  `-w hidden` → must_alert and a Herdr pop-up. Both print a word and exit.
+
+### R18 Document app or browser starts a shell (`host_app_shell`) — **built**
+- **Threat:** the macro and attachment path: Word, Excel, Outlook or a PDF reader starting PowerShell, cmd,
+  wscript, mshta, rundll32 or regsvr32 (T1204.002, T1566.001). A browser starting a shell that then calls home
+  is the drive-by shape.
+- **Data:** event 1 (`path`, `parent_path`); event 3 joined by `ProcessGuid` within 10 minutes for the browser clause.
+- **Logic:** `rules/R18-app-spawns-shell.yml`. A document, mail or PDF parent (`hostctx.WIN_DOC_APPS`) → severity 4
+  at the start. A browser parent → nothing at the start; severity 4 when that same child connects to the
+  internet (not the LAN, not DNS). A suspicious command line on the child is R17's case: the browser parent
+  lifts it to an alert there.
+- **Baseline:** none. Measured: 37 Chrome → cmd.exe starts, none connected; 0 document-app children.
+- **Dedupe:** `host_app_shell|pc|parent > child`. The indicator is the pair, so "chrome.exe > cmd.exe" can be
+  muted for a browser helper that connects by design, without muting Word → PowerShell.
+- **FPs:** Office add-ins and PDF readers' updaters that run scripts (alert once, suppress the pair);
+  native-messaging batch files (raise nothing until they connect).
+- **Route:** ALERT, code-only, suppressible. Not must_alert: Office automation exists.
+- **Jev:** none.
+- **Safe test:** in Word, Alt+F11 and run `Shell "cmd.exe /c echo hi"` → severity 4 alert. Harmless.
+
+### R19 Program in a temp or download folder connects out (`host_temp_exec`) — **built**
+- **Threat:** droppers and second stages run from `%TEMP%`, Downloads or `Users\Public` and call home
+  (T1204, T1105, T1036).
+- **Data:** event 3 (`path`, remote address, port), joined to its event 1 (parent, signals) by `ProcessGuid`.
+- **Logic:** `rules/R19-temp-folder-connects.yml`. The folder class is temp (`AppData\Local\Temp`,
+  `Windows\Temp`) or Downloads → severity 3, once per (program, folder) per 7 days. Shared (`Users\Public`,
+  `$Recycle.Bin`, `PerfLogs`; nothing legitimate installs there) → 4. The start carried a suspicious signal or a
+  document/mail parent (a dropper a document wrote and ran) → 4.
+- **Baseline:** none. Measured: 0 connections from those folders; the 6 temp starts were installers.
+- **Dedupe:** `host_temp_exec|pc|program`.
+- **FPs:** installers unpacking to temp and fetching components (a digest item, by design); portable tools run
+  from Downloads (once a week; suppress per program).
+- **Route:** DIGEST, ALERT for the shared folders and the dropper shape. Code-only.
+- **Jev:** none.
+- **Safe test:** copy `curl.exe` from System32 into `%TEMP%` and fetch `https://example.com` → digest item;
+  copy it into `C:\Users\Public` instead → alert. Delete the copies afterwards.
+
+### R20 Built-in Windows tool connects to the internet (`host_lolbin`) — **built**
+- **Threat:** LOLBins fetching or proxy-executing code: `certutil -urlcache -f`, `bitsadmin /transfer`,
+  `mshta https://...`, `regsvr32 /i:http... scrobj.dll` (Squiblydoo), `rundll32 javascript:`, `msbuild` inline
+  tasks, `wmic ... /format:https` (T1218, T1105, T1197).
+- **Data:** event 3 (`path`, remote address, port); event 1 join for the parent and the `url` flag.
+- **Logic:** `rules/R20-lolbin-connects.yml`. The program is in `hostctx.WIN_LOLBINS`, the remote is not the
+  LAN or loopback, the port is not 53. certutil, bitsadmin, mshta and regsvr32 exist to fetch or run remote
+  content and have no home use on the internet → severity 5, **must_alert**. The rest (rundll32, wmic, wscript,
+  cscript, installutil, cmstp, regasm, regsvcs, odbcconf…) → 4, suppressible per program. `msbuild` → 3, once
+  per 7 days: on a Visual Studio PC it connects out for every NuGet restore, so a severity-4 alert would
+  repeat hourly there.
+- **Baseline:** none. Measured: 0 in 108,423 connections.
+- **Dedupe:** `host_lolbin|pc|program`.
+- **FPs:** rundll32 hosting a vendor DLL that phones home (some driver installers): one alert, then a
+  program-scoped suppression; MSBuild's NuGet restores (digest, by design); wmic in admin scripts (rare on a
+  home PC).
+- **Route:** ALERT, code-only; must_alert for the four downloaders. Critical (Herdr pop-up) at severity 4+.
+- **Jev:** none.
+- **Safe test:** `certutil -urlcache -split -f https://example.com/ %TEMP%\x.txt` → must_alert and a pop-up.
+  It fetches a documentation page.
+
+### R21 Program with a bad code signature connects out (`host_bad_sig`) — **built**
+- **Threat:** a tampered or self-signed binary talking out: a patched updater, a repacked installer, a trusted
+  program whose file no longer matches its signature (T1036.001, T1553.002).
+- **Data:** the Windows agent's `outbound_connections` snapshot (every minute): `name`, `path`, `parent_name`,
+  authenticode `signature` and `signer`, remote address, port.
+- **Logic:** `rules/R21-bad-signature-connects.yml`. osquery's authenticode reports four results: `trusted`,
+  `missing`, `untrusted` and `distrusted`. A file changed after it was signed (a hash mismatch), a self-signed
+  or self-built binary and an expired certificate all come back `untrusted`; `distrusted` is a publisher
+  Windows blocks. Both → severity 4, suppressible per program: the tampered-binary case lives inside
+  `untrusted`, and a dev build is a one-time suppression. `missing` and unreadable signatures raise
+  **nothing**: all 7 measured were installed apps osquery couldn't read (the Signal Desktop case host context
+  settles by asking Windows), and a standalone "unsigned program" rule waits until the stream carries
+  PowerShell-verified results.
+- **Baseline:** none. Measured: 0 bad signatures in 34.5 h.
+- **Dedupe:** `host_bad_sig|pc|program`.
+- **FPs:** self-built tools and dev builds, and old but legitimate software with an expired certificate (both
+  `untrusted`: one alert, then a program-scoped suppression).
+- **Route:** ALERT, code-only, suppressible.
+- **Jev:** none (the summary stays on the box). The signer name is kept as a local fact, quoted like a program
+  name: on a self-signed certificate it can be the owner's own name, so it is never a title or an indicator.
+- **Safe test:** sign a copy of `curl.exe` with a test certificate (`New-SelfSignedCertificate` and
+  `Set-AuthenticodeSignature`) and fetch example.com → `untrusted` → alert. Appending one byte to a copy of a
+  signed program gives the same result (osquery folds the hash mismatch into `untrusted`).
+
+**Not built yet, deliberately:** a standalone unsigned-program rule (see R21), the persistence snapshots
+(`scheduled_tasks`, `services`, `startup_items` diffs: they need a learned baseline and the warmup plumbing),
+Linux rules (#28), and the host ↔ network correlation in #26 (a `host_lolbin` case and a `new_domain` case on
+the same PC within minutes becoming one story). Each builds on the same `HostDetector` base and `EndpointState`.
+
 ### Dev-workstation profile (built)
 `dev_profile.hosts` marks machines that run coding agents. For those hosts only, `beaconing`,
 `dns_anomaly` and `new_domain` skip traffic **tied by name** (DNS query or TLS SNI) to a dev
@@ -531,6 +691,11 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | 14 | R14 Rogue DHCP | Zeek + UDM | alert | code-only, must_alert |
 | 15 | R15 DNS anomaly / tunnelling | Zeek | Jev | `Q-cat` `Q-sev` `Q-wake` |
 | — | R16 Takeover channel (built) | Zeek | alert | code-only; must_alert for exfil |
+| — | R17 Encoded / download-and-run command (built) | osquery + Sysmon | alert | code-only; must_alert for combinations and document parents |
+| — | R18 Document app or browser → shell (built) | osquery + Sysmon | alert | code-only |
+| — | R19 Temp-folder program connects out (built) | osquery + Sysmon | digest / alert | code-only |
+| — | R20 Built-in tool (LOLBin) connects out (built) | osquery + Sysmon | alert (msbuild: digest) | code-only; must_alert for the downloaders |
+| — | R21 Bad code signature connects out (built) | osquery snapshot | alert | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 

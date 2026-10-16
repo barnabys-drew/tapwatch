@@ -18,7 +18,10 @@ from pathlib import Path
 
 # file name -> record type the detectors understand
 LOG_TYPES = {"conn.log": "conn", "dns.log": "dns", "ssl.log": "ssl", "http.log": "http", "dhcp.log": "dhcp",
-             "ftp.log": "ftp", "udm.log": "udm", "eve.json": "eve"}  # udm.log: router syslog (syslogin.py)
+             "ftp.log": "ftp", "udm.log": "udm", "eve.json": "eve",  # udm.log: router syslog (syslogin.py)
+             # The endpoint agent's osquery logs (hostrules.py): one JSON record per differential row, or
+             # per snapshot. `run` follows their directories next to Zeek's (config.host_log_dirs).
+             "osqueryd.results.log": "osquery", "osqueryd.snapshots.log": "osquery"}
 
 
 def _parse_line(line: str, kind: str) -> dict | None:
@@ -32,6 +35,11 @@ def _parse_line(line: str, kind: str) -> dict | None:
     rec["_type"] = kind
     if kind == "eve":
         rec["ts"] = _eve_ts(rec.get("timestamp", ""))
+    elif kind == "osquery":  # when the query ran; a Sysmon row's own time is in its `utc` column
+        try:
+            rec["ts"] = float(rec.get("unixTime") or 0)
+        except (TypeError, ValueError):
+            rec["ts"] = 0.0
     return rec
 
 

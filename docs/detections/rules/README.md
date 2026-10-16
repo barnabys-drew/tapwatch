@@ -13,7 +13,12 @@ the SQL as a reviewed spec. Expect small syntax fixes on the first run (DuckDB â
 `nrd_30d`, `domain_allow`, `exposure_baseline`, and an `ip2asn` table for R02.
 
 Sigma files (`.yml`) use `product: zeek`. Allowlists are config (`assets.yaml`
-roles), never hardcoded IPs.
+roles), never hardcoded IPs. The endpoint rules (R17â€“R21) use the standard Sigma
+`product: windows` log sources (`process_creation`, `network_connection`) so they run as
+written against Sysmon in any Sigma backend; tapwatch's streaming versions in
+`src/tapwatch/hostrules.py` read osquery's reduced rows instead, where the command line is
+already a set of yes/no signals (`agents/config/osquery.conf`), and the `CommandLine` regexes
+in the files are the ones osquery applies.
 
 | File | Rule | Format |
 |---|---|---|
@@ -30,6 +35,11 @@ roles), never hardcoded IPs.
 | R13-cleartext-credentials.yml | Cleartext credentials | Sigma |
 | R14-rogue-dhcp.yml | Rogue DHCP server | Sigma |
 | R16-takeover-channels.yml | Takeover channel: callback, file drop, tunnel, remote control | Sigma |
+| R17-encoded-command.yml | Encoded or download-and-run command (endpoint) | Sigma |
+| R18-app-spawns-shell.yml | Document app or browser starts a shell (endpoint) | Sigma |
+| R19-temp-folder-connects.yml | Program in a temp or download folder connects out (endpoint) | Sigma |
+| R20-lolbin-connects.yml | Built-in Windows tool connects to the internet (endpoint) | Sigma |
+| R21-bad-signature-connects.yml | Program with a bad code signature connects out (endpoint) | Sigma |
 
 **Built into `src/tapwatch/detectors.py`:** R01 `InternetExposure`, R03 `ManagementAccess`,
 R13 `CleartextAuth`, R14 `RogueDHCP`. The streaming versions differ from these specs in a few
