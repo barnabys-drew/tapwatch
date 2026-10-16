@@ -829,8 +829,8 @@ class HourlyProfile(Detector):
     Managed devices: a device whose assets.yaml role says it is employer-managed or carries a
     security agent (MANAGED_ROLE_WORDS) has its upload_spike capped at digest whatever the
     destination, with the role in `managed_device`. Measured at home: the work laptop (employer-
-    managed, CrowdStrike Falcon and other agents) uploads ~1 GB to plain AWS addresses most
-    mornings (#139, #325, closed as Falcon telemetry) and 1.5 GB to a Google Meet address on
+    managed, runs an EDR agent) uploads ~1 GB to plain AWS addresses most mornings (#139, #325,
+    closed as the EDR agent's telemetry) and 1.5 GB to a Google Meet address on
     2026-10-16 (#371, a video call). Neither destination is a sync service or a vendor domain,
     so the destination caps never applied and Jev scored them as exfiltration. Digest, not log:
     the device stays visible in the daily digest; its employer's tooling is what watches it, and a
@@ -944,8 +944,10 @@ class HourlyProfile(Detector):
                      "top_category": category(top)}  # dests is keyed by name whenever one is known
             if (facts["to_sync_service"] or facts["to_security_vendor"] or sync_network or symmetric) and share >= 0.6:
                 facts["max_route"] = "digest"  # home eval: a 700 MB OneDrive hour was Jev's "exfiltration 1.00"
-            # host is the device key (name:/mac:/IP); the assets entry may be under either it or the address
-            role = self.managed.get(host) or self.managed.get(ip)
+            # host is the device key (name:/mac:/IP); the assets entry may be under it, the address, or
+            # the MAC when the device's key is its DHCP hostname
+            mac = self.ident.mac_for(ip) if self.ident else ""
+            role = self.managed.get(host) or self.managed.get(ip) or (mac and self.managed.get(f"mac:{mac.lower()}"))
             if role:
                 facts["managed_device"] = role  # employer-managed / security agent: see the class docstring
                 facts["max_route"] = "digest"
@@ -1697,7 +1699,8 @@ def fixed_function_hosts(assets_table: dict | None) -> dict[str, str]:
 # Roles whose device an employer's tooling already watches: an EDR/security agent uploads telemetry
 # (the work laptop's ~1 GB a morning to plain AWS, #139/#325) that a home monitor should not page
 # the owner for. HourlyProfile caps that device's upload_spike at digest whatever the destination.
-MANAGED_ROLE_WORDS = ("employer-managed", "managed", "security agent", "edr")
+# Not the bare word "managed": it would match a "managed switch" or a "self-managed NAS".
+MANAGED_ROLE_WORDS = ("employer-managed", "security agent", "edr", "work laptop", "corporate")
 
 
 def managed_hosts(assets_table: dict | None) -> dict[str, str]:

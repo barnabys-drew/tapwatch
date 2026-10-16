@@ -187,9 +187,12 @@ def test_upload_spike_from_a_managed_device_is_capped_at_digest():
     # 1.5 GB Meet call. No destination cap fits, but the role in assets.yaml says who watches the device.
     from tapwatch.detectors import Identity, managed_hosts
     assets = {"name:WorkBook": {"role": "laptop (employer-managed, security agent)"},
-              "192.168.50.44": {"role": "desktop (EDR)"}, "192.168.50.13": {"role": "workstation"}}
+              "MAC:AA:BB:CC:DD:EE:21": {"role": "corporate laptop"}, "192.168.50.44": {"role": "desktop (EDR)"},
+              "192.168.50.13": {"role": "workstation"}, "192.168.50.2": {"role": "managed switch"},
+              "192.168.50.3": {"role": "self-managed NAS"}}
     managed = managed_hosts(assets)
-    assert managed == {"name:workbook": "laptop (employer-managed, security agent)", "192.168.50.44": "desktop (edr)"}
+    assert managed == {"name:workbook": "laptop (employer-managed, security agent)", "192.168.50.44": "desktop (edr)",
+                       "mac:aa:bb:cc:dd:ee:21": "corporate laptop"}   # "managed" alone is not a work device
 
     def spike(src):
         recs = [conn(T0 + h * 3600, src=src, orig_bytes=10_000_000) for h in range(8)]
@@ -197,9 +200,14 @@ def test_upload_spike_from_a_managed_device_is_capped_at_digest():
 
     ident, det = Identity(), HourlyProfile(managed=managed)
     det.ident = ident
-    feed_all([ident], [dict(dhcp(T0 - 10, mac="aa:bb:cc:dd:ee:20"), host_name="WorkBook", assigned_addr="192.168.50.80")])
+    feed_all([ident], [dict(dhcp(T0 - 10, mac="aa:bb:cc:dd:ee:20"), host_name="WorkBook", assigned_addr="192.168.50.80"),
+                       dict(dhcp(T0 - 9, mac="aa:bb:cc:dd:ee:21"), host_name="Other", assigned_addr="192.168.50.81")])
     (c,) = [c for c in run(det, spike("192.168.50.80")) if c.detector == "upload_spike"]   # known by name: key
     assert c.facts["managed_device"] == "laptop (employer-managed, security agent)" and c.facts["max_route"] == "digest"
+    det = HourlyProfile(managed=managed)
+    det.ident = ident
+    (m,) = [c for c in run(det, spike("192.168.50.81")) if c.detector == "upload_spike"]
+    assert m.facts["managed_device"] == "corporate laptop"   # keyed name:other, but the assets entry is its MAC
     (plain,) = [c for c in run(HourlyProfile(managed=managed), spike("192.168.50.44")) if c.detector == "upload_spike"]
     assert plain.facts["managed_device"] == "desktop (edr)" and plain.facts["max_route"] == "digest"   # by address
     for src in ("192.168.50.13", "192.168.50.99"):   # "workstation" doesn't match; unlabelled stays Jev-routed
