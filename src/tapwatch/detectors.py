@@ -930,7 +930,7 @@ class HourlyProfile(Detector):
                      "top_share_pct": round(100 * share), "to_sync_service": bool(top) and sync_service(top),
                      "to_security_vendor": bool(top) and suffix_match(top, SECURITY_TELEMETRY) is not None,
                      "to_sync_network": sync_network,
-                     "top_category": category(top if top and not _is_ip(top) else self.names.get(top, ""))}
+                     "top_category": category(top)}  # dests is keyed by name whenever one is known
             if (facts["to_sync_service"] or facts["to_security_vendor"] or sync_network or symmetric) and share >= 0.6:
                 facts["max_route"] = "digest"  # home eval: a 700 MB OneDrive hour was Jev's "exfiltration 1.00"
             out.append(Case("upload_spike", ip, ts, "Unusually large upload", facts,

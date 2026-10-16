@@ -29,16 +29,20 @@ TOP_N = 100_000
 # Domain categories: the UT1 blacklists (Université Toulouse Capitole, CC BY-SA), one small archive per
 # category with a `<category>/domains` member. Only the categories a home network's cases turn on; the
 # adult, press, shopping and games lists are large and say nothing tapwatch needs, and maliciousness
-# comes from the IOC feeds, not from here. Measured 2026-10-16: these 22 archives total under 1 MB.
+# comes from the IOC feeds, not from here. The order is the precedence: a domain on two lists keeps the
+# first, so the ones that matter to a security case come before the ones that explain traffic away
+# (a cryptojacking host that also serves ads must not read as "an advertising site"). Measured
+# 2026-10-16: these 21 archives total under 1 MB and 43k domains; `redirector` (web proxies and
+# filter-bypass sites) was 130k domains on its own and is left out.
 UT1_URL = "https://dsi.ut-capitole.fr/blacklists/download/{}.tar.gz"
+UT1_TIMEOUT = 30  # s per archive: they are tiny, and `tapwatch init` waits on this
 UT1_CATEGORIES = {
-    "publicite": "advertising", "marketingware": "marketing", "remote-control": "remote_control",
-    "filehosting": "file_hosting", "download": "download", "warez": "warez", "vpn": "vpn",
-    "doh": "doh_resolver", "residential-proxies": "residential_proxy", "redirector": "redirector",
-    "shortener": "url_shortener", "chat": "chat", "social_networks": "social", "webmail": "webmail",
-    "audio-video": "media", "update": "software_update", "webhosting": "web_hosting",
-    "cryptojacking": "cryptojacking", "stalkerware": "stalkerware", "ddos": "ddos_service",
-    "hacking": "hacking", "dialer": "dialer",
+    "cryptojacking": "cryptojacking", "stalkerware": "stalkerware", "ddos": "ddos_service", "hacking": "hacking",
+    "dialer": "dialer", "residential-proxies": "residential_proxy", "doh": "doh_resolver", "vpn": "vpn",
+    "remote-control": "remote_control", "warez": "warez", "download": "download", "filehosting": "file_hosting",
+    "shortener": "url_shortener", "publicite": "advertising", "marketingware": "marketing", "chat": "chat",
+    "social_networks": "social", "webmail": "webmail", "audio-video": "media", "update": "software_update",
+    "webhosting": "web_hosting",
 }
 CATEGORIES_FILE = "categories.tsv"
 
@@ -66,17 +70,26 @@ def _ut1_domains(archive: bytes, category: str) -> list[str]:
     return [line.strip().lower() for line in text.splitlines() if line.strip() and not line.startswith("#")]
 
 
-def categories_feed(fetch=_fetch) -> tuple[bytes, str]:
+def categories_feed(fetch=_fetch, existing: Path | None = None) -> tuple[bytes, str]:
     """Fetch the UT1 category archives and build `categories.tsv`: (file bytes, report line).
-    A category that fails to download is left out of this run's file and named in the report."""
+    A category that fails to download is named in the report and its rows are carried over from the
+    `existing` file, so one bad mirror run does not silently drop a kind of site until next week."""
     table: dict[str, str] = {}
     failed = []
+    lost_labels = set()
     for cat, label in UT1_CATEGORIES.items():
         try:
-            for dom in _ut1_domains(fetch(UT1_URL.format(cat)), cat):
-                table.setdefault(dom, label)  # the first (more specific) list a domain appears in wins
+            data = fetch(UT1_URL.format(cat), UT1_TIMEOUT) if fetch is _fetch else fetch(UT1_URL.format(cat))
+            for dom in _ut1_domains(data, cat):
+                table.setdefault(dom, label)  # precedence: the first list in UT1_CATEGORIES wins
         except Exception as e:  # noqa: BLE001 - one list failing must not lose the others
             failed.append(f"{cat} ({e})")
+            lost_labels.add(label)
+    if lost_labels and existing and existing.exists():
+        for line in existing.read_text(errors="replace").splitlines():
+            dom, _, label = line.partition("\t")
+            if label in lost_labels and dom and not dom.startswith("#"):
+                table.setdefault(dom, label)
     if not table:
         raise OSError("no category list could be read: " + "; ".join(failed))
     body = "".join(f"{dom}\t{label}\n" for dom, label in sorted(table.items()))
@@ -94,7 +107,7 @@ def update(directory: str, fetch=_fetch) -> dict[str, str]:
     d.mkdir(parents=True, exist_ok=True)
     report = {}
     try:
-        data, note = categories_feed(fetch)
+        data, note = categories_feed(fetch, existing=d / CATEGORIES_FILE)
         _write(d / CATEGORIES_FILE, data)
         report[CATEGORIES_FILE] = note
     except Exception as e:  # noqa: BLE001 - report it, keep going

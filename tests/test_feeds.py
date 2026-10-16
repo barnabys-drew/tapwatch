@@ -105,6 +105,20 @@ def test_a_failed_category_list_is_named_and_the_others_are_kept(tmp_path):
     assert report["categories.tsv"].startswith("ok,") and "failed: vpn (network down)" in report["categories.tsv"]
     text = (tmp_path / "categories.tsv").read_text()
     assert "vpn.example" not in text and "publicite.example\tadvertising" in text
+    # last week's file still had the vpn rows: they are carried over rather than silently dropped
+    (tmp_path / "categories.tsv").write_text("# old\nold-vpn.example\tvpn\nold-ads.example\tadvertising\n")
+    feeds.update(str(tmp_path), fetch=flaky)
+    text = (tmp_path / "categories.tsv").read_text()
+    assert "old-vpn.example\tvpn" in text and "old-ads.example" not in text   # only the failed list's rows
+
+
+def test_a_domain_on_two_lists_keeps_the_security_relevant_one():
+    def both(url):
+        cat = url.rsplit("/", 1)[1].removesuffix(".tar.gz")
+        return ut1_archive(cat, ["shared.example"])
+
+    data, _ = feeds.categories_feed(fetch=both)
+    assert "shared.example\tcryptojacking" in data.decode()   # not "advertising"
 
 
 def test_categories_load_and_match_by_suffix(tmp_path):

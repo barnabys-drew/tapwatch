@@ -372,6 +372,8 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Baseline:** 14 days for hour-of-week. Measured: the camera at **~340 MB/h** steady (it would trip
   any fixed threshold), the next device at 23 MB/h, and most devices ≈ 0.
 - **Dedupe:** `upload|host|hour`.
+- **Category:** `top_category`, the main destination's kind from the offline UT1 list (media, file
+  hosting, ...); a fact for the summary, not routing.
 - **FPs:** phone photo backup, PC cloud sync and game uploads. Code tags the destination as "known
   sync service" from a curated map. That's a lookup, not Jev's guess.
   When no name was visible (Apple relays, ECH), the destination's network owner from the offline ASN
@@ -395,6 +397,8 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Baseline:** 7 days for household JA4 prevalence. Measured: 22% no-SNI but only 43 established,
   0.7% bare-IP TCP, and 49 "invalid cert" rows that were all Zeek missing intermediates.
 - **Dedupe:** `tls_odd|host|dst`.
+- **Category:** `category`, the server name's kind from the offline UT1 list when there is a name; a
+  fact for the summary, not routing.
   Reported once per (device, port) every `reported_days` (7); a pair learned in warmup is kept for
   good. Until 2026-10-15 it was once forever, so a C2 on a port where the camera had once been
   learned was invisible.
