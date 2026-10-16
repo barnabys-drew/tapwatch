@@ -20,6 +20,7 @@ hb=${TAPWATCH_HEARTBEAT_URL:-$(sed -n 's/^TAPWATCH_HEARTBEAT_URL=//p' .env 2>/de
 case "$hb" in ""|https://*) ;; *) echo "TAPWATCH_HEARTBEAT_URL must be https; heartbeat off" >&2; hb="" ;; esac
 # Watch the router syslog listener only where `service install --syslog` created its unit
 # (`is-active` alone says "inactive" for a unit that was never installed, which isn't a failure).
+# Probed once at startup: restart the watchdog after `service install --syslog`.
 syslog_unit=no
 systemctl --user list-unit-files tapwatch-syslog.service 2>/dev/null | grep -q '^tapwatch-syslog\.service' && syslog_unit=yes
 
