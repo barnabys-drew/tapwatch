@@ -641,6 +641,15 @@ class PortScan(Detector):
     48 SYNs to 47 CDN prefixes while 336 other connections succeeded (2026-10-16 #339, 12.5%).
     The 50 is a judgement, not a measurement; a busy workstation that also probes 50 hosts can
     stay under it, which is the trade-off against the day's phone cases.
+
+    The router reports its Wi-Fi clients roaming between access points, disconnecting and
+    connecting (udm.log, the syslog feed). A failure burst from a client the router moved or
+    dropped within `WIFI_WINDOW` seconds of the trigger is that move, not a scan: measured
+    2026-10-16, a phone's "scan" (#321) came 3 seconds after its roam between two access points.
+    The case keeps the `wifi_event` (roamed / disconnected / connected) and how many seconds
+    before the trigger it was, and is capped at digest. Only events the router has already
+    reported by the time the case is raised can match; the same phone's disconnect, logged 215 s
+    later, is not seen, and a device the router never mentions is judged on the other facts.
     """
 
     name = "scan"
@@ -651,14 +660,23 @@ class PortScan(Detector):
     ANSWERED: ClassVar[set[str]] = {"SF", "S1", "S2", "S3"}
     # DNS, DHCP, NTP, NetBIOS, SSDP, WS-Discovery, mDNS, LLMNR, UniFi discovery
     DISCOVERY_UDP: ClassVar[set[int]] = {53, 67, 68, 123, 137, 138, 1900, 3702, 5353, 5355, 10001}
+    # The router's CEF event names for a Wi-Fi client changing state (syslogin.py keeps `name` as sent).
+    WIFI_EVENTS: ClassVar[dict[str, str]] = {"WiFi Client Roamed": "roamed", "WiFi Client Disconnected": "disconnected",
+                                             "WiFi Client Connected": "connected"}
+    WIFI_WINDOW: ClassVar[float] = 180     # s: the failure window plus two minutes either side of the trigger
+    WIFI_KEEP: ClassVar[int] = 200         # events remembered; a home router sends a few per hour
 
     def __init__(self, window: float = 60, threshold: int = 50):
         self.window, self.threshold = window, threshold
         self.events: dict[str, deque] = defaultdict(deque)
         self.ok: dict[str, deque] = defaultdict(deque)  # source -> times of its answered connections
         self.cooldown: dict[str, float] = {}
+        self.wifi: deque = deque(maxlen=self.WIFI_KEEP)  # (ts, client MAC, client IP, event) from the router
 
     def feed(self, rec: dict) -> list[Case]:
+        if rec["_type"] == "udm":
+            self._wifi_event(rec)
+            return []
         if rec["_type"] != "conn":
             return []
         src, dst, ts = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec["ts"]
@@ -700,7 +718,27 @@ class PortScan(Detector):
                  "failed_pct": failed_pct, "internal_targets": internal == len(hosts), "window_s": round(self.window)}
         if all_failed or failed_pct < 50:
             facts["max_route"] = "digest"
+        if wifi := self._wifi_near(src, (rec.get("orig_l2_addr") or "").lower(), ts):
+            facts["wifi_event"], facts["wifi_event_age_s"] = wifi
+            facts["max_route"] = "digest"
         return [Case(self.name, src, ts, "Possible port or host scan", facts, base_severity=3)]
+
+    def _wifi_event(self, rec: dict) -> None:
+        """Remember a router Wi-Fi client event by the client's MAC and address."""
+        kind = self.WIFI_EVENTS.get(rec.get("name") or "")
+        mac, ip = (rec.get("UNIFIclientMac") or "").lower(), rec.get("UNIFIclientIp") or ""
+        if kind and (mac or ip):
+            try:
+                self.wifi.append((float(rec.get("ts") or 0), mac, ip, kind))
+            except (TypeError, ValueError):
+                pass
+
+    def _wifi_near(self, src: str, mac: str, ts: float) -> tuple[str, int] | None:
+        """The router's latest Wi-Fi event for this client within WIFI_WINDOW of `ts`: (event, seconds before)."""
+        for ets, emac, eip, kind in reversed(self.wifi):
+            if abs(ts - ets) <= self.WIFI_WINDOW and ((mac and emac == mac) or (not mac and eip == src)):
+                return kind, round(ts - ets)
+        return None
 
     def _sweep(self, ev: deque) -> bool:
         """TCP: `threshold` distinct (host, port) targets. UDP: that many ports on one host or hosts on one port."""
