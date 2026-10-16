@@ -142,6 +142,19 @@ def herdr(cfg: dict) -> HerdrNotifier | None:
     return HerdrNotifier(path, sound=h.get("sound", "request"), position=h.get("position", "top-right"))
 
 
+# The endpoint agents' results logs: Linux/WSL, and Windows as seen from WSL (agents/README.md).
+HOST_LOGS = ["/var/log/osquery/osqueryd.results.log", "/mnt/c/Program Files/osquery/log/osqueryd.results.log"]
+
+
+def host_log_dirs(cfg: dict) -> list[str]:
+    """Directories holding the endpoint agents' osquery logs (`host_context.results_logs`, else HOST_LOGS), for
+    the endpoint rules (hostrules.py): `run` follows them like Zeek's directories (zeek.LOG_TYPES names the
+    files). Only directories that exist, so a box without an agent changes nothing."""
+    h = cfg.get("host_context") or {}
+    dirs = {str(Path(p).parent) for p in (h.get("results_logs") or HOST_LOGS) if Path(p).is_file()}
+    return sorted(dirs)
+
+
 def hostctx(cfg: dict) -> HostContext | None:
     """`host_context: {host: <this PC's IP>}`: ask osquery and Claude Code transcripts who made a case's traffic."""
     h = cfg.get("host_context") or {}
@@ -154,8 +167,7 @@ def hostctx(cfg: dict) -> HostContext | None:
     win = Path("/mnt/c/Program Files/osquery/osqueryi.exe")  # Windows PC running tapwatch in WSL
     if not h.get("osquery_bin") and win.exists():
         bins.append(str(win))
-    logs = h.get("results_logs") or ["/var/log/osquery/osqueryd.results.log",
-                                     "/mnt/c/Program Files/osquery/log/osqueryd.results.log"]
+    logs = h.get("results_logs") or HOST_LOGS
     ps = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
     return HostContext(h["host"], bins, logs, h.get("transcripts"),
                        powershell=str(ps) if win.exists() and ps.exists() else None)

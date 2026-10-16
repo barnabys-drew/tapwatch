@@ -1,0 +1,35 @@
+title: Program running from a temp, Downloads or shared folder connects to the internet
+id: 4b2f9d7c-6e1a-4c38-a5d0-8f3b1e6c9d27
+status: experimental
+description: |
+  R19. Droppers and second stages run from %TEMP%, Downloads or Users\Public and call home. Measured
+  2026-10-14/15 on a dev PC: 0 of 108,423 connections came from those folders; 6 process starts from a temp
+  folder (installers unpacking themselves), none of which connected.
+  tapwatch (hostrules.TempFolderConnects): temp or Downloads -> severity 3 (digest, once per program and
+  folder per 7 days: that is what a downloaded installer does); Users\Public, the Recycle Bin or PerfLogs ->
+  4 (nothing legitimate installs there); 4 as well when the process start (joined by ProcessGuid) carried a
+  suspicious command-line signal or came from a document or mail app. Code-only. Jev: none.
+references:
+  - docs/detections/DESIGN.md
+  - https://attack.mitre.org/techniques/T1105/
+logsource:
+  product: windows
+  category: network_connection
+detection:
+  temp:
+    Image|contains: ['\AppData\Local\Temp\', '\Windows\Temp\', '\Downloads\']
+  shared:
+    Image|contains: ['\Users\Public\', '\$Recycle.Bin\', ':\PerfLogs\']
+  outgoing:
+    Initiated: 'true'
+  internal:
+    DestinationIp|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', 'fc00::/7', 'fe80::/10', '::1/128']
+  dns:
+    DestinationPort: 53
+  condition: (temp or shared) and outgoing and not internal and not dns
+fields: [Image, DestinationIp, DestinationPort, ProcessGuid]
+falsepositives:
+  - Installers unpacking to a temp folder and fetching components (a digest item, by design)
+  - Portable tools run from Downloads (once a week; suppress per program)
+level: medium
+tags: [attack.execution, attack.t1204, attack.command_and_control, attack.t1105, attack.defense_evasion, attack.t1036]

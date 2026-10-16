@@ -31,7 +31,10 @@ CODE_ONLY = {"new_domain",
              # R11: whether the owner logged in is a fact only the owner knows.
              "udm_admin",
              # R10 has no names to judge; Jev called a camera's vendor TLS "c2 0.95" (home eval).
-             "tls_odd"}
+             "tls_odd",
+             # R17-R21, the endpoint rules (hostrules.NAMES): what ran on the PC is a fact the agent saw, and
+             # "is this program normal?" is the same question as "is this domain normal?", never asked.
+             "host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig"}
 
 
 def wants_ai(case: Case) -> bool:

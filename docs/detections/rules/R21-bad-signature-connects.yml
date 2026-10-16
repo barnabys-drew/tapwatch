@@ -1,0 +1,36 @@
+title: Program with an untrusted or distrusted code signature holds an internet connection
+id: 2e9c6b4d-8f1a-4d73-b6e5-0a7c3d9e1f42
+status: experimental
+description: |
+  R21. A tampered or self-signed binary talking out: a patched updater, a repacked installer, a trusted
+  program whose file no longer matches its signature. Source: the Windows endpoint agent's
+  `outbound_connections` query (osquery, every minute), which joins process_open_sockets to the authenticode
+  table (agents/config/osquery.conf). Not a Sysmon event, so the log source below is osquery's own.
+  osquery's authenticode reports trusted, missing, untrusted or distrusted: a file changed after it was
+  signed, a self-signed binary and an expired certificate all come back `untrusted`; `distrusted` is a
+  publisher Windows blocks. Measured 2026-10-14/15 on a dev PC (34.5 h): 0 untrusted or distrusted. 7 distinct
+  programs had a missing or unreadable signature, and all were installed apps (Program Files,
+  AppData\Local\Programs): osquery can't read some valid signatures, so `missing` is deliberately not a match.
+  tapwatch (hostrules.BadSignatureConnects): untrusted or distrusted -> severity 4 (ALERT, suppressible per
+  program). Code-only. Jev: none; the signer name is quoted as untrusted data and stays local.
+references:
+  - docs/detections/DESIGN.md
+  - https://attack.mitre.org/techniques/T1036/001/
+  - https://osquery.io/schema/current/#authenticode
+logsource:
+  product: osquery
+  service: outbound_connections
+detection:
+  bad:
+    signature: ['untrusted', 'distrusted']
+  internal:
+    remote_address|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', 'fc00::/7', 'fe80::/10', '::1/128']
+  dns:
+    remote_port: 53
+  condition: bad and not internal and not dns
+fields: [name, path, parent_name, signature, signer, remote_address, remote_port]
+falsepositives:
+  - Self-built tools and dev builds (untrusted: one alert, then a program-scoped suppression)
+  - Old but legitimate software with an expired certificate (also untrusted)
+level: high
+tags: [attack.defense_evasion, attack.t1036.001, attack.t1553.002]

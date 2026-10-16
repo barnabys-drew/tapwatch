@@ -1,0 +1,60 @@
+title: Document, mail or PDF app starts a shell or script host
+id: 9a4d2e1b-3c7f-4b65-8e0a-5d1f6c2b7a93
+status: experimental
+description: |
+  R18. The macro and attachment path: Word, Excel, Outlook or a PDF reader starting PowerShell, cmd,
+  wscript, cscript, mshta, rundll32 or regsvr32. Measured 2026-10-14/15 on a dev PC: 0 (no Office installed).
+  tapwatch (hostrules.AppSpawnsShell): severity 4, ALERT, code-only, suppressible by the "parent > child"
+  pair. Not must_alert, because Office automation exists. Jev: none.
+references:
+  - docs/detections/DESIGN.md
+  - https://attack.mitre.org/techniques/T1204/002/
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  child:
+    Image|endswith: ['\powershell.exe', '\pwsh.exe', '\cmd.exe', '\wscript.exe', '\cscript.exe', '\mshta.exe',
+                     '\rundll32.exe', '\regsvr32.exe', '\bitsadmin.exe', '\certutil.exe']
+  doc_parent:
+    ParentImage|endswith: ['\WINWORD.EXE', '\EXCEL.EXE', '\POWERPNT.EXE', '\OUTLOOK.EXE', '\ONENOTE.EXE',
+                           '\MSACCESS.EXE', '\MSPUB.EXE', '\AcroRd32.exe', '\Acrobat.exe', '\FoxitPDFReader.exe',
+                           '\HxOutlook.exe', '\olk.exe']
+  condition: child and doc_parent
+fields: [Image, ParentImage, User]
+falsepositives:
+  - Office add-ins and PDF readers' updaters that run scripts (alert once, then suppress the parent > child pair)
+level: high
+tags: [attack.execution, attack.t1204.002, attack.initial_access, attack.t1566.001]
+---
+title: Browser-started shell or script host connects to the internet
+id: 1c8e7b5a-2d4f-4a6e-b9c3-7e0d2f5a8b14
+status: experimental
+description: |
+  R18 companion. A browser's child shell is not evidence on its own: measured 37 cmd.exe starts from Chrome
+  in 34.5 h, none with a URL on the command line and none that connected anywhere (native-messaging hosts
+  are often batch files). It becomes evidence when the child itself opens an internet connection, which a
+  messaging host has no reason to do. tapwatch joins Sysmon event 3 to the process start by ProcessGuid
+  within 10 minutes; severity 4, ALERT, code-only, suppressible by the "parent > child" pair.
+  A suspicious command line on the child is R17's case (the browser parent lifts it to an alert there).
+  In Sigma this needs a correlation of process_creation (ParentImage is a browser, Image is a shell) with
+  the network_connection of the same ProcessGuid; the network half is below.
+logsource:
+  product: windows
+  category: network_connection
+detection:
+  shell:
+    Image|endswith: ['\powershell.exe', '\pwsh.exe', '\cmd.exe', '\wscript.exe', '\cscript.exe', '\mshta.exe',
+                     '\rundll32.exe', '\regsvr32.exe', '\bitsadmin.exe', '\certutil.exe']
+  outgoing:
+    Initiated: 'true'
+  internal:
+    DestinationIp|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', 'fc00::/7', 'fe80::/10', '::1/128']
+  dns:
+    DestinationPort: 53
+  condition: shell and outgoing and not internal and not dns
+fields: [Image, DestinationIp, DestinationPort, ProcessGuid]
+falsepositives:
+  - A browser helper that legitimately connects out (suppress the parent > child pair)
+level: high
+tags: [attack.execution, attack.t1204.001, attack.command_and_control, attack.t1105]

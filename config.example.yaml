@@ -56,6 +56,7 @@ host_context:                        # "who on this PC did it?" for cases on the
                                      # follows the addresses its agent reports (and warns): still, fix the IP in the router
   # osquery_bin: /opt/osquery/bin/osqueryd   # default: osqueryi/osqueryd on PATH (live check)
   # results_logs: [/var/log/osquery/osqueryd.results.log, "/mnt/c/Program Files/osquery/log/osqueryd.results.log"]
+  #                                  # the endpoint rules (R17-R21, hostrules.py) follow these logs' directories too
   # transcripts: ~/.claude/projects  # Claude Code session logs, read locally, never sent anywhere
 
 syslog:                              # `tapwatch syslog`: the router's CEF events (IPS, admin logins)
@@ -107,6 +108,7 @@ detectors:
   odd_port: {learn_days: 7, long_hours: 4}   # R06: learn the house's ports this long, then flag new ones; also
                                              # reported_days 7 (a device+port is reported again after this long)
   #   tls_odd: {threshold: 3, reported_days: 7}  # R10: same expiry; pairs learned in warmup are kept for good
+  #   host_rules: {enabled: true}      # R17-R21, from the endpoint agent's log; per rule: host_temp_exec: {reported_days: 7}
   takeover:                          # R16. Callback and file-drop services can't be marked expected
     timezone: America/Chicago        # for `hours`; default is this machine's local time
     session_bytes: 2000000           # outside hours, this much in 10 min to the tool = a live session
