@@ -111,6 +111,11 @@ Ordered by theme, not date.
 - **AI triage:** majority vote for borderline calls ([#21](https://github.com/barnabys-drew/tapwatch/issues/21))
 - **Packaging and ops:** a container image and PyPI package ([#22](https://github.com/barnabys-drew/tapwatch/issues/22)), a watchdog for every capture
   path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)), TCP/TLS syslog ([#25](https://github.com/barnabys-drew/tapwatch/issues/25)), a same-switch VLAN guide ([#23](https://github.com/barnabys-drew/tapwatch/issues/23))
+- [ ] Benchmark the progress: once the major features are in, a running report from the case
+  history of false-positive rate per detector and triage accuracy (Jev's category and confidence
+  against the triage disposition; host-context verdicts against what the owner did), so each
+  change shows up as a number rather than a feeling (asked 2026-10-16)
+
 
 ## v0.4: learning from history ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/4))
 
