@@ -30,7 +30,8 @@ local logs, and you can ask it anything with `osqueryi`:
 | Scheduled query | Every | Why |
 |---|---|---|
 | `listening_ports` | 1 h | services reachable from the network |
-| `outbound_connections` | 5 min | which process holds which outside connection |
+| `outbound_connections` | 1 min | which process holds which outside connection, and its parent |
+| `process_signatures` (Windows) | 5 min | the code signature of every program that holds an outside connection, once per program |
 | `startup_items`, `launchd`, `crontab`, auto-start services, scheduled tasks | 1 h | persistence |
 | `chrome_extensions` | 1 day | browser add-ons |
 | `sysmon_events` (Windows) | 1 min | Sysmon, as it happens: every process start with its parent and **command-line signals**, every outgoing connection and every DNS lookup, each with the program behind it |

@@ -73,17 +73,24 @@ LIVE_SQL = (
     "FROM process_open_sockets s JOIN processes p USING (pid) "
     "WHERE s.remote_address NOT IN ('', '0.0.0.0', '::', '127.0.0.1', '::1') AND s.remote_port != 0;"
 )
-# Windows has no process_envs (so no Claude markers) but can check code signatures (authenticode).
+# Windows has no process_envs (so no Claude markers) but can check code signatures (authenticode). The signature
+# is joined once per distinct program path, not looked up per socket: per socket the same query took 15 s on a
+# quiet PC and was killed by osquery's watchdog (measured 2026-10-17; per path 4.7 s for 37 sockets, 11 paths).
+_OUTSIDE = "remote_address NOT IN ('', '0.0.0.0', '::', '127.0.0.1', '::1') AND {s}.remote_port != 0"
 WIN_LIVE_SQL = (
     "SELECT p.pid, p.name, p.path, p.cmdline, p.on_disk, s.remote_address, s.remote_port, "
     "(SELECT name FROM processes pp WHERE pp.pid = p.parent) AS parent_name, "
-    "(SELECT result FROM authenticode a WHERE a.path = p.path) AS signature, "
-    "(SELECT subject_name FROM authenticode a WHERE a.path = p.path) AS signer "
+    "a.result AS signature, a.subject_name AS signer "
     "FROM process_open_sockets s JOIN processes p USING (pid) "
-    "WHERE s.remote_address NOT IN ('', '0.0.0.0', '::', '127.0.0.1', '::1') AND s.remote_port != 0;"
+    "LEFT JOIN (SELECT path, result, subject_name FROM authenticode WHERE path IN "
+    "(SELECT DISTINCT p2.path FROM process_open_sockets s2 JOIN processes p2 USING (pid) "
+    "WHERE s2." + _OUTSIDE.format(s="s2") + " AND p2.path != '')) a ON a.path = p.path "
+    "WHERE s." + _OUTSIDE.format(s="s") + ";"
 )
+SIGS = "process_signatures"  # Windows, every 5 minutes: authenticode result per program path that holds a socket
+SIG_KEEP = 2000              # program paths whose signature an index keeps (a snapshot is a few dozen)
 QUERIES = ("outbound_connections", "outbound_connections_ctx", "sysmon_events", "bpf_connections",
-           "bpf_process_events")
+           "bpf_process_events", SIGS)
 QUERY_KEYS = tuple(f'"{q}"'.encode() for q in QUERIES)
 BPF = "bpf_connections"   # Linux/WSL: every outgoing connection from osquery's eBPF publisher, as it happens
 PROCS = "bpf_process_events"  # Linux/WSL: every exec, with its parent pid, so a gone process's chain is still known
@@ -345,6 +352,7 @@ class OwnerIndex:
     execs: dict = field(default_factory=dict)     # eBPF exec: pid -> (parent pid, path, time), the latest per pid
     markers: dict = field(default_factory=dict)   # pid -> an Owner seen with Claude markers (the long-lived agent)
     agents: dict = field(default_factory=dict)    # pid -> an Owner whose program is the agent itself, markers or not
+    signatures: dict = field(default_factory=dict)  # Windows program path (lowercased) -> (authenticode result, signer)
 
     def who_dns(self, query: str, ts: float, answers=()) -> tuple[list[Owner], bool]:
         """Programs that looked up `query` around `ts`, and whether that's inferred. Sysmon event 22 names the
@@ -391,6 +399,8 @@ class OwnerIndex:
         marker-less eBPF owners the markers of their nearest marker-bearing ancestor."""
         for owners in (*self.by_remote.values(), *self.lookups.values()):
             for o in owners:
+                if not o.signature and o.path.lower() in self.signatures:  # Windows: the 5-minute per-path snapshot
+                    o.signature, o.signer = self.signatures[o.path.lower()]
                 if o.guid and o.guid in self.procs and not o.cmdline:
                     cmdline, parent, flags = self.procs[o.guid]
                     o.cmdline, o.parent, o.cmd_flags = redact(cmdline), _basename(parent), flags
@@ -532,6 +542,14 @@ class OwnerIndex:
                 if rec["name"] == SYSMON:
                     for c in rows or ():
                         self._sysmon(c, ts)
+                    continue
+                if rec["name"] == SIGS:  # one row per program path with a socket; joined to the owners in resolve()
+                    for c in rows or ():
+                        if c.get("path"):
+                            self.signatures[str(c["path"]).lower()] = ((c.get("signature") or "").lower(),
+                                                                       c.get("signer") or "")
+                    if len(self.signatures) > SIG_KEEP:
+                        self.signatures = dict(list(self.signatures.items())[-SIG_KEEP:])
                     continue
                 if rec["name"] == PROCS:  # one row per exec(): pid -> parent, for the chain walk in resolve()
                     for c in rows or ():
@@ -829,8 +847,9 @@ class HostContext:
 
     def index(self, since: float, live: bool = True) -> OwnerIndex:
         idx = OwnerIndex()
-        for p in self.results_logs:
-            idx.read_log(p, since)
+        for p in self._snapshot_logs():  # osquery's filesystem logger writes snapshot queries (process_signatures) apart
+            if p in self.results_logs or p.exists():  # a missing snapshots file is not a missing agent: no note
+                idx.read_log(p, since)
         for c in self.live() if live else ():
             idx.add(c.get("remote_address", ""), c.get("remote_port"), _owner(c))
         idx.resolve()  # after the live rows: a running agent's live row can be the chain's marker-bearing end

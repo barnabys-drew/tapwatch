@@ -513,6 +513,44 @@ def test_windows_service_without_a_path_and_pseudo_processes():
     assert assess([win("[System Process]", "")], "other_program")[0] == "unclear"
 
 
+def test_windows_signatures_come_from_the_per_path_snapshot(tmp_path):
+    """2026-10-17: the socket query no longer carries the signature (per socket it took 15 s and osquery's watchdog
+    denylisted it for 24 h); the 5-minute process_signatures snapshot does, joined by path in resolve()."""
+    from tapwatch.hostctx import WIN_LIVE_SQL
+    app = r"C:\Program Files\App\app.exe"
+    rows = [{"name": "process_signatures", "unixTime": T0 - 200, "action": "snapshot",
+             "snapshot": [{"path": app.upper(), "signature": "Trusted", "signer": "App Maker"}]},
+            {"name": "outbound_connections", "unixTime": T0, "action": "added",
+             "columns": {"name": "app.exe", "path": app, "pid": "900", "remote_address": DST, "remote_port": "443",
+                         "parent_name": "explorer.exe"}},
+            {"name": "outbound_connections", "unixTime": T0, "action": "added",
+             "columns": {"name": "other.exe", "path": r"C:\x\other.exe", "pid": "901", "remote_address": DST,
+                         "remote_port": "8443", "parent_name": "explorer.exe"}}]
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (o,) = idx.who(DST, 443, T0 + 1)
+    assert (o.signature, o.signer) == ("trusted", "App Maker")
+    (other,) = idx.who(DST, 8443, T0 + 1)
+    assert other.signature == ""   # not in the snapshot: left for PowerShell (check_signatures)
+    # the snapshot may land after the connection rows (its interval is five times longer): resolve() joins them anyway
+    log.write_text("".join(json.dumps(r) + "\n" for r in [*rows[1:], dict(rows[0], unixTime=T0 + 200)]))
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    assert idx.who(DST, 443, T0 + 1)[0].signature == "trusted"
+    assert "LEFT JOIN" in WIN_LIVE_SQL and "WHERE a.path = p.path" not in WIN_LIVE_SQL   # per path, not per socket
+    # on the box the filesystem logger writes snapshots to osqueryd.snapshots.log (measured 2026-10-17: 822
+    # host_addresses rows there, 0 in the results log), so the index must read that file too
+    log.write_text("".join(json.dumps(r) + "\n" for r in rows[1:]))
+    (tmp_path / "osqueryd.snapshots.log").write_text(json.dumps(rows[0]) + "\n")
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    (o,) = hc.index(since=0, live=False).who(DST, 443, T0 + 1)
+    assert (o.signature, o.signer) == ("trusted", "App Maker")
+
+
 def test_windows_signature_osquery_couldnt_read_is_asked_of_powershell():
     """Signal Desktop (2026-10-13): osquery's authenticode gave nothing; Windows said Valid."""
     calls = []
