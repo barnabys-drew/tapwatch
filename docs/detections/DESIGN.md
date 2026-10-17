@@ -727,7 +727,8 @@ the same PC within minutes becoming one story). Each builds on the same `HostDet
 - **Baseline:** none; the limits are fixed and measured.
 - **Dedupe:** `feed_silence|pc|<agent>:<feed>`; one case per silence, re-armed by the next row.
 - **FPs:** osquery or Zeek restarting on their own. Each is worth knowing; suppress per feed if not.
-- **Route:** severity 4 feeds ALERT (and the pop-up), severity 3 feeds DIGEST; code-only, suppressible by the
+- **Route:** severity 4 feeds ALERT (and the pop-up), severity 3 feeds DIGEST; code-only, no host context (the
+  case is about tapwatch, not a connection; #427 was capped at digest by it before this was so), suppressible by the
   leading `<agent>:<feed>` (only feeds with equal limits can share a case; `ignore` drops a feed for good). Jev is
   not asked: nothing to weigh.
 - **Safe test:** `Stop-Service osqueryd` (elevated) and wait eleven minutes: one case for the Windows agent

@@ -2307,7 +2307,7 @@ class FeedSilence(Detector):
             feeds.sort(key=lambda f: (-f[1], f[0]))  # the feed that matters most leads: it is the case's key
             out.append(Case(self.name, self.host, now,
                             "A log feed has stopped arriving" if len(feeds) == 1 else "Log feeds have stopped arriving",
-                            {"feeds": [f[0] for f in feeds], "source": feeds[0][5],
+                            {"source": "monitor", "feeds": [f[0] for f in feeds], "from": feeds[0][5],
                              "silent_minutes": round((now - min(f[2] for f in feeds)) / 60),
                              "limit_minutes": round(min(f[4] for f in feeds) / 60),
                              "never_seen": all(f[3] for f in feeds), "dedupe": f"{tag}:{feeds[0][0]}"},

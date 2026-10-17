@@ -168,8 +168,12 @@ class Pipeline:
 
     def add_host_context(self, case: Case) -> None:
         """For a case on the tapwatch PC: which program, and was it the owner's coding agent (hostctx.py)."""
-        if case.facts.get("source") == "endpoint":
-            return  # a host rule's case already says what ran; the network programs around it would only confuse it
+        if case.facts.get("source") in ("endpoint", "monitor"):
+            # a host rule's case already says what ran, and a monitor case (R22) is about tapwatch itself: the
+            # PC's programs around it would only confuse it. Measured 2026-10-17, case #427: the first live
+            # feed_silence alert was attributed to every connection on the PC in the window, judged likely
+            # benign and capped at digest.
+            return
         if not (self.hostctx and self.zeek_dirs
                 and self.hostctx.is_this_pc(case.host, case.ts, case.facts.get("device_name"))):
             return  # not this PC's address, or another device (a shared dock) holds it now

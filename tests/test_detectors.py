@@ -316,13 +316,13 @@ def test_feed_silence_reports_a_stopped_feed_once_and_rearms_when_it_resumes():
     (c,) = ticks(det, T0 + 600, T0 + 660)             # 630 s: the socket feed is silent
     assert (c.detector, c.host, c.base_severity) == ("feed_silence", "192.168.50.10", 4)
     assert c.indicators == ["windows:outbound_connections"] and c.facts["feeds"] == ["outbound_connections"]
-    assert c.facts["source"] == "the Windows agent" and c.facts["silent_minutes"] == 10 and not c.facts["never_seen"]
+    assert c.facts["from"] == "the Windows agent" and c.facts["source"] == "monitor" and c.facts["silent_minutes"] == 10 and not c.facts["never_seen"]
     assert ticks(det, T0 + 660, T0 + 1000) == []      # one case per silence
     clock[0] = T0 + 1000
     det.feed(sockets)                                 # it resumed
     # conn: silent since its row arrived at T0 + 10, limit 20 min; the socket feed is young again
     (z,) = ticks(det, T0 + 1000, T0 + 1260)
-    assert z.indicators == ["zeek:conn.log"] and z.facts["source"] == "the network tap"
+    assert z.indicators == ["zeek:conn.log"] and z.facts["from"] == "the network tap"
     (again,) = ticks(det, T0 + 1260, T0 + 1680)       # the socket feed stopped again: a new case
     assert again.indicators == ["windows:outbound_connections"] and again.facts["silent_minutes"] == 10
 
@@ -350,7 +350,7 @@ def test_feed_silence_measures_from_start_resets_when_the_monitor_was_away_and_c
                        started=T0)
     cases = ticks(both, T0, T0 + 900)
     assert sorted(c.indicators[0] for c in cases) == ["windows:sysmon_events", "zeek:conn.log"]
-    agent = next(c for c in cases if c.facts["source"] == "the Windows agent")
+    agent = next(c for c in cases if c.facts["from"] == "the Windows agent" and c.facts["source"] == "monitor")
     assert agent.indicators == ["windows:sysmon_events", "windows:host_addresses"] and agent.base_severity == 4
     assert agent.title == "Log feeds have stopped arriving" and agent.facts["feeds"] == ["sysmon_events", "host_addresses"]
     # rows from other query names, or replayed rows with no log directory, are not watched
