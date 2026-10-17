@@ -396,6 +396,14 @@ class OwnerIndex:
                 o.in_herdr, o.via_ssh, o.inherited = anc.in_herdr, anc.via_ssh, True
                 o.agent = anc.name if anc.name in AGENT_BINARIES else ""
                 return
+            if self._name_of(cur, o.start) in AGENT_BINARIES:
+                # The agent's exec row names it, but its connection rows are logged under its threads' ids, so
+                # the main pid has no marker or agent row of its own (measured 2026-10-17, case #413: the chain
+                # curl -> bash -> claude 4622 -> bash -> herdr ended at a pid with only an exec row, and the
+                # agent's 59 connection rows that half hour sat under two thread ids). The exec path is proof
+                # enough that an agent ran the chain; the session and attendance stay unknown, as for _agent_of.
+                o.agent, o.inherited = self._name_of(cur, o.start), True
+                return
             cur = self._parent_of(cur, o.start)
 
     def _exec_of(self, pid: int, before: float) -> tuple[int, str, float] | None:
