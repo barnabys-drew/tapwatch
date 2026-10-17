@@ -278,6 +278,12 @@ def test_cases_name_the_outside_address_they_are_about():
            "established": True, "server_name": "two.example"}
     (n,) = run(nd, [hello, tls]) + nd.flush()
     assert n.facts["dests"] == ["203.0.113.11", "203.0.113.12", "203.0.113.13"]   # CNAME answers are not addresses
+    # a window with many names: the addresses behind the three shown names survive the cap of eight
+    nd = NewExternalDomain(Warmup(0), window=300)
+    many = [dict(dns(T0 + k, f"site{k}.example"), answers=[f"203.0.113.{100 + k}"]) for k in range(12)]
+    many.append(dict(dns(T0 + 20, "x7q9zk2pv4m8.example"), answers=["203.0.113.250"]))   # random-looking: shown first
+    (m,) = run(nd, many) + nd.flush()
+    assert len(m.facts["dests"]) == 8 and m.facts["dests"][0] == "203.0.113.250"
     (tk,) = run(TakeoverChannel(), [dict(dns(T0, "abc.webhook.site"), answers=["203.0.113.21"])])
     assert tk.facts["dests"] == ["203.0.113.21"]
     # nothing outside and known: no key at all, so a scan or an upload spike keeps the whole window as its context

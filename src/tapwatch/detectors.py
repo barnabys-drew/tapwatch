@@ -175,8 +175,8 @@ def dests(*addrs) -> dict:
     """{"dests": [...]} naming the outside addresses a case is about, or {} when none is known. Host context
     scopes the PC's connection rows to these (hostctx.case_destinations); until 2026-10-17 it inferred them from
     the DNS answers in the window, which misses a connection made from a cached lookup (review of #117)."""
-    out = sorted({a for a in addrs if isinstance(a, str) and a and not is_internal(a) and _is_ip(a)})
-    return {"dests": out[:8]} if out else {}
+    out = list(dict.fromkeys(a for a in addrs if isinstance(a, str) and a and _is_ip(a) and not is_internal(a)))
+    return {"dests": out[:8]} if out else {}  # first-seen order, so a caller can put the ones that matter first
 
 
 
@@ -1092,6 +1092,8 @@ class NewExternalDomain(Detector):
     def _case(self, host: str, win: dict) -> Case:
         items = win["items"]
         n = len(items)
+        # Show the odd ones first: random-looking, then ones no other device uses.
+        shown = sorted(items, key=lambda i: (not i["random"], i["others"] > 0))[:3]
         facts = {"count": n, "window_min": round(self.window / 60),
                  "random": sum(i["random"] for i in items),
                  "shared": sum(i["others"] > 0 for i in items),
@@ -1099,15 +1101,14 @@ class NewExternalDomain(Detector):
                  "popular_known": bool(self.popular),
                  "via": items[0]["via"], "max_others": max(i["others"] for i in items),
                  "dedupe": f"{int(win['start'] // self.window)}",
-                 **dests(*(ip for i in items for ip in i.get("ips") or ())),
+                 # the addresses behind the three names the case shows come first, so the cap keeps them
+                 **dests(*(ip for i in shown + items for ip in i.get("ips") or ())),
                  # what kind of sites, from the offline category list or the model: distinct, most frequent first,
                  # and where the kinds came from ("list", "ai") so the summary can say which
                  "categories": [c for c, _ in Counter(i["category"] for i in items if i.get("category")).most_common(3)],
                  "category_sources": [s for s in ("list", "ai")
                                       if any(i.get("category") and i.get("category_source") == s for i in items)]}
         title = "First contact with a new domain" if n == 1 else f"First contact with {n} new domains"
-        # Show the odd ones first: random-looking, then ones no other device uses.
-        shown = sorted(items, key=lambda i: (not i["random"], i["others"] > 0))[:3]
         return Case(self.name, host, win["start"], title, facts, [i["name"] for i in shown],
                     base_severity=2 if facts["random"] else 1)
 
