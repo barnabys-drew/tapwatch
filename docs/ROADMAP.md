@@ -19,19 +19,43 @@ flowchart LR
 ## Where we are
 
 **v0.1.1** is the current release; tapwatch has been running on a real home network since v0.1.0 shipped. It watches a mirror
-port with Zeek, runs 26 case types from 24 plain-code detectors, and asks a small AI model (Jev) for
+port with Zeek, runs 27 case types from 25 plain-code detectors, and asks a small AI model (Jev) for
 triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
 the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Area | State |
 |---|---|
-| Network detection | **Solid.** 21 network case types (plus 5 host ones), baselines that survive restarts. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
+| Network detection | **Solid.** 22 network case types (plus 5 host ones), baselines that survive restarts, a scripted self-check at 15/15 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
 | Linux install | **Solid.** `docker compose up`, verified end to end on a live interface |
 | Windows install | **Works on one PC.** WSL + Npcap services; a clean-machine test is still to do |
-| Host context (who on the PC made this traffic) | **Experimental, under test.** osquery on Linux/WSL and Windows, plus agent-session awareness. Measuring it over days of real traffic before trusting it to lower alerts |
+| Host context (who on the PC made this traffic) | **Verified live on test shapes** (2026-10-17): the owner-named eff.org test (#413) exposed two gaps, fixed the same day (#114, #117); a tampered binary's connection raised R21 (#429, see DESIGN R21). Accuracy against the owner's dispositions is tracked week by week by the benchmark, and a live case was still mis-capped once that day (#132), so it does not yet lower alerts on its own |
 | Router syslog | **Verified on a live gateway** (2026-10-16). CEF events and firewall lines parsed as sent; admin logins checked against a real line. IPS verdicts still await a real detection |
 | macOS | **Later.** Waiting on a tester with a Mac; it won't ship untested |
+
+### 2026-10-17: the monitor watches itself
+
+Twelve reviewed PRs in one day, each with a measured basis:
+
+- Host context corroborates the chain-only owner verdict when the owner's prompt named the destination,
+  matches transcripts by name before address, recognises the agent by its exec row, scopes its window to
+  the case's own destination and carries that address as a fact ([#112](https://github.com/barnabys-drew/tapwatch/pull/112),
+  [#114](https://github.com/barnabys-drew/tapwatch/pull/114), [#117](https://github.com/barnabys-drew/tapwatch/pull/117),
+  [#125](https://github.com/barnabys-drew/tapwatch/pull/125))
+- Beaconing's beat window survives a restart, so a slow heartbeat is not lost to a deploy
+  ([#116](https://github.com/barnabys-drew/tapwatch/pull/116)); tls_odd stops scoring WebRTC media's by-design signs
+  ([#119](https://github.com/barnabys-drew/tapwatch/pull/119)); every stats tile opens the cases it counts
+  ([#121](https://github.com/barnabys-drew/tapwatch/pull/121))
+- The Windows agent checks code signatures once per program instead of per socket: the per-socket query took
+  15 s and osquery's watchdog had denylisted it for 24 h twice, leaving R21 blind for a day each time
+  ([#123](https://github.com/barnabys-drew/tapwatch/pull/123)); the R21 retest then passed live (DESIGN.md R21)
+- **R22 `feed_silence`**: every feed has a measured longest-allowed silence; a stopped feed is a case within
+  minutes. It caught the denylisted socket query ten minutes after deploy
+  ([#127](https://github.com/barnabys-drew/tapwatch/pull/127), [#132](https://github.com/barnabys-drew/tapwatch/pull/132))
+- `tapwatch selfcheck`: 18 scripted attack and false-positive shapes through the detectors as configured, a
+  detection rate, exit 1 on a regression, in CI ([#128](https://github.com/barnabys-drew/tapwatch/pull/128))
+- `tapwatch benchmark` and two stats-page sections: week-by-week noise rate, Jev agreement with dispositions,
+  host-context accuracy ([#130](https://github.com/barnabys-drew/tapwatch/pull/130))
 
 ### v0.1.1 (2026-10-14): host context grows up
 
@@ -111,10 +135,10 @@ Ordered by theme, not date.
 - **AI triage:** majority vote for borderline calls ([#21](https://github.com/barnabys-drew/tapwatch/issues/21))
 - **Packaging and ops:** a container image and PyPI package ([#22](https://github.com/barnabys-drew/tapwatch/issues/22)), a watchdog for every capture
   path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)), TCP/TLS syslog ([#25](https://github.com/barnabys-drew/tapwatch/issues/25)), a same-switch VLAN guide ([#23](https://github.com/barnabys-drew/tapwatch/issues/23))
-- [ ] Benchmark the progress: once the major features are in, a running report from the case
-  history of false-positive rate per detector and triage accuracy (Jev's category and confidence
-  against the triage disposition; host-context verdicts against what the owner did), so each
-  change shows up as a number rather than a feeling (asked 2026-10-16)
+- [x] Benchmark the progress: a running report from the case history of noise rate, Jev agreement
+  with the triage disposition and host-context accuracy, week by week, on the stats page and as
+  `tapwatch benchmark` Markdown (asked 2026-10-16, built 2026-10-17, [#130](https://github.com/barnabys-drew/tapwatch/pull/130));
+  `tapwatch selfcheck` gives the detection-rate half ([#128](https://github.com/barnabys-drew/tapwatch/pull/128))
 
 
 ## v0.4: learning from history ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/4))

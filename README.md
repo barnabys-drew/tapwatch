@@ -82,9 +82,16 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
   parent chain and transcripts show whether the owner asked for it. Process proof outranks
   transcript context, and five host rules read the agent's own rows for shapes the wire can't
   show.
+- **It watches itself.** Every feed it depends on (Zeek's logs, each endpoint agent's frequent
+  queries) has a measured longest-allowed silence; a feed that stops is a case within minutes, not a
+  blind spot found days later. `tapwatch selfcheck` replays 18 scripted attack and false-positive
+  shapes through the detectors as configured and reports a detection rate; CI runs it, and it is one
+  command to run after a deploy.
 - **A case desk with no JavaScript.** It's a queue, a case page with ±5 minutes of Zeek evidence,
-  workflow, notes, an audit trail, expiring "suppress similar" rules and stats. The CSP allows no
-  scripts, and every change carries a CSRF token.
+  workflow, notes, an audit trail, expiring "suppress similar" rules and stats, including a
+  week-by-week benchmark: noise rate, how often the model agreed with your dispositions, and how
+  often host context's verdict matched them. The CSP allows no scripts, and every change carries a
+  CSRF token.
 - **Private by design.** The AI sees device *names*, never internal IPs, MACs or packet contents.
   Network strings are quoted as untrusted. A personal-data gate runs in CI.
 - **Few dependencies.** Standard-library Python plus PyYAML, SQLite, and Zeek in Docker. Runs
@@ -127,7 +134,8 @@ a digest item into an alert without losing anything. The home night's one rules-
 a remote-control tool found on a work laptop, which the labels call benign and the detector is right
 about; two of its items are a phone's iCloud backup and a work laptop's EDR upload. The earlier run
 (2026-10-13) and what changed are in [eval/RESULTS.md](eval/RESULTS.md). The sample is small, so
-treat it as a sanity check, not a benchmark.
+treat it as a sanity check, not a benchmark. The scripted self-check (`tapwatch selfcheck`) stands at
+15/15 attack shapes detected and 3/3 false-positive shapes quiet, and runs on every push to `dev`.
 
 ## What it catches
 
@@ -287,10 +295,15 @@ container following this README, and the Compose stack) were installed from scra
 2026-10-15. The router syslog feed is verified against a live UniFi gateway, the five endpoint
 rules (R17–R21) are in, and host context's attribution of a one-second `curl` to the agent that
 ran it was verified live on 2026-10-16. Site categories (UT1 lists, optional model) landed the
-same day. Next up, per the [roadmap](docs/ROADMAP.md): a week of reviewed host-context data
-(in progress), a clean-machine Windows test, Linux endpoint rules, and, once the major features
-are in, a running benchmark of false-positive rate and triage accuracy from the case history.
-macOS waits until there's a Mac to test on.
+same day. On 2026-10-17 the host-context verdicts were verified live on test shapes: the owner's
+prompt naming a destination corroborates the agent's connection, and a tampered binary's connection
+raised the bad-signature rule. The same day fixed a blind spot found by looking: the Windows agent's
+signature check had been running per socket, slowly enough that osquery banned the query for a day
+at a time, so the check now runs once per program, and a new rule watches every feed for silence
+(it caught that ban ten minutes after deploy). A scripted detection-rate check runs in CI, and the
+stats page gained a week-by-week benchmark. Next up, per the [roadmap](docs/ROADMAP.md): a
+clean-machine Windows test, Linux endpoint rules, and letting the noise rate fall as the baselines
+age. macOS waits until there's a Mac to test on.
 
 ## License
 
