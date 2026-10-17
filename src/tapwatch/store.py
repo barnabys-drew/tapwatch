@@ -169,7 +169,9 @@ class Store:
                               (case.key, case.ts - window)).fetchone()
         if row is None:
             return None
-        self.db.execute("UPDATE cases SET hits=hits+1, last_ts=? WHERE id=?", (case.ts, row["id"]))
+        # max(): a repeat read out of order (a replayed log) must not move last_ts backwards, or the next
+        # in-order repeat falls outside the window and opens a fresh case instead of counting as a hit.
+        self.db.execute("UPDATE cases SET hits=hits+1, last_ts=max(last_ts, ?) WHERE id=?", (case.ts, row["id"]))
         self.db.commit()
         return row["id"]
 

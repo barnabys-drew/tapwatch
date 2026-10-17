@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import heapq
 import json
+import os
 import re
 import time
 from collections.abc import Iterator
@@ -115,6 +116,21 @@ class _Open:
         self.fh, self.inode, self.offset = fh, inode, offset
 
 
+def _replaced(cur: _Open, st: os.stat_result) -> bool:
+    """The path now names a different file than the one we hold open, even though the inode numbers agree.
+
+    Inode numbers are not a reliable identity on every mount: WSL's drvfs reported the same st_ino for
+    osqueryd.results.log and the osqueryd.results.log.1 it had just been renamed to (2026-10-17). The
+    follower then took the new, smaller file for an in-place truncation, rewound to byte 0 of the old
+    100 MB file it still held open, and replayed it end to end every poll, raising the same cases
+    hundreds of times. A file we hold open cannot be smaller through its path than through its handle,
+    so when it is, the path has moved on to a new file and the old one must be finished and closed."""
+    try:
+        return st.st_size < os.fstat(cur.fh.fileno()).st_size
+    except OSError:
+        return True
+
+
 class Follower:
     """Tail several log files at once, surviving Zeek's rotation.
 
@@ -138,7 +154,7 @@ class Follower:
             except FileNotFoundError:
                 st = None
             cur = self._open.get(path)
-            if cur and (st is None or st.st_ino != cur.inode):
+            if cur and (st is None or st.st_ino != cur.inode or _replaced(cur, st)):
                 out += self._tag(self._drain(cur, kind, final=True), path)  # rotated or deleted: finish the old file
                 cur.fh.close()
                 del self._open[path]
@@ -150,8 +166,8 @@ class Follower:
                 # Files that appear later (Zeek creates logs lazily, and after rotation): from the top.
                 start = 0 if self.from_start or self._started else st.st_size
                 cur = self._open[path] = _Open(path.open("rb"), st.st_ino, start)
-            elif st.st_size < cur.offset:
-                cur.offset = 0  # truncated in place
+            elif os.fstat(cur.fh.fileno()).st_size < cur.offset:
+                cur.offset = 0  # truncated in place: the file we hold open really did shrink
             out += self._tag(self._drain(cur, kind), path)
         self._started = True
         out.sort(key=lambda r: r.get("ts", 0.0))
