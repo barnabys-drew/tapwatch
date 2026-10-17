@@ -50,6 +50,10 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
 - **26 case types from 24 detectors** tuned for homes (table below). Each is plain Python with
   tests and a written spec. Learned baselines survive restarts and follow the *device* (DHCP
   hostname, then MAC, then IP), so a laptop keeps its history when it moves between addresses.
+- **Sites named by kind.** First contacts, odd TLS sessions and upload spikes carry the kind of
+  site from the offline UT1 lists (advertising, remote control, file hosting, media, ...), and,
+  opt-in, from a small model asked once per domain which of a fixed set of labels fits (security
+  vendor, conferencing, CDN, SaaS, ...), cached, a fact only, never routing.
 - **Quiet by design.** A 3-day learning period sends the AI's alerts to the digest. Code-proven
   ceilings keep known shapes out of your phone: heartbeats to push, EDR, NTP and STUN services,
   popular destinations, uploads to sync services or a sync company's own network, symmetric
@@ -202,6 +206,8 @@ connection and feed the five host rules.
 - **Your notifications**, to the channels you configure. They include the device name and its LAN
   address. Domain names in them are defanged.
 - **Public list downloads** (`update-feeds`): downloads only, nothing is sent.
+- **Domain categorizer**, if enabled (`categories: {ai: true}`, off by default): the public registrable
+  domain only (`example.com`), to Anthropic, once per domain, cached for 30 days, at most `per_hour` (default 60) an hour.
 
 Packet contents and MAC addresses never leave, and internal addresses never reach the AI.
 
