@@ -5,7 +5,8 @@ The detectors here read the same osquery results log as a log source of its own 
 zeek.LOG_TYPES) and raise cases for living-off-the-land activity that never looks odd on the wire:
 an encoded or download-and-run command, a document app or browser starting a shell, a program in a
 temp folder connecting out, a built-in Windows tool connecting out, a program with a bad code
-signature connecting out.
+signature connecting out, and a new persistence entry (a scheduled task, service, startup item, cron
+job or launch agent) that runs a script, a shell or something from a user-writable folder.
 
 The rows are Sysmon events the Windows agent's `sysmon_events` query reduced on the PC
 (agents/config/osquery.conf): process starts (event 1) with the parent and yes/no command-line
@@ -25,20 +26,25 @@ outgoing connections, 7,423 DNS lookups. The per-rule comments cite what each wo
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .detectors import Detector, is_internal, prune_reported, still_reported
+from .detectors import Detector, Warmup, is_internal, prune_reported, still_reported
 from .hostctx import (
     ADDRS,
     CMD_SUSPICIOUS,
     CMD_UNUSUAL,
     SIGS,
+    SUSPICIOUS_CMD,
+    SUSPICIOUS_DIRS,
     SYSMON,
+    SYSTEM_DIRS,
     WIN_DOC_APPS,
     WIN_INSTALLED_DIRS,
     WIN_LOLBINS,
     WIN_SHELLS,
+    WIN_SUSPICIOUS_CMD,
     _basename,
     _sysmon_ts,
 )
@@ -63,7 +69,16 @@ DAY = 86400.0
 TEMP_DIRS = ("/appdata/local/temp/", "c:/windows/temp/")
 SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable by every account, never an install
 
-NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig")
+NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist")
+# R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
+PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
+                   "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent"}
+SCRIPT_EXT = (".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".bat", ".cmd", ".hta", ".sh", ".py", ".pl", ".rb")
+EXEC_EXT = SCRIPT_EXT + (".exe", ".com", ".dll", ".msc", ".scr", ".cpl", ".lnk")
+POSIX_SHELLS = {"sh", "bash", "zsh", "dash", "python", "python3", "perl", "node", "ruby", "nohup"}
+BATCH_GRACE = 120            # seconds after a query run before its rows are read as one batch (they log within a second)
+DUMP_MIN = 5                 # adds with no removes in one batch: osquery's first run of the query, an inventory, not a change
+KNOWN_MAX = 5000             # entries remembered per PC (a PC has a few hundred); older ones are forgotten first
 LAN_PREFIXES = ("192.168.", "10.")   # where home LANs live; 172.16/12 is where Hyper-V and WSL put their switches
 PC_UNKNOWN = "this PC"               # the case's host until an agent snapshot or host_context.host names the address
 
@@ -234,7 +249,7 @@ class HostDetector(Detector):
             self.state.update_addresses(rows)
             return []
         if rec.get("action") == "removed":
-            return []
+            return self.removed(name, rows, ts)
         if name == SIGS:
             self.state.update_signatures(rows)
         out: list[Case] = []
@@ -252,6 +267,11 @@ class HostDetector(Detector):
 
     def row(self, query: str, c: dict, ts: float) -> list[Case]:  # pragma: no cover - interface
         raise NotImplementedError
+
+    def removed(self, query: str, rows: list[dict], ts: float) -> list[Case]:
+        """A differential `removed` row. A connection that closed is not an event, so most rules ignore it;
+        R23 needs it to tell a changed entry from a new one."""
+        return []
 
     def emit(self, ts: float, title: str, facts: dict, severity: int, indicator: str, key: tuple = (),
              must_alert: bool = False) -> list[Case]:
@@ -475,6 +495,200 @@ class BadSignatureConnects(HostDetector):
                          (self.state.host, prog, sig))
 
 
+def _target_tokens(target: str) -> list[str]:
+    """The program and arguments of a persistence entry's command, quotes and environment variables resolved
+    enough to classify: `"C:\\Program Files\\X\\x.exe" /q` -> ['C:\\Program Files\\X\\x.exe', '/q']."""
+    t = target.strip()
+    if not t:
+        return []
+    for var, val in (("%systemroot%", "C:\\Windows"), ("%windir%", "C:\\Windows"), ("%programfiles%", "C:\\Program Files"),
+                     ("%localappdata%", "C:\\Users\\<user>\\AppData\\Local"), ("%appdata%", "C:\\Users\\<user>\\AppData\\Roaming"),
+                     ("%temp%", "C:\\Users\\<user>\\AppData\\Local\\Temp"), ("%userprofile%", "C:\\Users\\<user>"),
+                     ("%programdata%", "C:\\ProgramData"), ("%systemdrive%", "C:")):
+        t = t.replace(var, val).replace(var.upper(), val)
+    if t.startswith('"'):
+        end = t.find('"', 1)
+        if end > 0:
+            return [t[1:end]] + t[end + 1:].split()
+    parts = t.split()
+    # An unquoted path with spaces (`C:\\Program Files\\X\\x.exe /q`, a Start Menu\\Programs\\Startup script): the program
+    # runs to the first part that ends like a file, as Windows itself resolves it. Measured 2026-10-17: without this,
+    # Copilot's RunOnce read as a program named "Program" and a Startup-folder .vbs as one named "Start".
+    for i in range(1, len(parts)):
+        if parts[i - 1].lower().endswith(EXEC_EXT):
+            return [" ".join(parts[:i])] + parts[i:]
+    if len(parts) > 1 and not parts[0].lower().endswith(EXEC_EXT) and parts[0][1:3] == ":\\":
+        return [" ".join(parts)] if parts[-1].lower().endswith(EXEC_EXT) else parts
+    return parts
+
+
+def win_folder_class(path: str) -> str:
+    """folder_class, with the whole Windows directory as installed: a service or task under C:\\Windows\\servicing
+    or C:\\Windows\\Temp is written by Windows itself (admin-only), not by a user."""
+    p = path.replace("\\", "/").lower()
+    return "installed" if p.startswith("c:/windows/") and "/temp/" not in p else folder_class(path)
+
+
+def posix_folder_class(path: str) -> str:
+    p = path.lower()
+    if any(d in p for d in SUSPICIOUS_DIRS):
+        return "temp"
+    if p.startswith(SYSTEM_DIRS):
+        return "installed"
+    if p.startswith(("/home/", "/root/", "/users/")):
+        return "profile"
+    return "other"
+
+
+class NewPersistence(HostDetector):
+    """R23. A new place for a program to run again: a scheduled task, service, startup item (Run keys and the
+    Startup folder), cron job or launch agent that was not there before.
+
+    The agent's queries run hourly in osquery's differential mode, so the log carries `added` and `removed` rows.
+    Three things in those rows are not new entries, measured 2026-10-16/17 over 40 h of the main PC's log
+    (1,429 rows): a task that ran gets a removed+added pair because `last_run_time` changed (503 pairs); the
+    first run after the agent's database was reset lists everything as added (3 batches of 36, 108 and 224);
+    and 29 entries were genuinely new, of which 19 were Windows' own or an installed app's (per-user svchost
+    services for a new logon session, Windows Update tasks, TrustedInstaller, a sandbox service's version bump).
+    So: rows are read per query run (same `unixTime`), a key present on both sides of a run is a change, a run
+    of DUMP_MIN or more adds with no removes is an inventory, and a key seen before (`known`, persisted) or seen
+    during warmup is learned silently. What is left is scored by what the entry runs: a suspicious command line
+    or a temp, Downloads or shared folder -> alert; a script, a shell or script host, a LOLBin, or a per-user
+    folder -> digest (the measured 40 h replayed: six, the owner's two .vbs files in the Startup folder, OneDrive's
+    three RunOnce entries that run cmd.exe, and its startup task under AppData); an installed program with none of
+    those -> learned, no case. The entry's name and its program travel as untrusted strings; the command line
+    and path never enter the case, only the folder class and yes/no signals, as for the other host rules.
+    """
+
+    name = "host_persist"
+    QUERIES: ClassVar[tuple[str, ...]] = tuple(PERSIST_QUERIES)
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "known")
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7, warmup: Warmup | None = None):
+        super().__init__(state, reported_days)
+        self.warmup = warmup or Warmup(0)
+        self.known: dict[tuple, float] = {}   # (host, query, entry name, target) -> last seen, persisted
+        # (query, unixTime) -> {"ts", "added": [rows], "removed": [rows]}. Not persisted: a run read in the two
+        # minutes before a restart is neither judged nor learned, and its entries are judged at their next change.
+        self.pending: dict[tuple, dict] = {}
+
+    def restore(self, data: dict) -> None:
+        try:
+            super().restore(data)
+        except TypeError as e:  # a saved key that decodes to something unhashable
+            raise ValueError(f"known: {e}") from e
+        if not isinstance(self.known, dict) or not all(isinstance(k, tuple) and len(k) == 4 and isinstance(v, (int, float))
+                                                       for k, v in self.known.items()):
+            raise ValueError("known: not a dict of 4-tuples to times")  # restore_state discards it; relearned in a day
+
+    def feed(self, rec: dict) -> list[Case]:
+        now = float(rec.get("ts") or 0)
+        out = super().feed(rec) if rec.get("_type") == OSQUERY else []
+        return out + self.settle(now)
+
+    def _batch(self, query: str, rec_ts: float) -> dict:
+        return self.pending.setdefault((query, int(rec_ts)), {"ts": rec_ts, "added": [], "removed": []})
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        self._batch(query, ts)["added"].append(c)
+        return []
+
+    def removed(self, query: str, rows: list[dict], ts: float) -> list[Case]:
+        if query in PERSIST_QUERIES:
+            self._batch(query, ts)["removed"].extend(rows)
+        return []
+
+    @staticmethod
+    def target_of(query: str, c: dict) -> str:
+        if query == "scheduled_tasks":
+            return str(c.get("action") or "")
+        if query == "crontab":
+            return str(c.get("command") or "")
+        if query == "launchd_run_at_load":
+            return " ".join(str(c.get(k) or "") for k in ("program", "program_arguments")).strip()
+        return str(c.get("path") or "")   # services, startup items
+
+    @staticmethod
+    def entry_of(query: str, c: dict) -> str:
+        if query == "crontab":  # the file's path names the user (/var/spool/cron/crontabs/<user>): never stored
+            p = str(c.get("path") or "")
+            return "a user's crontab" if "/etc/" not in p else _basename(p) or "crontab"   # /etc/cron.d/<file>, /etc/crontab
+        return str(c.get("label") if query == "launchd_run_at_load" else c.get("name") or "")
+
+    def key(self, query: str, c: dict) -> tuple:
+        """What makes an entry the same entry across runs: never `last_run_time`, which changes whenever it runs."""
+        return (self.state.host, query, self.entry_of(query, c), self.target_of(query, c))
+
+    def flush(self) -> list[Case]:
+        """End of a replay: read every run still waiting for its grace period."""
+        return self.settle(float("inf"))
+
+    def settle(self, now: float) -> list[Case]:
+        """Read every query run whose grace period has passed as one batch."""
+        out: list[Case] = []
+        for bkey in [k for k, b in self.pending.items() if now - b["ts"] >= BATCH_GRACE]:
+            query, b = bkey[0], self.pending.pop(bkey)
+            gone = {self.key(query, c) for c in b["removed"]}
+            new = [c for c in b["added"] if self.key(query, c) not in gone]
+            inventory = len(new) >= DUMP_MIN and not b["removed"]
+            for c in new:
+                k = self.key(query, c)
+                seen = k in self.known
+                self.known[k] = b["ts"]
+                if seen or inventory or self.warmup.learning(b["ts"]):
+                    continue
+                out += self.judge(query, c, b["ts"])
+            if len(self.known) > KNOWN_MAX:
+                self.known = dict(sorted(self.known.items(), key=lambda kv: kv[1])[-KNOWN_MAX:])
+        return out
+
+    def judge(self, query: str, c: dict, ts: float) -> list[Case]:
+        target, entry = self.target_of(query, c), self.entry_of(query, c)
+        tokens = _target_tokens(target)
+        if not tokens:
+            return []   # a task with no action (Windows' SoftLanding tasks), or a bare registry value
+        first = tokens[0]
+        # The platform comes from the query and the row, not from the command: a Run key's value is often a bare
+        # `powershell -nop -w hidden -c ...` or `mshta http://...` with no drive letter (review of #137).
+        windows = query in ("scheduled_tasks", "auto_start_services") or (
+            query == "startup_items" and (str(c.get("source") or "").upper().startswith("HKEY") or "\\" in target
+                                          or ":" in first[:2]))
+        prog = _basename(first).lower()
+        if not re.search(r"[a-z]", prog):
+            return []   # not a program at all (startup_items logs StartupApproved values as a number)
+        if windows and "." not in prog:
+            prog += ".exe"   # `cmd /c`, `powershell -enc`, `rundll32 x.dll,Entry`: Windows adds the extension too
+        scripts = [t.strip('"') for t in tokens if t.lower().rstrip('"').endswith(SCRIPT_EXT)]
+        script = bool(scripts)
+        # the folder that matters is the script's when there is one (`wscript.exe C:\Users\<user>\Downloads\a.vbs` is
+        # a script in Downloads, not a program in System32), else the first thing that looks like a path (`cmd /c
+        # start C:\...\Downloads\x.exe` is about Downloads, not about cmd)
+        paths = [t.strip('"') for t in tokens if "\\" in t or ":" in t[:2] or (t.startswith("/") and "/" in t[1:])]
+        where = scripts[0] if scripts else (paths[0] if paths else first)
+        folder = win_folder_class(where) if windows else posix_folder_class(where)
+        shell = prog in WIN_SHELLS or prog in WIN_LOLBINS or prog in POSIX_SHELLS
+        signals = bool(WIN_SUSPICIOUS_CMD.search(target) or SUSPICIOUS_CMD.search(target))
+        url = "http://" in target.lower() or "https://" in target.lower()
+        if signals or folder in ("temp", "shared", "downloads"):
+            severity = 4
+        elif script or shell or folder in ("appdata", "profile", "other"):
+            severity = 3
+        else:
+            return []   # an installed program registering itself: Windows Update, an installer, a version bump
+        kind = PERSIST_QUERIES[query]
+        registry = str(c.get("source") or "").upper().startswith("HKEY")
+        facts = {"kind": kind, "entry": entry[:120], "program": prog, "folder": folder, "script": script, "shell": shell,
+                 "signals": ["an encoded or download-and-run command"] if signals else [], "url": url, "registry": registry}
+        return self.emit(ts, f"New {kind} on the PC", facts, severity, prog, (self.state.host, query, _entry_key(entry)))
+
+
+def _entry_key(entry: str) -> str:
+    """An entry name with the parts that change per install removed (GUIDs, SIDs, version numbers, per-session
+    suffixes), so one app's re-created entry is one digest line per week, not one per update."""
+    e = re.sub(r"\{[0-9a-f-]{36}\}|s-1-5-[\d-]+|\d+(\.\d+){2,}|_(?=[0-9a-f]*\d)[0-9a-f]{5}\b", "", entry.lower())
+    return e.strip(" -_")
+
+
 def _port(v) -> int | None:
     try:
         return int(v)
@@ -482,13 +696,17 @@ def _port(v) -> int | None:
         return None
 
 
-def build(cfg: dict) -> list[Detector]:
+def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
-    the agent's `host_addresses` snapshots (the same rows host context uses)."""
+    the agent's `host_addresses` snapshots (the same rows host context uses). `warmup` is the network detectors'
+    clock (the one the pipeline persists), so R23 learns the existing entries during the same first day."""
     d = cfg.get("detectors", {})
     if (d.get("host_rules") or {}).get("enabled", True) is False:
         return []
     state = EndpointState((cfg.get("host_context") or {}).get("host") or "")
     classes = (EncodedCommand, AppSpawnsShell, TempFolderConnects, LolbinConnects, BadSignatureConnects)
-    return [cls(state, **d.get(cls.name, {})) for cls in classes]
+    rules = [cls(state, **d.get(cls.name, {})) for cls in classes]
+    rules.append(NewPersistence(state, warmup=warmup or Warmup(cfg.get("warmup_seconds", 86400)),
+                                **d.get(NewPersistence.name, {})))
+    return rules
