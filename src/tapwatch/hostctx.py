@@ -253,6 +253,33 @@ def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) 
         unclear.append(f"{o.name} isn't code-signed")
 
 
+def names_match(query: str, names: set[str]) -> bool:
+    """Is `query` one of the case's names, under one, or on the same registrable domain?"""
+    q = query.lower().rstrip(".")
+    return any(q == n or q.endswith("." + n) or ("." in n and base_domain(q) == base_domain(n)) for n in names)
+
+
+def case_destinations(case, dns_rows: list[dict]) -> tuple[set[str], set[str]]:
+    """(addresses, names) the case is about: its indicators, split into bare addresses and names, plus the
+    addresses the PC's own DNS lookups of those names returned in the window. Empty when the case names nothing
+    (a scan, an upload spike): then every connection in the window is the case's context."""
+    ips, names = set(), set()
+    for n in case.indicators:  # a bare-IP indicator (an HTTP Host header, an IP intel hit) is an address, not a name
+        try:
+            ips.add(str(ipaddress.ip_address(n.strip())))
+        except ValueError:
+            if n.strip():
+                names.add(n.lower().rstrip("."))
+    for r in dns_rows:
+        if r.get("query") and names_match(str(r["query"]), names):
+            for a in r.get("answers") or ():
+                try:
+                    ips.add(str(ipaddress.ip_address(a)))
+                except ValueError:
+                    continue  # CNAME answers
+    return ips, names
+
+
 def assess(owners: list[Owner], who: str, programs: list[str] | None = None) -> tuple[str, list[str]]:
     """(assessment, signals): likely_benign / suspicious / unclear, from what ran on the PC.
 
@@ -814,6 +841,15 @@ class HostContext:
         idx = self.index(since=case.ts - BEFORE - 3600, live=now - case.ts < LIVE_WINDOW)
         outbound = [r for r in conn_rows if r.get("id.orig_h") == case.host and not is_internal(r.get("id.resp_h", ""))
                     and isinstance(r.get("id.resp_p"), int)]
+        # The rows are the PC's connections within +-180 s of the case. When the case's destination is known (its
+        # indicators, or what the PC's lookups of them returned), only that destination's rows are its context;
+        # measured 2026-10-17, case #413: a temp-folder test program connecting elsewhere in the same window was
+        # attributed to an eff.org case and escalated it to alert. With no row to the destination (an answer the
+        # window didn't carry, a CDN address not in the lookup) the whole window stays the context, as before.
+        dest_ips, dest_names = case_destinations(case, dns_rows)
+        scoped = [r for r in outbound if r["id.resp_h"] in dest_ips]
+        if scoped:
+            outbound = scoped
         owners: list[Owner] = []
         matched = 0
         for r in outbound:
@@ -822,6 +858,9 @@ class HostContext:
             owners += found
         # DNS lookups the PC made, tied to the program that asked (Sysmon 22): what DNS-anomaly cases need.
         lookups = [r for r in dns_rows if r.get("id.orig_h") == case.host and r.get("query")]
+        scoped_lookups = [r for r in lookups if names_match(str(r["query"]), dest_names)]
+        if scoped_lookups:
+            lookups = scoped_lookups
         lookups_matched = 0
         lookups_followed = 0
         for r in lookups:
@@ -829,13 +868,8 @@ class HostContext:
             lookups_matched += bool(found)
             lookups_followed += followed
             owners += found
-        ips = {r["id.resp_h"] for r in outbound}
-        names = set()
-        for n in case.indicators:  # a bare-IP indicator (an HTTP Host header, an IP intel hit) is an address, not a name
-            try:
-                ips.add(str(ipaddress.ip_address(n.strip())))
-            except ValueError:
-                names.add(n.lower().rstrip("."))
+        ips = {r["id.resp_h"] for r in outbound} | dest_ips
+        names = set(dest_names)
         names |= {(r.get("query") or "").lower() for r in dns_rows if set(r.get("answers") or ()) & ips}
         # Names first; the addresses only when the case has no name at all (#379: a shared address matched
         # the wrong transcript). transcript_facts records which in `matched_by`.
@@ -873,7 +907,8 @@ class HostContext:
                  "host_session_guessed": session_guessed,  # the id came from a transcript search, not a marker
                  "host_inherited": any(o.inherited for o in owners),  # credited through the exec parent chain
                  "host_via_ssh": any(o.via_ssh for o in owners), "host_in_terminal": any(o.in_herdr for o in owners),
-                 "host_transcript_only": transcript_only}
+                 "host_transcript_only": transcript_only,
+                 "host_scoped": bool(scoped or scoped_lookups)}  # rows narrowed to the case's own destination
         facts.update({f"host_{k}": v for k, v in tf.items()})
         self.check_signatures(owners)
         assessment, signals = assess(owners, who, programs[:3])
