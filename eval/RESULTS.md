@@ -17,6 +17,9 @@ own tuning. Added 2026-10-17 at 15/15 detected, 3/3 quiet.
 
 ## Summary
 
+_The running numbers (week-by-week noise rate, Jev agreement with the owner's dispositions, host-context
+accuracy) come from `tapwatch benchmark`; the stats page shows the same tables._
+
 | | Rules only | With Jev |
 |---|---|---|
 | Infected hosts surfaced (alert or digest), 6 public captures | 4 / 7 | 4 / 7 |

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, detectors, evaluate, evidence, selfcheck, zeek
+from . import benchmark, config, detectors, evaluate, evidence, selfcheck, zeek
 from .pipeline import Pipeline
 from .store import Store
 from .summarizer import summarize
@@ -163,6 +163,12 @@ def cmd_selfcheck(args, cfg) -> int:
     outcomes = selfcheck.run(without_ai(cfg), config.thresholds(cfg))
     print(selfcheck.as_json(outcomes) if args.json else selfcheck.report(outcomes, source=f"the config file {args.config}"))
     return 0 if all(o.passed for o in outcomes) else 1
+
+
+def cmd_benchmark(args, cfg) -> int:
+    """Week-by-week noise rate, Jev agreement and host-context accuracy from the case desk, as Markdown."""
+    print(benchmark.markdown(Store(cfg.get("db_path", "tapwatch.db")).db))
+    return 0
 
 
 def cmd_digest(args, cfg) -> int:
@@ -401,6 +407,9 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("selfcheck", help="detection rate on scripted attack shapes, rules only; exit 1 on a regression")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_selfcheck)
+
+    sub.add_parser("benchmark", help="week-by-week noise rate, Jev agreement and host-context accuracy (Markdown)") \
+        .set_defaults(fn=cmd_benchmark)
 
     sub.add_parser("digest", help="send the pending digest").set_defaults(fn=cmd_digest)
 
