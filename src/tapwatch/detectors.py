@@ -2233,8 +2233,9 @@ class FeedSilence(Detector):
     WSL keep different clocks, and a backlog catch-up delivers old timestamps live) or since tapwatch's own
     start, whichever is later. A restart therefore gives every feed a full grace period, and a feed already
     dead at start is still reported once the period passes. When the monitor itself was away (the box slept:
-    two ticks more than two minutes apart) the clocks restart too, or waking would fire every feed at once.
-    The same holds for a reboot, which this rule therefore cannot report: tapwatch restarts with the box.
+    two ticks more than two minutes apart) every clock shifts forward by the time away, so a feed nine minutes
+    silent before the sleep is nine minutes silent after it, and waking does not fire every feed at once. A
+    reboot is a restart, which this rule therefore cannot report: tapwatch restarts with the box.
 
     Limits, from the gaps measured over 2026-10-15..17 (two days): Zeek's conn and dns rows never paused
     over 0.1 min at the 99.9th percentile (the one long gap, 34 min, was the reboot). The Windows socket
@@ -2287,29 +2288,28 @@ class FeedSilence(Detector):
         return []
 
     def tick(self, now: float) -> list[Case]:
-        away, self._last_tick = self._last_tick is not None and now - self._last_tick > self.AWAY, now
-        if away:  # the box slept or tapwatch was stopped: every feed gets its grace period again
-            self.started = now
-            return []
-        gone: dict[str, list[tuple[str, int, float, bool]]] = {}  # source tag -> (name, severity, since, never seen)
+        if self._last_tick is not None and now - self._last_tick > self.AWAY:
+            shift = now - self._last_tick - 60  # the monitor was away (the box slept): the time away does not count
+            self.started += shift
+            for key in self.last:
+                self.last[key] += shift
+        self._last_tick = now
+        gone: dict[str, list[tuple]] = {}  # source tag -> (name, severity, since, never seen, limit, source words)
         for key, (limit, severity) in self.expected.items():
             since = max(self.last.get(key, 0.0), self.started)
             if key in self.silent or now - since < limit:
                 continue
             self.silent.add(key)
-            name, tag, _ = self.describe(key)
-            gone.setdefault(tag, []).append((name, severity, since, key not in self.last))
+            name, tag, where = self.describe(key)
+            gone.setdefault(tag, []).append((name, severity, since, key not in self.last, limit, where))
         out = []
         for tag, feeds in gone.items():
             feeds.sort(key=lambda f: (-f[1], f[0]))  # the feed that matters most leads: it is the case's key
-            where = self.describe(next(k for k in self.expected if self.describe(k)[1] == tag))[2]
             out.append(Case(self.name, self.host, now,
                             "A log feed has stopped arriving" if len(feeds) == 1 else "Log feeds have stopped arriving",
-                            {"feeds": [f[0] for f in feeds], "source": where,
+                            {"feeds": [f[0] for f in feeds], "source": feeds[0][5],
                              "silent_minutes": round((now - min(f[2] for f in feeds)) / 60),
-                             "limit_minutes": round(min(self.expected[k][0] for k in self.expected
-                                                        if self.describe(k)[1] == tag and self.describe(k)[0] in
-                                                        {f[0] for f in feeds}) / 60),
+                             "limit_minutes": round(min(f[4] for f in feeds) / 60),
                              "never_seen": all(f[3] for f in feeds), "dedupe": f"{tag}:{feeds[0][0]}"},
                             [f"{tag}:{f[0]}" for f in feeds], base_severity=max(f[1] for f in feeds)))
         return out

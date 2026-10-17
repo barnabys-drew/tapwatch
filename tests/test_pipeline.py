@@ -144,7 +144,8 @@ def test_pipeline_tick_reaches_detectors_and_routes_the_case(tmp_path):
     ((case_id, case, verdict, route),) = p.process({"_type": "tick", "ts": T0 + 600})
     assert case.detector == "feed_silence" and verdict is None and route.value == "alert"
     from tapwatch.summarizer import summarize
-    assert "conn.log feed from the network tap has not arrived since tapwatch started" in summarize(case, Assets())
+    assert ("conn.log feed from the network tap has not arrived since tapwatch started; it normally arrives at least "
+            "every 10 minutes. Until it resumes, the rules that read it are blind.") in summarize(case, Assets())
     assert store.get(case_id)["route"] == "alert"
 
 

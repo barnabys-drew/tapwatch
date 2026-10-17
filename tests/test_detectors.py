@@ -336,13 +336,14 @@ def test_feed_silence_measures_from_start_resets_when_the_monitor_was_away_and_c
     assert ticks(det, T0, T0 + 840) == []
     (never,) = ticks(det, T0 + 840, T0 + 900)
     assert never.facts["never_seen"] and never.host == "this PC" and never.indicators == ["windows:sysmon_events"]
-    # the box slept: the next tick comes an hour later, which restarts every clock instead of firing everything
+    # the box slept: the next tick comes an hour later; the hour does not count, so the Windows snapshot, 960 s
+    # silent before the sleep, is 960 s silent after it and fires 240 s later, not at once
     woke = T0 + 960 + 3600
     assert det.tick(woke) == []
-    assert ticks(det, woke, woke + 1140) == []        # the Windows snapshot would be 1140 s past the new start: not yet
-    (snap,) = ticks(det, woke + 1140, woke + 1200)
-    assert snap.indicators == ["windows:host_addresses"] and snap.base_severity == 3
-    (lin,) = ticks(det, woke + 1200, woke + 1800)
+    assert ticks(det, woke, woke + 180) == []
+    (snap,) = ticks(det, woke + 180, woke + 240)
+    assert snap.indicators == ["windows:host_addresses"] and snap.base_severity == 3 and snap.facts["silent_minutes"] == 20
+    (lin,) = ticks(det, woke + 240, woke + 840)
     assert lin.indicators == ["linux:host_addresses"] and lin.key != snap.key   # two agents, same query name, two cases
     # several feeds of one agent going silent in the same tick make one case, the loudest first
     both = FeedSilence({f"{win}|sysmon_events": (900, 4), f"{win}|host_addresses": (900, 3), "conn": (900, 4)},

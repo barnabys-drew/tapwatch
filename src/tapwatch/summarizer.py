@@ -234,11 +234,13 @@ def _observed(c: Case, words: dict) -> str:
         return _endpoint(c)
     if c.detector == "feed_silence":
         feeds = f.get("feeds") or []
-        what = (f"The {feeds[0]} feed" if len(feeds) == 1 else "The " + ", ".join(feeds) + " feeds") + f" from {f.get('source')}"
-        how = (("has" if len(feeds) == 1 else "have") + " not arrived since tapwatch started" if f.get("never_seen")
+        one = len(feeds) == 1
+        what = (f"The {feeds[0]} feed" if one else "The " + ", ".join(feeds) + " feeds") + f" from {f.get('source')}"
+        how = (("has" if one else "have") + " not arrived since tapwatch started" if f.get("never_seen")
                else f"stopped {f.get('silent_minutes')} minutes ago")
-        return (f"{what} {how}; they normally arrive at least every {f.get('limit_minutes')} minutes. "
-                "Until they resume, the rules that read them are blind.")
+        it, arrives, resumes, them = ("it", "arrives", "resumes", "it") if one else ("they", "arrive", "resume", "them")
+        return (f"{what} {how}; {it} normally {arrives} at least every {f.get('limit_minutes')} minutes. "
+                f"Until {it} {resumes}, the rules that read {them} are blind.")
     return c.title + "."
 
 
