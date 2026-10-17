@@ -18,6 +18,7 @@ from .triage import DEFAULT_MODEL, GATEWAY_MODEL, GATEWAY_URL, JevClient
 
 FEED_FILES = {"popular_domains_file": "top-100k.csv", "oui_file": "oui.csv", "asn_file": "ip2asn-v4.tsv.gz",
               "categories_file": "categories.tsv"}
+LEARNED_CATEGORIES = "categories.learned.tsv"  # the model's cached domain categories (categories.py): written, not downloaded
 
 
 def load(path: str | None) -> dict:
@@ -31,6 +32,8 @@ def with_feeds(cfg: dict) -> dict:
     for key, name in FEED_FILES.items():
         if not cfg.get(key) and (d / name).exists():
             cfg[key] = str(d / name)
+    if not cfg.get("learned_categories_file"):  # an output: it need not exist yet
+        cfg["learned_categories_file"] = str(d / LEARNED_CATEGORIES)
     return cfg
 
 

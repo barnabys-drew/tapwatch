@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import ClassVar
 from zoneinfo import ZoneInfo
 
-from .categories import category
+from .categories import from_config as ai_categorizer
 from .categories import load as load_categories
+from .categories import resolve, set_categorizer
 from .feeds import AsnTable
 from .models import Case, device_id
 
@@ -935,13 +936,14 @@ class HourlyProfile(Detector):
             # A video call is symmetric (measured 2026-10-14: an all-day Google Meet, ~0.8 Mbit/s each
             # way, 2.17 GB up, alerted as #82). Exfiltration is lopsided: the data goes one way.
             symmetric = 0.35 <= up / (up + down) <= 0.65 if down else False
+            top_category, top_source = resolve(top)  # dests is keyed by name whenever one is known
             facts = {"mb": round(up / 1e6), "normal_mb": round(normal / 1e6, 1),
                      "times_normal": round(up / max(normal, 1)), "basis": basis, "down_mb": round(down / 1e6),
                      "symmetric": symmetric,
                      "top_share_pct": round(100 * share), "to_sync_service": bool(top) and sync_service(top),
                      "to_security_vendor": bool(top) and suffix_match(top, SECURITY_TELEMETRY) is not None,
                      "to_sync_network": sync_network,
-                     "top_category": category(top)}  # dests is keyed by name whenever one is known
+                     "top_category": top_category, "top_category_source": top_source}
             if (facts["to_sync_service"] or facts["to_security_vendor"] or sync_network or symmetric) and share >= 0.6:
                 facts["max_route"] = "digest"  # home eval: a 700 MB OneDrive hour was Jev's "exfiltration 1.00"
             # host is the device key (name:/mac:/IP); the assets entry may be under it, the address, or
@@ -1041,11 +1043,13 @@ class NewExternalDomain(Detector):
         if self.warmup.learning(rec["ts"]):
             return out
         win = self.pending.setdefault(host, {"start": rec["ts"], "items": []})
+        cat, cat_source = resolve(name)  # the offline list, else the model's cached or fresh answer (categories.py)
         win["items"].append({"name": name, "via": "TLS" if rec["_type"] == "ssl" else "DNS",
                              # numbered CDN hosts under widely used domains aren't DGA (home eval 2026-10-13:
                              # googlevideo, microsoftaik, cdn77 made 16 of 26 digest items)
                              "random": looks_random(name) and dom not in self.popular,
-                             "others": others, "popular": dom in self.popular, "category": category(name)})
+                             "others": others, "popular": dom in self.popular,
+                             "category": cat, "category_source": cat_source})
         return out
 
     def _close_due(self, now: float) -> list[Case]:
@@ -1065,8 +1069,11 @@ class NewExternalDomain(Detector):
                  "popular_known": bool(self.popular),
                  "via": items[0]["via"], "max_others": max(i["others"] for i in items),
                  "dedupe": f"{int(win['start'] // self.window)}",
-                 # what kind of sites, from the offline category list: distinct, most frequent first
-                 "categories": [c for c, _ in Counter(i["category"] for i in items if i.get("category")).most_common(3)]}
+                 # what kind of sites, from the offline category list or the model: distinct, most frequent first,
+                 # and where the kinds came from ("list", "ai") so the summary can say which
+                 "categories": [c for c, _ in Counter(i["category"] for i in items if i.get("category")).most_common(3)],
+                 "category_sources": [s for s in ("list", "ai")
+                                      if any(i.get("category") and i.get("category_source") == s for i in items)]}
         title = "First contact with a new domain" if n == 1 else f"First contact with {n} new domains"
         # Show the odd ones first: random-looking, then ones no other device uses.
         shown = sorted(items, key=lambda i: (not i["random"], i["others"] > 0))[:3]
@@ -1870,9 +1877,10 @@ class TlsOddities(Detector):
         self.reported[(who, port)] = PERMANENT if learning else ts
         if learning:
             return []
+        cat, cat_source = resolve(rec.get("server_name"))
         return [Case(self.name, src, ts, "Unusual encrypted connection",
                      {**signs, "score": score, "port": port, "dedupe": f"{dst}:{port}",
-                      "category": category(rec.get("server_name"))},
+                      "category": cat, "category_source": cat_source},
                      [rec["server_name"]] if rec.get("server_name") else [], base_severity=2 if score < 4 else 3)]
 
 
@@ -2172,7 +2180,8 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     d = cfg.get("detectors", {})
     net = cfg.get("network", {})
     set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
-    load_categories(cfg.get("categories_file"))  # domain -> kind of site (categories.py), offline
+    load_categories(cfg.get("categories_file"), cfg.get("learned_categories_file"))  # domain -> kind of site (categories.py), offline
+    set_categorizer(ai_categorizer(cfg))  # opt-in `categories: {ai: true}` + key in the environment, else None: no network
     gateways = Gateways(set(net.get("gateways") or ()))  # learned from the logs when not configured
     identity = Identity()
     asn_table = AsnTable.load(cfg.get("asn_file"))  # IP -> (ASN, country), offline
