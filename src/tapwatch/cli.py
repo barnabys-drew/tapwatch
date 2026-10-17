@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, detectors, evaluate, evidence, hostrules, selfcheck, zeek
+from . import config, detectors, evaluate, evidence, selfcheck, zeek
 from .pipeline import Pipeline
 from .store import Store
 from .summarizer import summarize
@@ -38,9 +38,7 @@ def without_ai(cfg: dict) -> dict:
 def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=None) -> Pipeline:
     if not use_ai:
         cfg = without_ai(cfg)
-    ips, doms = config.iocs(cfg)
-    dets = detectors.build(cfg, ips, doms, config.popular_domains(cfg), config.assets(cfg).table) + hostrules.build(cfg)
-    return Pipeline(dets, config.assets(cfg), Store(cfg.get("db_path", "tapwatch.db")),
+    return Pipeline(config.build_detectors(cfg), config.assets(cfg), Store(cfg.get("db_path", "tapwatch.db")),
                     client=config.jev_client(cfg) if use_ai else None,
                     notifier=config.notifier(cfg) if notify else None,
                     thresholds=config.thresholds(cfg), dedupe_seconds=cfg.get("dedupe_seconds", 3600),
@@ -163,7 +161,7 @@ def cmd_eval(args, cfg) -> int:
 def cmd_selfcheck(args, cfg) -> int:
     """Push the scripted attack and false-positive shapes through the detectors as configured (AI off)."""
     outcomes = selfcheck.run(without_ai(cfg), config.thresholds(cfg))
-    print(selfcheck.as_json(outcomes) if args.json else selfcheck.report(outcomes))
+    print(selfcheck.as_json(outcomes) if args.json else selfcheck.report(outcomes, source=f"config {args.config}"))
     return 0 if all(o.passed for o in outcomes) else 1
 
 

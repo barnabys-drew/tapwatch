@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from . import detectors, hostrules
 from .hostctx import HostContext
 from .notifiers import HerdrNotifier, Notifier
 from .router import Thresholds
@@ -178,6 +179,14 @@ def hostctx(cfg: dict) -> HostContext | None:
     return HostContext(h["host"], bins, logs, h.get("transcripts"),
                        powershell=str(ps) if win.exists() and ps.exists() else None,
                        hostname=h.get("hostname"))  # None: this machine's own name
+
+
+def build_detectors(cfg: dict) -> list:
+    """Every detector `run` uses, built from the config: the network rules with the IOC lists, the popular-domain
+    list and the asset table, plus the endpoint rules. `tapwatch selfcheck` builds through here too, so what it
+    measures is what runs."""
+    ips, doms = iocs(cfg)
+    return detectors.build(cfg, ips, doms, popular_domains(cfg), assets(cfg).table) + hostrules.build(cfg)
 
 
 def thresholds(cfg: dict) -> Thresholds:
