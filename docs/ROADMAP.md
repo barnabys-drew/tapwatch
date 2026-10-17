@@ -29,7 +29,7 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
 | Linux install | **Solid.** `docker compose up`, verified end to end on a live interface |
 | Windows install | **Works on one PC.** WSL + Npcap services; a clean-machine test is still to do |
-| Host context (who on the PC made this traffic) | **Verified live** (2026-10-17). osquery on Linux/WSL and Windows plus agent-session awareness; the owner's prompt naming a destination corroborates the agent's connection (#413), a tampered binary's connection raised R21 (#429). 84 cases with host context measured before the fixes; the week-by-week benchmark now tracks the verdicts against dispositions |
+| Host context (who on the PC made this traffic) | **Verified live on test shapes** (2026-10-17): the owner-named eff.org test (#413) exposed two gaps, fixed the same day (#114, #117); a tampered binary's connection raised R21 (#429, see DESIGN R21). Accuracy against the owner's dispositions is tracked week by week by the benchmark, and a live case was still mis-capped once that day (#132), so it does not yet lower alerts on its own |
 | Router syslog | **Verified on a live gateway** (2026-10-16). CEF events and firewall lines parsed as sent; admin logins checked against a real line. IPS verdicts still await a real detection |
 | macOS | **Later.** Waiting on a tester with a Mac; it won't ship untested |
 
@@ -48,7 +48,7 @@ Twelve reviewed PRs in one day, each with a measured basis:
   ([#121](https://github.com/barnabys-drew/tapwatch/pull/121))
 - The Windows agent checks code signatures once per program instead of per socket: the per-socket query took
   15 s and osquery's watchdog had denylisted it for 24 h twice, leaving R21 blind for a day each time
-  ([#123](https://github.com/barnabys-drew/tapwatch/pull/123)); the R21 retest then passed live
+  ([#123](https://github.com/barnabys-drew/tapwatch/pull/123)); the R21 retest then passed live (DESIGN.md R21)
 - **R22 `feed_silence`**: every feed has a measured longest-allowed silence; a stopped feed is a case within
   minutes. It caught the denylisted socket query ten minutes after deploy
   ([#127](https://github.com/barnabys-drew/tapwatch/pull/127), [#132](https://github.com/barnabys-drew/tapwatch/pull/132))
