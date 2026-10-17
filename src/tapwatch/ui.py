@@ -330,11 +330,19 @@ QUEUE_SORTS = {
 }
 
 
+BUCKETS = {"decided": "disposition IS NOT NULL",
+           "noise": "disposition IN ('false_positive', 'benign_expected')"}  # the stats tiles' buckets
+
+
 def queue_filters(params: dict) -> dict:
     """Read the queue's filter params, keeping only values we recognise (others fall back to defaults)."""
-    f = {k: params.get(k, [""])[0] for k in ("status", "route", "detector", "device", "sort")}
+    f = {k: params.get(k, [""])[0] for k in ("status", "route", "detector", "device", "sort", "disposition", "triaged")}
     if f["status"] not in (*STATUSES, "open", "all"):
         f["status"] = "open"
+    if f["disposition"] not in (*DISPOSITIONS, *BUCKETS):
+        f["disposition"] = ""  # the stats tiles link here: one disposition, every decided case, or the noise
+    if f["triaged"] != "1":
+        f["triaged"] = ""  # cases Jev gave a verdict
     if f["route"] not in (*ROUTES, "all", "triage"):
         f["route"] = "triage"  # alerts and digest items: log-only cases are for the record, not the queue
     if f["sort"] not in QUEUE_SORTS:
@@ -361,6 +369,13 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
     if f["device"]:
         where.append("host = ?")
         args.append(f["device"])
+    if f["disposition"] in BUCKETS:
+        where.append(BUCKETS[f["disposition"]])
+    elif f["disposition"]:
+        where.append("disposition = ?")
+        args.append(f["disposition"])
+    if f["triaged"]:
+        where.append("verdict IS NOT NULL")
     sql_where = (" WHERE " + " AND ".join(where)) if where else ""
     db = store.db
     total = db.execute(f"SELECT COUNT(*) FROM cases{sql_where}", args).fetchone()[0]
@@ -389,9 +404,15 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
     pill_values = [("open", n_open), *((s, by_status.get(s, 0)) for s in STATUSES), ("all", sum(by_status.values()))]
     pills = "".join(f'<a class="pill{" on" if f["status"] == v else ""}" href="{e(link(status=v))}">{e(label(v))}'
                     f'<b>{n}</b></a>' for v, n in pill_values)
+    bucket = {"decided": "dispositioned", "noise": "false positive or benign"}.get(f["disposition"]) \
+        or (label(f["disposition"]) if f["disposition"] else "")
+    for name, off in ((bucket, {"disposition": ""}), ("Jev triaged" if f["triaged"] else "", {"triaged": ""})):
+        if name:
+            pills += f'<a class="pill on" href="{e(link(**off))}" title="remove this filter">{e(name)} ×</a>'
     host_labels = {h: f"{assets.name(h)} ({h})" if assets.name(h) != h else h for h in hosts}
     filters = f"""<div class="card"><form class="filters" method="get" action="/">
 <input type="hidden" name="status" value="{e(f["status"])}">
+<input type="hidden" name="disposition" value="{e(f["disposition"])}"><input type="hidden" name="triaged" value="{e(f["triaged"])}">
 <label class="f">Route<select name="route">{options(("triage", "all", *ROUTES), f["route"], {"triage": "alert + digest", "all": "any, including log"})}</select></label>
 <label class="f">Detector<select name="detector"><option value="">any</option>{options(detectors, f["detector"])}</select></label>
 <label class="f">Device<select name="device"><option value="">any</option>{options(hosts, f["device"], host_labels)}</select></label>
@@ -660,12 +681,17 @@ def render_stats(store: Store) -> tuple[str, str]:
     tp_all = db.execute("SELECT COUNT(*) FROM cases WHERE disposition = 'true_positive'").fetchone()[0]
     triaged = db.execute("SELECT COUNT(*) FROM cases WHERE verdict IS NOT NULL").fetchone()[0]
     sup_hits = db.execute("SELECT COALESCE(SUM(hits), 0) FROM suppressions").fetchone()[0]
-    tiles = (tile(total, "Cases", "blue", "all time")
-             + tile(f"{decided_all / total:.0%}" if total else "–", "Dispositioned", "violet", f"{decided_all} decided")
+    def bucket(**f) -> str:  # every tile opens the cases it counts: all statuses and routes, newest first
+        return "/?" + urlencode({"status": "all", "route": "all", **f})
+
+    tiles = (tile(total, "Cases", "blue", "all time", bucket())
+             + tile(f"{decided_all / total:.0%}" if total else "–", "Dispositioned", "violet", f"{decided_all} decided",
+                    bucket(disposition="decided"))
              + tile(f"{noisy_all / decided_all:.0%}" if decided_all else "–", "Noise rate", "amber",
-                    "FP + benign of decided")
-             + tile(tp_all, "True positives", "red" if tp_all else "green")
-             + tile(triaged, "Jev triaged", "violet") + tile(sup_hits, "Suppressed", "green", "rule hits"))
+                    "FP + benign of decided", bucket(disposition="noise"))
+             + tile(tp_all, "True positives", "red" if tp_all else "green", "", bucket(disposition="true_positive"))
+             + tile(triaged, "Jev triaged", "violet", "", bucket(triaged="1"))
+             + tile(sup_hits, "Suppressed", "green", "rule hits", "/suppressions"))
 
     # Cases per hour, last 48 hours
     now = time.time()
