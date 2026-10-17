@@ -503,7 +503,8 @@ def _target_tokens(target: str) -> list[str]:
         return []
     for var, val in (("%systemroot%", "C:\\Windows"), ("%windir%", "C:\\Windows"), ("%programfiles%", "C:\\Program Files"),
                      ("%localappdata%", "C:\\Users\\<user>\\AppData\\Local"), ("%appdata%", "C:\\Users\\<user>\\AppData\\Roaming"),
-                     ("%temp%", "C:\\Users\\<user>\\AppData\\Local\\Temp"), ("%userprofile%", "C:\\Users\\<user>")):
+                     ("%temp%", "C:\\Users\\<user>\\AppData\\Local\\Temp"), ("%userprofile%", "C:\\Users\\<user>"),
+                     ("%programdata%", "C:\\ProgramData"), ("%systemdrive%", "C:")):
         t = t.replace(var, val).replace(var.upper(), val)
     if t.startswith('"'):
         end = t.find('"', 1)
@@ -567,7 +568,18 @@ class NewPersistence(HostDetector):
         super().__init__(state, reported_days)
         self.warmup = warmup or Warmup(0)
         self.known: dict[tuple, float] = {}   # (host, query, entry name, target) -> last seen, persisted
-        self.pending: dict[tuple, dict] = {}  # (query, unixTime) -> {"ts", "added": [rows], "removed": [rows]}
+        # (query, unixTime) -> {"ts", "added": [rows], "removed": [rows]}. Not persisted: a run read in the two
+        # minutes before a restart is neither judged nor learned, and its entries are judged at their next change.
+        self.pending: dict[tuple, dict] = {}
+
+    def restore(self, data: dict) -> None:
+        try:
+            super().restore(data)
+        except TypeError as e:  # a saved key that decodes to something unhashable
+            raise ValueError(f"known: {e}") from e
+        if not isinstance(self.known, dict) or not all(isinstance(k, tuple) and len(k) == 4 and isinstance(v, (int, float))
+                                                       for k, v in self.known.items()):
+            raise ValueError("known: not a dict of 4-tuples to times")  # restore_state discards it; relearned in a day
 
     def feed(self, rec: dict) -> list[Case]:
         now = float(rec.get("ts") or 0)
@@ -600,7 +612,7 @@ class NewPersistence(HostDetector):
     def entry_of(query: str, c: dict) -> str:
         if query == "crontab":  # the file's path names the user (/var/spool/cron/crontabs/<user>): never stored
             p = str(c.get("path") or "")
-            return "a user's crontab" if "/cron/" in p and "/etc/" not in p else ("/etc/" + p.split("/etc/")[-1] if "/etc/" in p else "crontab")
+            return "a user's crontab" if "/etc/" not in p else _basename(p) or "crontab"   # /etc/cron.d/<file>, /etc/crontab
         return str(c.get("label") if query == "launchd_run_at_load" else c.get("name") or "")
 
     def key(self, query: str, c: dict) -> tuple:
@@ -636,18 +648,26 @@ class NewPersistence(HostDetector):
         if not tokens:
             return []   # a task with no action (Windows' SoftLanding tasks), or a bare registry value
         first = tokens[0]
-        windows = query in ("scheduled_tasks", "auto_start_services") or ("\\" in first or ":" in first[:2])
+        # The platform comes from the query and the row, not from the command: a Run key's value is often a bare
+        # `powershell -nop -w hidden -c ...` or `mshta http://...` with no drive letter (review of #137).
+        windows = query in ("scheduled_tasks", "auto_start_services") or (
+            query == "startup_items" and (str(c.get("source") or "").upper().startswith("HKEY") or "\\" in target
+                                          or ":" in first[:2]))
         prog = _basename(first).lower()
         if not re.search(r"[a-z]", prog):
             return []   # not a program at all (startup_items logs StartupApproved values as a number)
+        if windows and "." not in prog:
+            prog += ".exe"   # `cmd /c`, `powershell -enc`, `rundll32 x.dll,Entry`: Windows adds the extension too
         scripts = [t.strip('"') for t in tokens if t.lower().rstrip('"').endswith(SCRIPT_EXT)]
         script = bool(scripts)
         # the folder that matters is the script's when there is one (`wscript.exe C:\Users\<user>\Downloads\a.vbs` is
-        # a script in Downloads, not a program in System32), else the program's
-        where = scripts[0] if scripts else first
+        # a script in Downloads, not a program in System32), else the first thing that looks like a path (`cmd /c
+        # start C:\...\Downloads\x.exe` is about Downloads, not about cmd)
+        paths = [t.strip('"') for t in tokens if "\\" in t or ":" in t[:2] or (t.startswith("/") and "/" in t[1:])]
+        where = scripts[0] if scripts else (paths[0] if paths else first)
         folder = win_folder_class(where) if windows else posix_folder_class(where)
         shell = prog in WIN_SHELLS or prog in WIN_LOLBINS or prog in POSIX_SHELLS
-        signals = bool((WIN_SUSPICIOUS_CMD if windows else SUSPICIOUS_CMD).search(target))
+        signals = bool(WIN_SUSPICIOUS_CMD.search(target) or SUSPICIOUS_CMD.search(target))
         url = "http://" in target.lower() or "https://" in target.lower()
         if signals or folder in ("temp", "shared", "downloads"):
             severity = 4
@@ -658,14 +678,14 @@ class NewPersistence(HostDetector):
         kind = PERSIST_QUERIES[query]
         registry = str(c.get("source") or "").upper().startswith("HKEY")
         facts = {"kind": kind, "entry": entry[:120], "program": prog, "folder": folder, "script": script, "shell": shell,
-                 "signals": ["a suspicious command line"] if signals else [], "url": url, "registry": registry}
+                 "signals": ["an encoded or download-and-run command"] if signals else [], "url": url, "registry": registry}
         return self.emit(ts, f"New {kind} on the PC", facts, severity, prog, (self.state.host, query, _entry_key(entry)))
 
 
 def _entry_key(entry: str) -> str:
     """An entry name with the parts that change per install removed (GUIDs, SIDs, version numbers, per-session
     suffixes), so one app's re-created entry is one digest line per week, not one per update."""
-    e = re.sub(r"\{[0-9a-f-]{36}\}|s-1-5-[\d-]+|\d+(\.\d+){2,}|_[0-9a-f]{5}\b", "", entry.lower())
+    e = re.sub(r"\{[0-9a-f-]{36}\}|s-1-5-[\d-]+|\d+(\.\d+){2,}|_(?=[0-9a-f]*\d)[0-9a-f]{5}\b", "", entry.lower())
     return e.strip(" -_")
 
 

