@@ -139,7 +139,7 @@ class Follower:
                 st = None
             cur = self._open.get(path)
             if cur and (st is None or st.st_ino != cur.inode):
-                out += self._drain(cur, kind, final=True)  # rotated or deleted: finish the old file
+                out += self._tag(self._drain(cur, kind, final=True), path)  # rotated or deleted: finish the old file
                 cur.fh.close()
                 del self._open[path]
                 cur = None
@@ -152,10 +152,18 @@ class Follower:
                 cur = self._open[path] = _Open(path.open("rb"), st.st_ino, start)
             elif st.st_size < cur.offset:
                 cur.offset = 0  # truncated in place
-            out += self._drain(cur, kind)
+            out += self._tag(self._drain(cur, kind), path)
         self._started = True
         out.sort(key=lambda r: r.get("ts", 0.0))
         return out
+
+    @staticmethod
+    def _tag(recs: list[dict], path: Path) -> list[dict]:
+        """Which directory a record came from: two endpoint agents (Windows, WSL) log under the same query names,
+        so the feed-silence rule tells their feeds apart by it."""
+        for r in recs:
+            r["_log"] = str(path.parent)
+        return recs
 
     @staticmethod
     def _drain(cur: _Open, kind: str, final: bool = False) -> list[dict]:

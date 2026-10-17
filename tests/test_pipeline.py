@@ -124,6 +124,31 @@ def test_follower_handles_partial_lines_and_rotation(tmp_path):
     assert [r["ts"] for r in f.poll()] == [3]
 
 
+def test_follower_tags_records_with_their_log_directory(tmp_path):
+    (tmp_path / "conn.log").write_text("")
+    f = zeek.Follower(tmp_path)
+    f.poll()
+    with (tmp_path / "conn.log").open("a") as fh:
+        fh.write(json.dumps({"ts": 1}) + "\n")
+    (r,) = f.poll()
+    assert r["_log"] == str(tmp_path) and r["_type"] == "conn"
+
+
+def test_pipeline_tick_reaches_detectors_and_routes_the_case(tmp_path):
+    from tapwatch.detectors import FeedSilence
+    from tapwatch.store import Store
+    from tapwatch.summarizer import Assets
+    store = Store(str(tmp_path / "t.db"))
+    p = Pipeline([FeedSilence({"conn": (600, 4)}, host="192.168.50.10", started=T0)], Assets(), store)
+    assert [x for t in range(60, 541, 60) for x in p.process({"_type": "tick", "ts": T0 + t})] == []
+    ((case_id, case, verdict, route),) = p.process({"_type": "tick", "ts": T0 + 600})
+    assert case.detector == "feed_silence" and verdict is None and route.value == "alert"
+    from tapwatch.summarizer import summarize
+    assert ("conn.log feed from the network tap has not arrived since tapwatch started; it normally arrives at least "
+            "every 10 minutes. Until it resumes, the rules that read it are blind.") in summarize(case, Assets())
+    assert store.get(case_id)["route"] == "alert"
+
+
 def test_follower_skips_history_but_reads_files_created_later(tmp_path):
     (tmp_path / "conn.log").write_text(json.dumps({"ts": 1}) + "\n")
     f = zeek.Follower(tmp_path)
