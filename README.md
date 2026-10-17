@@ -13,17 +13,18 @@ tapwatch watches a copy of your router's traffic and finds what's odd: new devic
 DNS tunnelling, exposed services, rogue DHCP, scans, remote-control tools, IoT devices talking
 somewhere new. The router's syslog adds its IPS verdicts and admin logins; an osquery agent on a
 PC names the program behind a connection and catches encoded commands and shells spawned by
-documents. Every case says what kind of site it reached (offline lists, with an optional small
-model for the rest), and on the tapwatch PC whether the owner's coding agent was behind it. An
-optional small AI model ([Jev](https://docs.typesafe.ai)) helps decide what's worth interrupting
-you for, and alerts reach your phone. One small box runs it all, with no SIEM; the only cloud
-calls are the optional AI ones, and they see words, not packets.
+documents. A first contact says what kind of site it is (offline lists, with an optional small
+model for the rest; odd TLS sessions and upload spikes carry the listed kind), and on the tapwatch
+PC a case says whether the owner's coding agent was behind it. An optional small AI model
+([Jev](https://docs.typesafe.ai)) helps decide what's worth interrupting you for, and alerts
+reach your phone. One small box runs it all, with no SIEM; nothing leaves but your
+notifications, list downloads and the optional AI questions, and those see words, not packets.
 
 ## Why this exists
 
 - **Homes have no SOC.** Commercial NSM assumes an analyst reads alerts all day. tapwatch's job is
-  to stay quiet: one real home night produced **ten items to read and one alert**, and a day of
-  tuning on a real network (2026-10-16) took the daytime queue to a handful of digest items.
+  to stay quiet: one real home night produced **ten items to read and one alert** without Jev,
+  two with ([eval/RESULTS.md](eval/RESULTS.md)).
 - **Most devices can't run an agent.** TVs, cameras, hubs and phones are only visible on the
   wire, so tapwatch watches the network first. Computers can optionally run an
   [osquery agent](agents/README.md) that names the program behind a connection.
@@ -42,7 +43,7 @@ flowchart LR
     A["Endpoint agents<br/>osquery (optional)"] --> Z
     L["Offline lists<br/>Tranco · OUI · ASN · UT1 kinds"] --> D
     Z --> D["Detectors<br/>(plain code)"]
-    D -. "unlisted domains<br/>(optional)" .-> C["Categorizer<br/>small model, cached"]
+    D -. "unlisted domain, once<br/>(optional, 30-day cache)" .-> C["Categorizer<br/>small model"]
     D --> H["Host context<br/>osquery + agent transcripts<br/>(optional)"]
     H --> J["Jev triage<br/>(optional)"]
     J --> R{"Router"}
@@ -274,8 +275,8 @@ make test lint
 python3 tools/check_personal_data.py     # no personal data in tracked files
 ```
 
-CI runs the personal-data gate, ruff and pytest (336 tests, synthetic data only) on every push to
-`dev`, and adds Semgrep and Trivy on PRs into `main`.
+CI runs the personal-data gate, ruff and pytest (synthetic data only) on every push to `dev`, and
+adds Semgrep and Trivy on PRs into `main`.
 
 ## Status
 
@@ -284,9 +285,10 @@ container following this README, and the Compose stack) were installed from scra
 2026-10-15. The router syslog feed is verified against a live UniFi gateway, the five endpoint
 rules (R17–R21) are in, and host context's attribution of a one-second `curl` to the agent that
 ran it was verified live on 2026-10-16. Site categories (UT1 lists, optional model) landed the
-same day. Next up, per the [roadmap](docs/ROADMAP.md): a clean-machine Windows test, Linux
-endpoint rules, and a running benchmark of false-positive rate and triage accuracy from the
-case history. macOS waits until there's a Mac to test on.
+same day. Next up, per the [roadmap](docs/ROADMAP.md): a week of reviewed host-context data
+(in progress), a clean-machine Windows test, Linux endpoint rules, and, once the major features
+are in, a running benchmark of false-positive rate and triage accuracy from the case history.
+macOS waits until there's a Mac to test on.
 
 ## License
 
