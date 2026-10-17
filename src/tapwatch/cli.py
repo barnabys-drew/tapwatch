@@ -161,7 +161,7 @@ def cmd_eval(args, cfg) -> int:
 def cmd_selfcheck(args, cfg) -> int:
     """Push the scripted attack and false-positive shapes through the detectors as configured (AI off)."""
     outcomes = selfcheck.run(without_ai(cfg), config.thresholds(cfg))
-    print(selfcheck.as_json(outcomes) if args.json else selfcheck.report(outcomes, source=f"config {args.config}"))
+    print(selfcheck.as_json(outcomes) if args.json else selfcheck.report(outcomes, source=f"the config file {args.config}"))
     return 0 if all(o.passed for o in outcomes) else 1
 
 
