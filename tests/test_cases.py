@@ -346,12 +346,17 @@ def test_stats_tiles_open_the_cases_they_count(tmp_path):
     assert count(status="all", route="all", disposition="junk", triaged="yes") == 10   # unknown values fall away
     page = ui.render_queue(store, Assets(), {"status": ["all"], "route": ["all"], "disposition": ["noise"]}, "tok")[1]
     assert "false positive or benign ×" in page   # the bucket shows as a pill that removes itself
+    assert 'name="disposition" value="noise"' in page   # and Apply keeps it
+    page = ui.render_queue(store, Assets(), {"status": ["all"], "route": ["all"], "triaged": ["1"]}, "tok")[1]
+    assert "Jev triaged ×" in page and 'name="triaged" value="1"' in page
+    assert 'href="/?status=all&amp;route=all&amp;detector=beaconing"' in ui.render_stats(store)[1]  # the table too
 
 
 def test_queue_filters_ignore_junk_and_stay_escaped():
     store, _ = hostile_store()
     page = ui.render_queue(store, Assets(), {"status": ['"><script>'], "device": ['"><img onerror=x>'],
-                                             "sort": ["id; DROP TABLE cases"]}, "tok")[1]
+                                             "sort": ["id; DROP TABLE cases"], "disposition": ['"><script>'],
+                                             "triaged": ['"><img onerror=x>']}, "tok")[1]
     assert_inert(page)
     assert store.db.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 1
 

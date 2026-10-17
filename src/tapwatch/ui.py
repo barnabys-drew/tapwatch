@@ -681,6 +681,7 @@ def render_stats(store: Store) -> tuple[str, str]:
     tp_all = db.execute("SELECT COUNT(*) FROM cases WHERE disposition = 'true_positive'").fetchone()[0]
     triaged = db.execute("SELECT COUNT(*) FROM cases WHERE verdict IS NOT NULL").fetchone()[0]
     sup_hits = db.execute("SELECT COALESCE(SUM(hits), 0) FROM suppressions").fetchone()[0]
+
     def bucket(**f) -> str:  # every tile opens the cases it counts: all statuses and routes, newest first
         return "/?" + urlencode({"status": "all", "route": "all", **f})
 
@@ -690,7 +691,7 @@ def render_stats(store: Store) -> tuple[str, str]:
              + tile(f"{noisy_all / decided_all:.0%}" if decided_all else "–", "Noise rate", "amber",
                     "FP + benign of decided", bucket(disposition="noise"))
              + tile(tp_all, "True positives", "red" if tp_all else "green", "", bucket(disposition="true_positive"))
-             + tile(triaged, "Jev triaged", "violet", "", bucket(triaged="1"))
+             + tile(triaged, "Jev triaged", "violet", "verdict recorded", bucket(triaged="1"))
              + tile(sup_hits, "Suppressed", "green", "rule hits", "/suppressions"))
 
     # Cases per hour, last 48 hours
@@ -732,7 +733,8 @@ def render_stats(store: Store) -> tuple[str, str]:
         decided = sum(c.get(d, 0) for d in DISPOSITIONS)
         fp = c.get("false_positive", 0) / decided if decided else None
         noise = (c.get("false_positive", 0) + c.get("benign_expected", 0)) / decided if decided else None
-        fp_rows.append(f'<tr><td class="mono">{e(det)}</td><td class="num">{decided + c.get("", 0)}</td>'
+        fp_rows.append(f'<tr><td class="mono"><a href="{e(bucket(detector=det))}">{e(det)}</a></td>'
+                       f'<td class="num">{decided + c.get("", 0)}</td>'
                        f'<td class="num">{c.get("", 0)}</td>'
                        + "".join(f'<td class="num">{c.get(d, 0)}</td>' for d in DISPOSITIONS)
                        + f'<td class="num tnum">{_pct(fp) if fp is not None else "–"}</td>'
