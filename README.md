@@ -5,18 +5,25 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
-**Network security monitoring for a home or small office: Zeek on a mirror port, readable
-detection code, and AI triage that can't override the facts.**
+**Network security monitoring for a home or small office: Zeek on a mirror port, the router's
+own syslog, optional endpoint agents, readable detection code, and AI triage that can't override
+the facts.**
 
 tapwatch watches a copy of your router's traffic and finds what's odd: new devices, beaconing,
-DNS tunnelling, exposed services, rogue DHCP, IoT devices talking somewhere new. An optional
-small AI model ([Jev](https://docs.typesafe.ai)) helps decide what's worth interrupting you for,
-and alerts reach your phone. One small box runs it all, with no SIEM and no cloud.
+DNS tunnelling, exposed services, rogue DHCP, scans, remote-control tools, IoT devices talking
+somewhere new. The router's syslog adds its IPS verdicts and admin logins; an osquery agent on a
+PC names the program behind a connection and catches encoded commands and shells spawned by
+documents. Every case says what kind of site it reached (offline lists, with an optional small
+model for the rest), and on the tapwatch PC whether the owner's coding agent was behind it. An
+optional small AI model ([Jev](https://docs.typesafe.ai)) helps decide what's worth interrupting
+you for, and alerts reach your phone. One small box runs it all, with no SIEM; the only cloud
+calls are the optional AI ones, and they see words, not packets.
 
 ## Why this exists
 
 - **Homes have no SOC.** Commercial NSM assumes an analyst reads alerts all day. tapwatch's job is
-  to stay quiet: one real home night produced **8 digest items and 0 alerts**.
+  to stay quiet: one real home night produced **ten items to read and one alert**, and a day of
+  tuning on a real network (2026-10-16) took the daytime queue to a handful of digest items.
 - **Most devices can't run an agent.** TVs, cameras, hubs and phones are only visible on the
   wire, so tapwatch watches the network first. Computers can optionally run an
   [osquery agent](agents/README.md) that names the program behind a connection.
@@ -32,7 +39,10 @@ and alerts reach your phone. One small box runs it all, with no SIEM and no clou
 flowchart LR
     M["Switch mirror port"] --> Z["Zeek<br/>JSON logs"]
     S["Router syslog<br/>(optional)"] --> Z
+    A["Endpoint agents<br/>osquery (optional)"] --> Z
+    L["Offline lists<br/>Tranco · OUI · ASN · UT1 kinds"] --> D
     Z --> D["Detectors<br/>(plain code)"]
+    D -. "unlisted domains<br/>(optional)" .-> C["Categorizer<br/>small model, cached"]
     D --> H["Host context<br/>osquery + agent transcripts<br/>(optional)"]
     H --> J["Jev triage<br/>(optional)"]
     J --> R{"Router"}
@@ -56,16 +66,21 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
   vendor, conferencing, CDN, SaaS, ...), cached, a fact only, never routing.
 - **Quiet by design.** A 3-day learning period sends the AI's alerts to the digest. Code-proven
   ceilings keep known shapes out of your phone: heartbeats to push, EDR, NTP and STUN services,
-  popular destinations, uploads to sync services or a sync company's own network, symmetric
-  video-call hours. "Suppress similar" rules can cover a whole domain, and cases they match
-  arrive already closed.
+  popular destinations, uploads to sync services, a sync company's own network or from a laptop
+  marked employer-managed, symmetric video-call hours, a "scan" from a phone the router just
+  moved between access points or that tore down a page's sessions. "Suppress similar" rules can
+  cover a whole domain, and cases they match arrive already closed.
+- **The router's own signals.** Its syslog (UniFi CEF, parsed against real lines) brings IPS
+  verdicts, admin logins (a new source or repeated failures always alert) and Wi-Fi client
+  events the mirror can't see.
 - **Guardrailed AI triage.** Always-alert rules never reach the model and can't be suppressed.
   "Is this domain normal?" is never asked (it's the model's measured weak spot). The model needs
   0.75 confidence to alert on its own. Without an API key, it runs rules-only.
-- **Agent-aware host context.** For traffic from the tapwatch machine, osquery names the program
-  and Claude Code session markers and transcripts show whether the owner asked for it. Process
-  proof outranks transcript context, and five host rules read the agent's own rows for shapes the
-  wire can't show.
+- **Agent-aware host context.** For traffic from the tapwatch machine (matched by its DHCP name,
+  not just its address), osquery names the program, and Claude Code session markers, the exec
+  parent chain and transcripts show whether the owner asked for it. Process proof outranks
+  transcript context, and five host rules read the agent's own rows for shapes the wire can't
+  show.
 - **A case desk with no JavaScript.** It's a queue, a case page with ±5 minutes of Zeek evidence,
   workflow, notes, an audit trail, expiring "suppress similar" rules and stats. The CSP allows no
   scripts, and every change carries a CSRF token.
@@ -217,7 +232,9 @@ Packet contents and MAC addresses never leave, and internal addresses never reac
 src/tapwatch/        the package
   cli.py               subcommands, wiring
   zeek.py              log replay and live follower (rotation-safe)
-  detectors.py         every detector, plus state encoding
+  detectors.py         every network detector, plus state encoding
+  hostrules.py         the five endpoint rules over the agent's osquery rows
+  categories.py        kind of site: offline UT1 lists, optional small-model lookup, cache
   hostctx.py           osquery and agent-transcript host context
   summarizer.py        case -> short IP-free text for the AI
   triage.py            Jev client (typed questions, pinned model)
@@ -257,17 +274,19 @@ make test lint
 python3 tools/check_personal_data.py     # no personal data in tracked files
 ```
 
-CI runs the personal-data gate, ruff and pytest on every push to `dev`, and adds Semgrep and Trivy
-on PRs into `main`.
+CI runs the personal-data gate, ruff and pytest (336 tests, synthetic data only) on every push to
+`dev`, and adds Semgrep and Trivy on PRs into `main`.
 
 ## Status
 
 **v0.1.1**, running on a real home network, so expect rough edges. The Linux paths (a bare
 container following this README, and the Compose stack) were installed from scratch and run on
-2026-10-15. The router syslog feed is verified against a live UniFi gateway, and the first endpoint
-rules (R17–R21) are in. Next up, per the [roadmap](docs/ROADMAP.md): a long-running test of host
-context (in progress), a clean-machine Windows test, and Linux endpoint rules. macOS waits until
-there's a Mac to test on.
+2026-10-15. The router syslog feed is verified against a live UniFi gateway, the five endpoint
+rules (R17–R21) are in, and host context's attribution of a one-second `curl` to the agent that
+ran it was verified live on 2026-10-16. Site categories (UT1 lists, optional model) landed the
+same day. Next up, per the [roadmap](docs/ROADMAP.md): a clean-machine Windows test, Linux
+endpoint rules, and a running benchmark of false-positive rate and triage accuracy from the
+case history. macOS waits until there's a Mac to test on.
 
 ## License
 
