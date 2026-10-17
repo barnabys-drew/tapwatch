@@ -357,6 +357,8 @@ def _on_the_pc(f: dict) -> str:
                 mins = f.get("host_minutes_since_prompt")
                 parts.append("The agent ran a command naming this destination"
                              + (f" {mins} minutes after the owner's last message." if mins is not None else "."))
+                if f.get("host_matched_by") == "ip":
+                    parts.append("That match was by address, not by name; other services can share an address.")
             else:
                 parts.append("The agent's log shows no command naming this destination.")
             if f.get("host_session_guessed"):

