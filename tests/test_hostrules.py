@@ -536,6 +536,10 @@ def test_cron_and_launch_agents_use_posix_folders():
                    command="/usr/bin/python3 /home/u/sync.py", path="/var/spool/cron/crontabs/u")
     (c,) = settle(NewPersistence(st()), cron)
     assert c.facts["kind"] == "cron job" and c.facts["script"] and c.facts["folder"] == "profile" and c.base_severity == 3
+    assert c.facts["entry"] == "a user's crontab" and "/u" not in json.dumps(c.facts)   # the file path names the user
+    sys_cron = persist(T0, "crontab", event="", minute="0", hour="3", day_of_month="*", month="*", day_of_week="*",
+                       command="/opt/backup/run.sh", path="/etc/cron.d/backup")
+    assert settle(NewPersistence(st()), sys_cron)[0].facts["entry"] == "/etc/cron.d/backup"
     tmp = persist(T0, "crontab", event="@reboot", minute="", hour="", day_of_month="", month="", day_of_week="",
                   command="/tmp/.x/run.sh", path="/var/spool/cron/crontabs/u")
     (bad,) = settle(NewPersistence(st()), tmp)

@@ -598,8 +598,9 @@ class NewPersistence(HostDetector):
 
     @staticmethod
     def entry_of(query: str, c: dict) -> str:
-        if query == "crontab":
-            return str(c.get("path") or "crontab")
+        if query == "crontab":  # the file's path names the user (/var/spool/cron/crontabs/<user>): never stored
+            p = str(c.get("path") or "")
+            return "a user's crontab" if "/cron/" in p and "/etc/" not in p else ("/etc/" + p.split("/etc/")[-1] if "/etc/" in p else "crontab")
         return str(c.get("label") if query == "launchd_run_at_load" else c.get("name") or "")
 
     def key(self, query: str, c: dict) -> tuple:
