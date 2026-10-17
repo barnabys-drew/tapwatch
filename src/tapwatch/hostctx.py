@@ -20,7 +20,17 @@ tapwatch, osquery can. For a case on that PC, this module answers in code:
   * from that session's transcript (~/.claude/projects/*/<session>.jsonl): did the agent
     run a command naming this destination, did the owner's prompt name it, and did
     the agent read outside web content between the prompt and the command (the
-    prompt-injection pattern)?
+    prompt-injection pattern)? Transcripts are matched by the destination's names; its
+    addresses are the fallback only when the case has no name at all (measured 2026-10-17,
+    case #379: an IP needle picked a transcript that mentioned a shared Cloudflare address).
+
+Measured 2026-10-16/17 on the live box: of 84 cases with host context, 79 named the program,
+66 were other_program, 14 agent_unconfirmed and none a corroborated owner_using_agent, because
+the markers live on the agent's short-lived child shells and never on the `claude` process or
+its threads. The chain-only path is therefore the one real cases take. It is corroborated when
+the owner's own prompt named the destination by name (`verdict`): a human typing the name is
+stronger evidence of a person present than a marker, and a name match cannot be a shared-address
+coincidence. Attendance stays unknown and is reported as such; the session id stays a best guess.
 
 The answers become case facts (`host_*`). Jev reads them as plain sentences and picks
 between "owner using the agent", "agent misused" and "other program"; the router only
@@ -34,6 +44,7 @@ from the Windows agent's log but no Claude markers. Other devices need Fleet.
 from __future__ import annotations
 
 import glob
+import ipaddress
 import json
 import logging
 import os
@@ -538,8 +549,17 @@ def _human_text(rec: dict) -> str | None:
     return None
 
 
-def transcript_facts(path: Path, needles: set[str], ts: float) -> dict:
-    """What the session's transcript says about the case's destinations around `ts`."""
+def transcript_facts(path: Path, names: set[str], ts: float, ips: set[str] = frozenset()) -> dict:
+    """What the session's transcript says about the case's destinations around `ts`.
+    Tool calls and prompts are matched against the destination's `names`; the `ips` are used only when the
+    case has no name at all, and `matched_by` ("name" | "ip") records which. Measured 2026-10-17 (#379):
+    an address needle matched a transcript that mentioned a shared Cloudflare address, not the site."""
+    matched_by = "name" if names else "ip"
+    # addresses match whole: 10.0.0.1 must not match 10.0.0.10 or 110.0.0.1
+    patterns = [re.compile(rf"(?<![\d.]){re.escape(ip)}(?![\d.])") for ip in ips] if not names else []
+
+    def hit(text: str) -> bool:
+        return any(n in text for n in names) if names else any(p.search(text) for p in patterns)
     prompts: list[tuple[float, str]] = []
     calls: list[tuple[float, str, str, str]] = []  # (time, tool name, input as lowercase JSON, command text)
     try:
@@ -565,7 +585,7 @@ def transcript_facts(path: Path, needles: set[str], ts: float) -> dict:
                         calls.append((t, c.get("name", ""), json.dumps(inp).lower(), raw))
     except OSError:
         return {"transcript": False}
-    named = [c for c in calls if ts - BEFORE <= c[0] and any(n in c[2] for n in needles)]
+    named = [c for c in calls if ts - BEFORE <= c[0] and hit(c[2])]
     facts: dict = {"transcript": True, "agent_named_dest": bool(named),
                    "agent_busy": any(abs(c[0] - ts) <= AFTER for c in calls)}
     if named:
@@ -575,11 +595,13 @@ def transcript_facts(path: Path, needles: set[str], ts: float) -> dict:
     if before:
         p_ts, p_text = before[-1]
         facts["minutes_since_prompt"] = round((anchor - p_ts) / 60)
-        facts["owner_named_dest"] = any(n in p_text for n in needles)
+        facts["owner_named_dest"] = hit(p_text)
         facts["outside_content"] = any(
             p_ts <= c[0] <= anchor and (c[1] in OUTSIDE_TOOLS or (c[1].startswith("mcp__")
                                                                   and any(h in c[1].lower() for h in OUTSIDE_TOOL_HINTS)))
             for c in calls)
+    if named or facts.get("owner_named_dest"):
+        facts["matched_by"] = matched_by
     return facts
 
 
@@ -603,8 +625,17 @@ def verdict(owners: list[Owner], tf: dict, session_guessed: bool = False) -> tup
     if attended and tf.get("owner_named_dest"):
         return "owner_using_agent", True
     if tf.get("owner_named_dest") and all(o.agent and not o.session for o in agent):
-        # The agent's binary ran the chain and the owner named the destination, but the session's attendance
-        # is unknown (no markers reached): the owner's answer, without the router's permission to lower the case.
+        # The agent's binary ran the chain and the owner named the destination, but no marker reached, so the
+        # session's attendance is unknown and its id is a guess from a transcript search. Measured 2026-10-16/17:
+        # this is the path real cases take (84 with host context, 0 corroborated), because the markers live on
+        # the agent's short-lived child shells, never on the claude process or its threads. The owner typing the
+        # destination's name in their own prompt is stronger evidence that a person was there than a marker,
+        # and a name match cannot be a shared-address coincidence (an address needle is only used when the case
+        # has no name; #379 matched the wrong transcript through a shared Cloudflare address). So: corroborated
+        # when the match was by name and the agent read no outside content first; the SSH and attended="0"
+        # cases were already answered above. Attendance stays unknown and is reported as such.
+        if tf.get("matched_by") == "name" and not tf.get("outside_content"):
+            return "owner_using_agent", True
         return "owner_using_agent", False
     return "agent_unconfirmed", False
 
@@ -787,14 +818,21 @@ class HostContext:
             lookups_followed += followed
             owners += found
         ips = {r["id.resp_h"] for r in outbound}
-        names = {n.lower().rstrip(".") for n in case.indicators}
+        names = set()
+        for n in case.indicators:  # a bare-IP indicator (an HTTP Host header, an IP intel hit) is an address, not a name
+            try:
+                ips.add(str(ipaddress.ip_address(n.strip())))
+            except ValueError:
+                names.add(n.lower().rstrip("."))
         names |= {(r.get("query") or "").lower() for r in dns_rows if set(r.get("answers") or ()) & ips}
-        needles = {n for n in names | {base_domain(n) for n in names} if n and "." in n} | ips
+        # Names first; the addresses only when the case has no name at all (#379: a shared address matched
+        # the wrong transcript). transcript_facts records which in `matched_by`.
+        name_needles = {n for n in names | {base_domain(n) for n in names} if n and "." in n}
         sessions = sorted({o.session for o in owners if o.session})
         tf: dict = {}
         for sid in sessions[:3]:
             for path in glob.glob(str(self.transcripts / "*" / f"{sid}.jsonl")):
-                tf = transcript_facts(Path(path), needles, case.ts)
+                tf = transcript_facts(Path(path), name_needles, case.ts, ips=ips)
                 if tf.get("agent_named_dest"):
                     break
         transcript_only = False
@@ -804,7 +842,7 @@ class HostContext:
             stamped = [(Path(p).stat().st_mtime, p) for p in glob.glob(str(self.transcripts / "*" / "*.jsonl"))]
             recent = [p for m, p in sorted(stamped, reverse=True) if m >= case.ts - BEFORE][:20]
             for path in recent:
-                found = transcript_facts(Path(path), needles, case.ts)
+                found = transcript_facts(Path(path), name_needles, case.ts, ips=ips)
                 if found.get("agent_named_dest"):
                     tf, transcript_only = found, not agent_proof
                     if agent_proof:  # process proof says an agent; the transcript that named it is the best guess
