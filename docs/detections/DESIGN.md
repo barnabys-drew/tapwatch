@@ -696,7 +696,13 @@ can't read a quarter of valid signatures, and the encoded-command signal must be
   `Set-AuthenticodeSignature`) and fetch example.com → `untrusted` → alert. Or flip one byte inside a copy of a
   signed program's body: osquery reports the hash mismatch as `untrusted` and the binary still runs. Appending
   bytes instead makes it say `missing`, which this rule ignores (measured 2026-10-17). The connection must be
-  open when the 5-minute signature snapshot runs, so fetch something large with `curl --limit-rate 1k`.
+  open when the 5-minute signature snapshot runs: fetch a large file from a host that tolerates throttling at
+  about 50 KB/s (a 1 KB/s stream was reset by the server after 77 s and missed the snapshot by seconds).
+- **Verified live 2026-10-17 12:44** (case #429): the flipped-byte curl copy, run from the Temp folder,
+  raised the case one second after the signature snapshot named the file `untrusted` (signer "Microsoft 3rd
+  Party Application Component"), joined to the socket rows the 1-minute query had logged since 12:41. Route
+  alert, severity 4, no host-context facts, no command line. The osquery denylist that had hidden the first
+  attempt was cleared by resetting osquery.db with osqueryd stopped; no old cases re-raised.
 
 **Not built yet, deliberately:** a standalone unsigned-program rule (see R21), the persistence snapshots
 (`scheduled_tasks`, `services`, `startup_items` diffs: they need a learned baseline and the warmup plumbing),
