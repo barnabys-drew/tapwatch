@@ -740,6 +740,38 @@ the same PC within minutes becoming one story). Each builds on the same `HostDet
 - **Safe test:** `Stop-Service osqueryd` (elevated) and wait eleven minutes: one case for the Windows agent
   naming `outbound_connections` first; `Start-Service osqueryd` re-arms it.
 
+### R23 New persistence entry (`host_persist`) — **built**
+- **Threat:** a program registering itself to run again (T1053 scheduled task, T1543 service, T1547 Run key or
+  Startup folder, cron, launch agent): a dropper that sleeps until the next boot never trips R17–R21.
+- **Data:** the agent's hourly differential queries `scheduled_tasks`, `auto_start_services`, `startup_items`,
+  `crontab`, `launchd_run_at_load` (osquery.conf): `added` and `removed` rows per run.
+- **Logic:** `hostrules.NewPersistence`. Rows are read per query run (same `unixTime`, two minutes' grace) so
+  the run is judged as a batch: a key (entry name + what it runs) on both sides is a change, not a new entry; a
+  run of five or more adds with no removes is osquery's first listing, an inventory; a key already in `known`
+  (persisted) or seen during warm-up is learned silently. What is left is scored by what the entry runs, with
+  the script's folder when it runs one: a suspicious command line (encoded, download-and-run) or a temp,
+  Downloads or shared folder → severity 4; a script, a shell or script host, a LOLBin, or a per-user folder →
+  3; an installed program with none of those → learned, no case. Once per (PC, query, entry name with GUIDs,
+  SIDs, versions and session suffixes stripped) per 7 days below alert.
+- **Baseline:** `known`, per PC, learned from every row (bounded at 5,000, oldest forgotten).
+- **Measured** 2026-10-16/17, 40 h of the main PC's log, 1,429 rows: 503 removed+added pairs (a task that ran:
+  `last_run_time` changed), 3 inventories (36, 108 and 224 rows, after the agent's database was reset), 29
+  genuinely new entries. Of those, 19 were Windows' own or an installed app's (per-user svchost services for a
+  new logon session, Windows Update and SoftLanding tasks, TrustedInstaller, a sandbox service's version bump)
+  and raise nothing; replaying the rows through the rule raised 6 digest items: the owner's two `.vbs` files in the
+  Startup folder, OneDrive's three RunOnce entries that run `cmd.exe`, and its startup task under AppData. 0 alerts.
+- **Dedupe:** `host_persist|pc|program`, and the 7-day key above for digest items.
+- **FPs:** installers and updaters that register a RunOnce or a startup task (a digest line a week per app, by
+  the stripped key); the owner's own startup scripts (suppress per program).
+- **Route:** DIGEST; ALERT for the suspicious-command and temp/Downloads/shared shapes. Code-only. No path and
+  no command line enter the case: the program, the entry name, the folder class and yes/no signals.
+- **Jev:** none.
+- **Safe test:** `schtasks /create /tn tapwatch-r23 /tr "wscript.exe %USERPROFILE%\Downloads\r23.vbs" /sc once
+  /st 23:59` → alert within the hour (the query runs hourly); a `.vbs` copied into the Startup folder → digest.
+  Delete both afterwards.
+- **Blind spots:** WMI subscriptions, Office add-ins, browser extensions (#27 pass 2); a persistence entry
+  pointing at an installed, signed program (an attacker who writes to Program Files is past this rule).
+
 ### Dev-workstation profile (built)
 `dev_profile.hosts` marks machines that run coding agents. For those hosts only, `beaconing`,
 `dns_anomaly` and `new_domain` skip traffic **tied by name** (DNS query or TLS SNI) to a dev
@@ -776,6 +808,7 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R19 Temp-folder program connects out (built) | osquery + Sysmon | digest / alert | code-only |
 | — | R20 Built-in tool (LOLBin) connects out (built) | osquery + Sysmon | alert (msbuild: digest) | code-only; must_alert for the downloaders |
 | — | R21 Bad code signature connects out (built) | osquery snapshot | alert | code-only |
+| — | R23 New persistence entry (built) | osquery differential (tasks, services, startup, cron, launchd) | digest / alert | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 

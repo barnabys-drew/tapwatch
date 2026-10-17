@@ -19,13 +19,13 @@ flowchart LR
 ## Where we are
 
 **v0.1.1** is the current release; tapwatch has been running on a real home network since v0.1.0 shipped. It watches a mirror
-port with Zeek, runs 27 case types from 25 plain-code detectors, and asks a small AI model (Jev) for
+port with Zeek, runs 28 case types from 26 plain-code detectors, and asks a small AI model (Jev) for
 triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
 the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Area | State |
 |---|---|
-| Network detection | **Solid.** 22 network case types (plus 5 host ones), baselines that survive restarts, a scripted self-check at 15/15 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
+| Network detection | **Solid.** 22 network case types (plus 6 host ones), baselines that survive restarts, a scripted self-check at 17/17 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
 | Linux install | **Solid.** `docker compose up`, verified end to end on a live interface |
 | Windows install | **Works on one PC.** WSL + Npcap services; a clean-machine test is still to do |
@@ -118,7 +118,7 @@ agent's log locked down.
 | Issue | What | Status |
 |---|---|---|
 | [#26](https://github.com/barnabys-drew/tapwatch/issues/26) | Framework: osquery process events, host detectors, network correlation | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): the agent's osquery logs are a log source and `hostrules.py` raises host cases; correlation still to do |
-| [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): R17–R21, 0 cases on 34.5 h of the main PC's agent log |
+| [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): R17–R21, 0 cases on 34.5 h of the main PC's agent log. Pass 2 started 2026-10-17 with R23, new persistence entries (tasks, services, startup items, cron, launchd), measured on 40 h: 6 digest items, 0 alerts |
 | [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | planned |
 | [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools, drivers) | planned |
 
