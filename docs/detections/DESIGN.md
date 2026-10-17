@@ -410,7 +410,11 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   == issuer), `dns.answers` (was the IP named?), JA4 (needs the package).
 - **Logic:** `rules/R10-tls-weak-signals.sql`. Score each established outbound TLS session:
   +1 no SNI, +1 IP not in any DNS answer within 1 h, +1 self-signed or expired, +1 JA4 never seen
-  in the house, +1 non-443 port. Raise at ≥3.
+  in the house, +1 non-443 port. Raise at ≥3. Skipped outright: a DTLS session with a client
+  certificate, the WebRTC media shape (DTLS-SRTP), where every sign is by design and the peer port
+  changes per call. Measured 2026-10-17: the baby monitor streaming to a phone on cellular raised
+  eight digest cases on eight ports (#332-#417); this Zeek labels no STUN, so the client
+  certificate is the tell. Server-only DTLS and TLS with a client certificate still score.
 - **Baseline:** 7 days for household JA4 prevalence. Measured: 22% no-SNI but only 43 established,
   0.7% bare-IP TCP, and 49 "invalid cert" rows that were all Zeek missing intermediates.
 - **Dedupe:** `tls_odd|host|dst`.

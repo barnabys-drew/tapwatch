@@ -909,6 +909,20 @@ def test_tls_oddities_need_three_signs():
     assert [(c.facts["score"], c.base_severity) for c in cases] == [(3, 2), (4, 3)]   # once per (device, port)
 
 
+def test_tls_oddities_skip_dtls_media_with_a_client_certificate():
+    # #417 (2026-10-17): the baby monitor streaming to a phone on cellular; DTLS-SRTP, both ends self-signed, the
+    # peer found by ICE, a new port each call, so the (device, port) memory never covered the next one
+    from tapwatch.detectors import TlsOddities
+    det = TlsOddities(Warmup(0))
+    call = {"_type": "ssl", "ts": T0, "id.orig_h": "192.168.50.44", "id.resp_h": "198.51.100.7", "id.resp_p": 1094,
+            "version": "DTLSv12", "established": True, "validation_status": "self signed certificate",
+            "cert_chain_fps": ["927f"], "client_cert_chain_fps": ["5ce9"]}
+    assert run(det, [call, dict(call, ts=T0 + 60, **{"id.resp_p": 1611})]) == []
+    # server-only DTLS and a TLS session with a client certificate are still the four-sign stack
+    assert len(run(det, [dict(call, ts=T0 + 120, **{"id.resp_p": 1630, "client_cert_chain_fps": []})])) == 1
+    assert len(run(det, [dict(call, ts=T0 + 180, **{"id.resp_p": 1640, "version": "TLSv12"})])) == 1
+
+
 def test_tls_oddities_learned_in_warmup_stay_quiet():
     from tapwatch.detectors import TlsOddities
     cam = "192.168.50.44"
