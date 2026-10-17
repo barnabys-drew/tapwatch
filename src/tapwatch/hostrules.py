@@ -33,6 +33,7 @@ from .hostctx import (
     ADDRS,
     CMD_SUSPICIOUS,
     CMD_UNUSUAL,
+    SIGS,
     SYSMON,
     WIN_DOC_APPS,
     WIN_INSTALLED_DIRS,
@@ -45,9 +46,8 @@ from .models import Case
 
 OSQUERY = "osquery"
 SNAPSHOT = "outbound_connections"   # Windows, every minute: program and parent per socket
-SIGS = "process_signatures"         # Windows, every 5 minutes: authenticode result per program path with a socket
 SIG_WINDOW = 600             # seconds a connection is remembered, so a signature arriving later can still name it
-SIG_KEEP = 500               # program paths whose signature or last connection is kept
+SIG_PATHS = 500              # program paths whose signature or last connection is kept
 WIN_BROWSERS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe",
                 "iexplore.exe", "chromium.exe"}
 # Built-in tools whose only use on the internet is to fetch or run remote content (certutil -urlcache,
@@ -189,8 +189,8 @@ class EndpointState:
         for r in rows:
             if r.get("path"):
                 self.signatures[str(r["path"]).lower()] = ((r.get("signature") or "").lower(), r.get("signer") or "")
-        if len(self.signatures) > SIG_KEEP:  # the snapshot is a few dozen paths; a bigger map is churn, relearned in 5 min
-            self.signatures = dict(list(self.signatures.items())[-SIG_KEEP:])
+        if len(self.signatures) > SIG_PATHS:  # the snapshot is a few dozen paths; a bigger map is churn, relearned in 5 min
+            self.signatures = dict(list(self.signatures.items())[-SIG_PATHS:])
 
     def signature_of(self, path: str) -> tuple[str, str]:
         return self.signatures.get((path or "").lower(), ("", ""))
@@ -198,7 +198,7 @@ class EndpointState:
     def remember_connection(self, c: dict, ts: float) -> None:
         if c.get("path"):
             self.connected[str(c["path"]).lower()] = (ts, c)
-            if len(self.connected) > SIG_KEEP:
+            if len(self.connected) > SIG_PATHS:
                 self.connected = {p: v for p, v in self.connected.items() if ts - v[0] <= SIG_WINDOW}
 
     def connection_of(self, path: str, ts: float) -> dict | None:

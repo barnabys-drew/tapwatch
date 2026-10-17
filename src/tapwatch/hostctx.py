@@ -847,8 +847,9 @@ class HostContext:
 
     def index(self, since: float, live: bool = True) -> OwnerIndex:
         idx = OwnerIndex()
-        for p in self.results_logs:
-            idx.read_log(p, since)
+        for p in self._snapshot_logs():  # osquery's filesystem logger writes snapshot queries (process_signatures) apart
+            if p in self.results_logs or p.exists():  # a missing snapshots file is not a missing agent: no note
+                idx.read_log(p, since)
         for c in self.live() if live else ():
             idx.add(c.get("remote_address", ""), c.get("remote_port"), _owner(c))
         idx.resolve()  # after the live rows: a running agent's live row can be the chain's marker-bearing end

@@ -261,8 +261,12 @@ def test_signature_and_connection_join_by_path_whichever_comes_first():
     (b,) = run(BadSignatureConnects(st()), snapshot_conn(T0, "tapwatch-sig-test.exe", app, ""),
                sigs(T0 + 240, (app, "Untrusted", "Self")))
     assert b.facts["signer"] == "Self" and b.facts["port"] == 443 and b.indicators == ["tapwatch-sig-test.exe"]
-    # a signature for a program that last connected over ten minutes ago, or never, or to the LAN: nothing
-    assert run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, ""), sigs(T0 + 700, (app, "untrusted", ""))) == []
+    # the window is 600 s inclusive; a signature for a program that last connected before that, or never, or to the
+    # LAN, or whose connection row was a `removed` one: nothing
+    assert len(run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, ""), sigs(T0 + 600, (app, "untrusted", "")))) == 1
+    assert run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, ""), sigs(T0 + 601, (app, "untrusted", ""))) == []
+    assert run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, "", action="removed"),
+               sigs(T0 + 60, (app, "untrusted", ""))) == []
     assert run(BadSignatureConnects(st()), sigs(T0, (app, "untrusted", ""))) == []
     assert run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, "", remote="192.168.50.9"),
                sigs(T0 + 60, (app, "untrusted", ""))) == []
