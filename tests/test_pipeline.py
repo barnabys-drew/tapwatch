@@ -336,6 +336,50 @@ def test_follower_reads_the_tail_of_a_rotated_file_before_switching(tmp_path):
     f.close()
 
 
+def test_follower_survives_rotation_when_the_mount_reuses_inode_numbers(tmp_path):
+    # WSL's drvfs gave osqueryd.results.log and the .1 it was renamed to the same st_ino (2026-10-17): the
+    # follower saw a smaller file, took it for an in-place truncation, rewound the old 100 MB handle to
+    # byte 0 and replayed it every poll.
+    f = zeek.Follower(tmp_path, from_start=True)
+    log = tmp_path / "conn.log"
+    log.write_text(json.dumps({"ts": 1}) + "\n" + json.dumps({"ts": 2}) + "\n")
+    assert [r["ts"] for r in f.poll()] == [1, 2]
+    log.rename(tmp_path / "conn.old")
+    log.write_text(json.dumps({"ts": 3}) + "\n")          # rotated: a new, smaller file...
+    f._open[log].inode = log.stat().st_ino               # ...that the mount says has the old inode number
+    assert [r["ts"] for r in f.poll()] == [3]
+    assert f.poll() == []                                  # the old file is not replayed
+    with log.open("a") as fh:
+        fh.write(json.dumps({"ts": 4}) + "\n")
+    assert [r["ts"] for r in f.poll()] == [4]              # and the new one is followed normally
+    f.close()
+
+
+def test_follower_still_rewinds_a_file_truncated_in_place(tmp_path):
+    f = zeek.Follower(tmp_path, from_start=True)
+    log = tmp_path / "conn.log"
+    log.write_text(json.dumps({"ts": 1}) + "\n" + json.dumps({"ts": 2}) + "\n")
+    assert [r["ts"] for r in f.poll()] == [1, 2]
+    log.write_text(json.dumps({"ts": 3}) + "\n")          # same file, rewritten shorter
+    assert [r["ts"] for r in f.poll()] == [3]
+    f.close()
+
+
+def test_recent_counts_an_out_of_order_repeat_without_moving_last_ts_back():
+    # A replayed log hands the store an older copy of a case between two current ones. Counting it must not
+    # drag last_ts into the past, or the next current copy misses the dedupe window and opens a new case.
+    store = Store(":memory:")
+
+    def case(ts):
+        return Case("beaconing", "10.0.0.5", ts, "t", {}, ["x.example"])
+
+    cid = store.add(case(T0 + 7200), "s", None, Route.LOG, "r")
+    assert store.recent(case(T0 + 3600), 3600) == cid
+    assert store.recent(case(T0 + 7300), 3600) == cid
+    row = store.db.execute("SELECT hits, last_ts FROM cases WHERE id=?", (cid,)).fetchone()
+    assert (row["hits"], row["last_ts"]) == (3, T0 + 7300)
+
+
 def test_replay_reads_rotated_files_oldest_first(tmp_path):
     (tmp_path / "conn.2026-10-13-15-00-00.log").write_text(json.dumps({"ts": 20}) + "\n")
     (tmp_path / "conn.2026-10-13-14-00-00.log").write_text(json.dumps({"ts": 10}) + "\n")
