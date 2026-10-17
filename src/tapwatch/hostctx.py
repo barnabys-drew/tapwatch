@@ -403,6 +403,9 @@ class OwnerIndex:
                 # curl -> bash -> claude 4622 -> bash -> herdr ended at a pid with only an exec row, and the
                 # agent's 59 connection rows that half hour sat under two thread ids). The exec path is proof
                 # enough that an agent ran the chain; the session and attendance stay unknown, as for _agent_of.
+                # The nearest agent wins: a marker row higher up is not sought, because markers index only pids
+                # that connected out, and an outer agent's own rows sit under its thread ids as well. Only an
+                # agent that started inside the hour the index covers has an exec row here (collect: BEFORE + 3600).
                 o.agent, o.inherited = name, True
                 return
             cur = self._parent_of(cur, o.start)

@@ -1013,6 +1013,36 @@ def test_agent_known_only_by_its_exec_row_is_still_the_agent(tmp_path):
     idx.resolve()
     (o,) = idx.who(DST, 443, T0)
     assert (o.agent, o.inherited) == ("", False)
+    # the other direction: the agent exited and its pid was reused by a shell before the connection, so the latest
+    # exec row for the pid names bash, not the agent: no credit either
+    reused = write_rows(tmp_path, [exec_row(T0 - 900, 4000, 3000, CLAUDE), exec_row(T0 - 100, 4000, 3000, "/usr/bin/bash"),
+                                   exec_row(T0 - 5, 4290, 4000, "/usr/bin/bash"),
+                                   exec_row(T0 - 4, 4300, 4290, "/usr/bin/curl"), gone_curl(T0)])
+    idx = OwnerIndex()
+    idx.read_log(reused, since=0)
+    idx.resolve()
+    (o,) = idx.who(DST, 443, T0)
+    assert (o.agent, o.inherited) == ("", False)
+
+
+def test_nested_agents_known_by_exec_rows_credit_the_nearest(tmp_path):
+    # a claude run from another claude's tool shell (claude -p), both known only by exec rows: the walk stops at
+    # the nearest agent and does not look higher for a marker row (none would exist: the outer agent's own
+    # connection rows sit under its thread ids too)
+    log = write_rows(tmp_path, [
+        exec_row(T0 - 900, 2000, 1000, CLAUDE),            # the outer agent
+        exec_row(T0 - 400, 3000, 2000, "/usr/bin/bash"),   # its tool shell
+        exec_row(T0 - 390, 4000, 3000, CLAUDE),            # the inner agent
+        exec_row(T0 - 5, 4290, 4000, "/usr/bin/bash"),
+        exec_row(T0 - 4, 4300, 4290, "/usr/bin/curl"),
+        gone_curl(T0),
+    ])
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    idx.resolve()
+    (o,) = idx.who(DST, 443, T0)
+    assert (o.parent, o.session, o.agent, o.inherited) == ("bash", "", "claude", True)
+    assert not o.attended and verdict([o], {})[0] == "agent_unconfirmed"
 
 
 def test_a_reused_agent_thread_id_does_not_credit_a_later_process(tmp_path):
