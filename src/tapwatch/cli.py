@@ -28,7 +28,16 @@ from .store import Store
 from .summarizer import summarize
 
 
+def without_ai(cfg: dict) -> dict:
+    """`--no-ai` means nothing leaves for a model: Jev (handled by the caller) and the domain categorizer
+    (categories.py), which detectors.build() would otherwise construct from `categories: {ai: true}`. A replay
+    of a month of logs must not ask about every first-seen domain or spend the budget the live service shares."""
+    return {**cfg, "categories": {**(cfg.get("categories") or {}), "ai": False}}
+
+
 def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=None) -> Pipeline:
+    if not use_ai:
+        cfg = without_ai(cfg)
     ips, doms = config.iocs(cfg)
     dets = detectors.build(cfg, ips, doms, config.popular_domains(cfg), config.assets(cfg).table) + hostrules.build(cfg)
     return Pipeline(dets, config.assets(cfg), Store(cfg.get("db_path", "tapwatch.db")),
@@ -138,6 +147,8 @@ def cmd_eval(args, cfg) -> int:
     with open(args.labels) as fh:
         labels = yaml.safe_load(fh) or {}
     cfg = {**cfg, "warmup_seconds": args.warmup}  # evaluate.run routes itself: no learning period
+    if args.no_ai:
+        cfg = without_ai(cfg)
     ips, doms = config.iocs(cfg)
     res = evaluate.run(args.zeek_dir, labels, detectors.build(cfg, ips, doms, config.popular_domains(cfg), config.assets(cfg).table), config.assets(cfg),
                        None if args.no_ai else config.jev_client(cfg), config.thresholds(cfg))

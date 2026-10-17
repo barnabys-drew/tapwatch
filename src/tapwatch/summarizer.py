@@ -119,7 +119,9 @@ def _observed(c: Case, words: dict) -> str:
         text = (f"In one hour it uploaded about {f['mb']} MB to the internet, roughly {f['times_normal']} times "
                 f"its normal of {f['normal_mb']} MB (compared with {f.get('basis', 'recent hours')}).")
         if f.get("top_category"):
-            text += f" The main destination is listed as a {f['top_category'].replace('_', ' ')} site."
+            kind = f['top_category'].replace('_', ' ')
+            text += (f" A model classed the main destination as a {kind} site (not on the offline list)."
+                     if f.get("top_category_source") == "ai" else f" The main destination is listed as a {kind} site.")
         if f.get("to_sync_service"):
             text += f" {f.get('top_share_pct', 0)}% went to a well-known cloud sync or backup service."
         elif f.get("to_security_vendor"):
@@ -198,7 +200,9 @@ def _observed(c: Case, words: dict) -> str:
                                  ("a self-signed or expired certificate", f["bad_cert"])) if on]
         text = "It opened an encrypted connection with " + ", ".join(signs) + ". Each is common alone; together they are unusual."
         if f.get("category"):
-            text += f" The server name is listed as a {f['category'].replace('_', ' ')} site."
+            kind = f['category'].replace('_', ' ')
+            text += (f" A model classed the server name as a {kind} site (not on the offline list)."
+                     if f.get("category_source") == "ai" else f" The server name is listed as a {kind} site.")
         return text
     if c.detector == "udm_ips":
         return (f"The router's intrusion prevention matched signature {json.dumps(clean_untrusted(f['signature']))} "
@@ -306,7 +310,9 @@ def _new_domains(f: dict) -> str:
             parts.append("It is on the list of widely used internet domains." if f["popular"]
                          else "It is not on the list of widely used internet domains.")
         if f.get("categories"):
-            parts.append(f"It is listed as a {f['categories'][0].replace('_', ' ')} site.")
+            kind = f['categories'][0].replace('_', ' ')
+            parts.append(f"A model classed it as a {kind} site (not on the offline list)."
+                         if f.get("category_sources") == ["ai"] else f"It is listed as a {kind} site.")
         return " ".join(parts)
     parts = [f"Within {f['window_min']} minutes it contacted {n} domains it had never used before."]
     parts.append(f"{f['random']} of them look randomly generated." if f["random"]
@@ -315,7 +321,11 @@ def _new_domains(f: dict) -> str:
     if f["popular_known"]:
         parts.append(f"{f['popular']} of them are on the list of widely used internet domains.")
     if f.get("categories"):
-        parts.append("The listed kinds among them: " + ", ".join(c.replace("_", " ") for c in f["categories"]) + ".")
+        kinds = ", ".join(c.replace("_", " ") for c in f["categories"])
+        sources = f.get("category_sources") or ["list"]
+        parts.append(f"A model classed them as: {kinds} (not on the offline list)." if sources == ["ai"]
+                     else f"The kinds among them, from the offline list and a model: {kinds}." if "ai" in sources
+                     else f"The listed kinds among them: {kinds}.")
     return " ".join(parts)
 
 

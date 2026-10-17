@@ -16,6 +16,19 @@ typesafe:
   gateway_key_env: AI_GATEWAY_API_KEY   # or via Vercel AI Gateway (billed by Vercel)
   gateway_model: typesafe-ai/jev
 
+# Site categories for new_domain, tls_odd and upload_spike come from the offline UT1 lists (update-feeds).
+# Opt in here to ask a small Claude model about domains the lists do not name (security vendors,
+# conferencing, CDNs, SaaS, developer tools: where a first day's false alarms came from). One closed
+# question per registrable domain ("which of these labels"), cached for 30 days in
+# feeds_dir/categories.learned.tsv; the answer is a fact in the case, never routing. What is sent to
+# Anthropic: the registrable domain only (example.com, never the host, the device, or local names).
+# Cost: a few hundred tokens per new domain, at most per_hour questions an hour.
+categories:
+  ai: false                          # true + ANTHROPIC_API_KEY in .env to turn it on
+  model: claude-haiku-5-5
+  per_hour: 60
+  api_key_env: ANTHROPIC_API_KEY
+
 # Where alerts go. Set any of these environment variables (in .env); every one that's set gets the
 # alert, and email (below) is the fallback when they all fail. URLs are secrets, so never put them here.
 #   TAPWATCH_NTFY_URL      phone push via ntfy: https://ntfy.sh/<a long random topic> (+ TAPWATCH_NTFY_TOKEN if protected)

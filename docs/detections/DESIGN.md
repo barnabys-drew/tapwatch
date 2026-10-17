@@ -352,6 +352,14 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   `update-feeds`): the case carries the distinct kinds found (advertising, media, remote control,
   ...) as a fact for the summary. A fact only, not routing: measured first (2026-10-16, the day's
   false alarms were ad-tech, a security vendor and a video call), routing on it comes after.
+  When the list has no answer and `categories: {ai: true}` is set, the registrable domain is put
+  to a small model once: a closed classification over a fixed label set (the UT1 labels plus
+  security vendor, conferencing, CDN, cloud infrastructure, SaaS, developer tools, telemetry,
+  news, shopping, games, or `unknown`; measured 2026-10-16, the kinds the list lacked), parsed
+  strictly, cached 30 days in `categories.learned.tsv`, capped per hour. The source travels with
+  the fact (`category_sources`: `list`, `ai`) so the summary says a model classed it. It is never
+  routing, and it is never the normalcy question ("is this domain normal?") that the triage model
+  is measured to get wrong; that rule stands, and the triage model is not involved here at all.
 - **FPs:** small business and personal sites, work domains and SaaS tenants (allowlist the
   work laptop's corporate suffixes in config, not in git), and fresh legit CDNs. Use the Public Suffix List
   (`co.uk`) instead of last-two-labels.
