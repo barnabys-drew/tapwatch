@@ -707,24 +707,29 @@ the same PC within minutes becoming one story). Each builds on the same `HostDet
 - **Threat:** the monitor going quiet without anyone noticing. Measured 2026-10-14 and 2026-10-16: osquery's
   watchdog denylisted the Windows socket query for 24 h each time, and R21 plus the Windows host context were
   blind for a day before a person went looking.
-- **Data:** every record's arrival, by feed: Zeek's `conn` and `dns`; each endpoint agent's `outbound_connections`,
+- **Data:** when each record *arrives*, by feed: Zeek's `conn` and `dns`; each endpoint agent's `outbound_connections`,
   `sysmon_events`, `host_addresses`, `process_signatures` (Windows) or `outbound_connections_ctx`,
   `bpf_process_events`, `bpf_connections`, `host_addresses` (Linux/WSL). The two agents share query names, so a
-  feed is (log directory, query). `run` ticks every detector once a minute, records flowing or not.
-- **Logic:** `detectors.FeedSilence`. Silence runs from the feed's last row or tapwatch's own start, whichever is
-  later, so a restart gives a full grace period and a feed already dead at start is still reported. Limits from
-  the measured gaps over 2026-10-15..17: conn and dns 20 min (99.9th-percentile gap 0.1 min; the one long gap,
-  34 min, was the box's reboot and should be reported); Windows sockets 10 min (ran every 1.1 min until it
-  stopped), Sysmon 15 (1.3), the 5-minute snapshots 20 (5.4); WSL socket history 30 (8.1), eBPF execs 15 (2.1),
-  eBPF connections 60 (idles 16 min at night), its address snapshot 30 (12.4). Inventory queries and the router
-  syslog (178 rows in two days) are too sparse to watch. Config `detectors.feed_silence`: `minutes: {feed: n}`,
-  `ignore: [feed]`, `enabled: false`.
+  feed is (log directory, query). Arrival time, not the row's timestamp: the agents and WSL keep different
+  clocks, and a backlog catch-up delivers old timestamps live. `run` ticks every detector once a minute.
+- **Logic:** `detectors.FeedSilence`. Silence runs from the feed's last arrival or tapwatch's own start, whichever
+  is later, so a restart gives a full grace period and a feed already dead at start is still reported. Two ticks
+  more than two minutes apart mean the monitor itself was away (the box slept): the clocks restart, so waking
+  does not fire every feed at once. A reboot is therefore not reported by this rule (tapwatch restarts with the
+  box); it shows as the gap in the per-hour chart. Feeds of one agent going silent in the same tick make one
+  case, the loudest feed first. Limits and severities from the measured gaps over 2026-10-15..17: conn and dns
+  20 min, severity 4 (99.9th-percentile gap 0.1 min); Windows sockets 10 min, 4 (ran every 1.1 min until it
+  stopped); Sysmon 15, 4 (1.3); the Windows snapshots 20, 3 (5.4); WSL socket history 30, 3 (8.1); eBPF execs
+  15, 3 (2.1); eBPF connections 60, 3 (idles 16 min at night); its address snapshot 30, 3 (12.4). Inventory
+  queries and the router syslog (178 rows in two days) are too sparse to watch. Config `detectors.feed_silence`:
+  `minutes: {feed: n}`, `ignore: [feed]`, `enabled: false`.
 - **Baseline:** none; the limits are fixed and measured.
-- **Dedupe:** one case per silence per feed; a row arriving re-arms it.
-- **FPs:** a reboot, osquery or Zeek restarting, the PC asleep. Each is worth knowing; suppress per feed if not.
-- **Route:** ALERT (severity 4), code-only, suppressible by feed name. Jev is not asked: nothing to weigh.
-- **Safe test:** stop osqueryd (`Stop-Service osqueryd`, elevated) and wait eleven minutes; or `ignore` nothing and
-  put the PC to sleep for half an hour.
+- **Dedupe:** `feed_silence|pc|<agent>:<feed>`; one case per silence, re-armed by the next row.
+- **FPs:** osquery or Zeek restarting on their own. Each is worth knowing; suppress per feed if not.
+- **Route:** severity 4 feeds ALERT (and the pop-up), severity 3 feeds DIGEST; code-only, suppressible by
+  `<agent>:<feed>`. Jev is not asked: nothing to weigh.
+- **Safe test:** `Stop-Service osqueryd` (elevated) and wait eleven minutes: one case for the Windows agent
+  naming `outbound_connections` first; `Start-Service osqueryd` re-arms it.
 
 ### Dev-workstation profile (built)
 `dev_profile.hosts` marks machines that run coding agents. For those hosts only, `beaconing`,

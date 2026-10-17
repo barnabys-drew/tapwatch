@@ -139,9 +139,9 @@ def test_pipeline_tick_reaches_detectors_and_routes_the_case(tmp_path):
     from tapwatch.store import Store
     from tapwatch.summarizer import Assets
     store = Store(str(tmp_path / "t.db"))
-    p = Pipeline([FeedSilence({"conn": 600}, host="192.168.50.10", started=T0)], Assets(), store)
-    assert p.process({"_type": "tick", "ts": T0 + 100}) == []
-    ((case_id, case, verdict, route),) = p.process({"_type": "tick", "ts": T0 + 700})
+    p = Pipeline([FeedSilence({"conn": (600, 4)}, host="192.168.50.10", started=T0)], Assets(), store)
+    assert [x for t in range(60, 541, 60) for x in p.process({"_type": "tick", "ts": T0 + t})] == []
+    ((case_id, case, verdict, route),) = p.process({"_type": "tick", "ts": T0 + 600})
     assert case.detector == "feed_silence" and verdict is None and route.value == "alert"
     from tapwatch.summarizer import summarize
     assert "conn.log feed from the network tap has not arrived since tapwatch started" in summarize(case, Assets())

@@ -58,7 +58,7 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
 
 ## Highlights
 
-- **26 case types from 24 detectors** tuned for homes (table below). Each is plain Python with
+- **27 case types from 25 detectors** tuned for homes (table below). Each is plain Python with
   tests and a written spec. Learned baselines survive restarts and follow the *device* (DHCP
   hostname, then MAC, then IP), so a laptop keeps its history when it moves between addresses.
 - **Sites named by kind.** First contacts, odd TLS sessions and upload spikes carry the kind of
