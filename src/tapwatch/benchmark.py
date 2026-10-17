@@ -16,15 +16,18 @@ from datetime import datetime
 from .store import DISPOSITIONS
 
 NOISE = ("false_positive", "benign_expected")
-# Code's host-context answer against the owner's disposition. The owner's agent at work and another program are
-# benign answers; a misused agent is a hostile one; "unconfirmed" and "unknown" make no claim and are left out.
-BENIGN_WHO = {"owner_using_agent", "other_program"}
+# Code's host-context answer against the owner's disposition. Only two answers claim anything about intent: the
+# owner's agent at work (benign) and a misused agent (hostile). "other_program" names who held the connection and
+# says nothing about whether it was wanted (review of #130: on live data every claim was other_program, so the
+# accuracy would have measured "non-agent traffic was noise"); "unconfirmed" and "unknown" make no claim either.
+BENIGN_WHO = {"owner_using_agent"}
 HOSTILE_WHO = {"agent_misused"}
 
 
 def _rows(db: sqlite3.Connection) -> list[sqlite3.Row]:
-    db.row_factory = sqlite3.Row
-    return db.execute("SELECT first_ts, route, disposition, verdict, facts FROM cases").fetchall()
+    cur = db.cursor()
+    cur.row_factory = sqlite3.Row  # on the cursor, not the caller's connection
+    return cur.execute("SELECT first_ts, route, disposition, verdict, facts FROM cases").fetchall()
 
 
 def _week(ts: float) -> str:

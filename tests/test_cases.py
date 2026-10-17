@@ -284,7 +284,8 @@ def hostile_store():
     verdict = {"category": "<b>c2</b>", "category_confidence": 0.9, "severity": 3.0, "severity_confidence": 0.8,
                "routine": 0.1, "page_admin": 0.9, "model": "jev"}
 
-    cid = store.add(Case("new_domain", "192.168.50.10", T0, "New domains", {"note": PAYLOADS[1]}, PAYLOADS),
+    cid = store.add(Case("new_domain", "192.168.50.10", T0, "New domains",
+                         {"note": PAYLOADS[1], "host_who": PAYLOADS[1]}, PAYLOADS),  # the stats page's "code said" table
                     f"Names seen: {PAYLOADS[0]}", None, Route.DIGEST, "test")
     store.db.execute("UPDATE cases SET verdict=? WHERE id=?", (json.dumps(verdict), cid))
     store.update_case(cid, "t", note=PAYLOADS[1])

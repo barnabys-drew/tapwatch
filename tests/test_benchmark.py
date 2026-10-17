@@ -7,8 +7,8 @@ from conftest import T0
 from tapwatch import benchmark, ui
 from tapwatch.cli import main
 from tapwatch.models import Case
+from tapwatch.router import Route
 from tapwatch.store import Store
-from tapwatch.summarizer import Assets
 
 WEEK = 7 * 86400
 
@@ -31,12 +31,10 @@ def seed(store: Store):
             if jev_who:
                 facts["host_jev_who"] = jev_who
         case = Case("beaconing", "192.168.50.10", ts, "Regular repeating connection", facts, [f"dest{i}.example"])
+        cid = store.add(case, "summary", None, Route(route), "rules")
         verdict = json.dumps({"category": cat, "category_confidence": 0.9}) if cat else None
-        store.db.execute(
-            "INSERT INTO cases (key, first_ts, last_ts, hits, detector, host, title, facts, indicators, must_alert, state, "
-            "verdict, route, reason, disposition, status) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, 0, 'open', ?, ?, 'rules', ?, ?)",
-            (case.key, ts, ts, case.detector, case.host, case.title, json.dumps(facts), json.dumps(case.indicators),
-             verdict, route, disp, "closed" if disp else "new"))
+        store.db.execute("UPDATE cases SET verdict = ?, disposition = ?, status = ? WHERE id = ?",
+                         (verdict, disp, "closed" if disp else "new", cid))
     store.db.commit()
 
 
@@ -62,9 +60,9 @@ def test_host_context_accuracy_counts_only_claims(tmp_path):
     assert h["who"] == {"owner_using_agent": 1, "other_program": 2, "agent_unconfirmed": 1, "agent_misused": 1}
     # Jev's who was recorded four times and matched code's three times
     assert (h["jev_asked"], h["jev_agree"]) == (4, 3) and h["jev_agreement"] == 0.75
-    # claims: owner (FP: right), other_program (benign: right), misused (TP: right), other_program (benign: right);
-    # agent_unconfirmed makes no claim and the undecided case does not count
-    assert (h["claims"], h["claims_right"], h["accuracy"]) == (4, 4, 1.0)
+    # claims: the owner's agent (closed FP: right) and a misused agent (closed TP: right); other_program names who
+    # held the connection and claims nothing about intent, agent_unconfirmed claims nothing, the undecided case is out
+    assert (h["claims"], h["claims_right"], h["accuracy"]) == (2, 2, 1.0)
 
 
 def test_benchmark_markdown_stats_page_and_command(tmp_path, capsys):
@@ -73,13 +71,12 @@ def test_benchmark_markdown_stats_page_and_command(tmp_path, capsys):
     md = benchmark.markdown(store.db, now=T0 + 2 * WEEK)
     assert "| week | cases | alerts | decided | noise rate | true positives | Jev agreement |" in md
     assert "| 100% | 0 | 33% (3) |" in md and "| 67% | 1 | 100% (2) |" in md
-    assert "5 cases on the PC, 1 corroborated" in md and "matched the owner's disposition on 100% of 4" in md
+    assert "5 cases on the PC, 1 corroborated" in md and "matched the owner's disposition on 100% of 2" in md
     page = ui.render_stats(store)[1]
     assert "Week by week" in page and "Host context: code, Jev and you" in page and "agent misused" in page
-    assert "Jev agreed with code on 75% of the 4 it was asked" in page
+    assert "Jev agreed with code on 75% of the 4 it was asked" in page and "agreed 100% of 2 times" in page
     (tmp_path / "config.yaml").write_text("db_path: " + str(tmp_path / "t.db") + "\n")
     assert main(["-c", str(tmp_path / "config.yaml"), "benchmark"]) == 0
     assert "### Benchmark" in capsys.readouterr().out
     assert benchmark.weekly(Store(str(tmp_path / "empty.db")).db) == []
     assert benchmark.host_context(Store(str(tmp_path / "empty.db")).db)["accuracy"] is None
-    Assets()  # the stats page needs none; imported to keep the module's surface in one place
