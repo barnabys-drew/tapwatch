@@ -33,6 +33,7 @@ from .hostctx import (
     ADDRS,
     CMD_SUSPICIOUS,
     CMD_UNUSUAL,
+    SIGS,
     SYSMON,
     WIN_DOC_APPS,
     WIN_INSTALLED_DIRS,
@@ -44,7 +45,9 @@ from .hostctx import (
 from .models import Case
 
 OSQUERY = "osquery"
-SNAPSHOT = "outbound_connections"   # Windows, every minute: program, parent and authenticode result per socket
+SNAPSHOT = "outbound_connections"   # Windows, every minute: program and parent per socket
+SIG_WINDOW = 600             # seconds a connection is remembered, so a signature arriving later can still name it
+SIG_PATHS = 500              # program paths whose signature or last connection is kept
 WIN_BROWSERS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe",
                 "iexplore.exe", "chromium.exe"}
 # Built-in tools whose only use on the internet is to fetch or run remote content (certutil -urlcache,
@@ -149,6 +152,10 @@ class EndpointState:
         self._host = host
         self.starts: dict[str, Start] = {}
         self.latest = 0.0
+        # Signatures arrive every 5 minutes per program path (process_signatures), connections every minute
+        # (outbound_connections): either can come first, so both sides are remembered and joined by path.
+        self.signatures: dict[str, tuple[str, str]] = {}   # path (lowercased) -> (authenticode result, signer)
+        self.connected: dict[str, tuple[float, dict]] = {}  # path (lowercased) -> (when, the socket row)
 
     @property
     def host(self) -> str:
@@ -177,6 +184,27 @@ class EndpointState:
     def start_of(self, guid: str, ts: float) -> Start | None:
         s = self.starts.get(guid or "")
         return s if s is not None and ts - s.ts <= GUID_WINDOW else None
+
+    def update_signatures(self, rows: list[dict]) -> None:
+        for r in rows:
+            if r.get("path"):
+                self.signatures[str(r["path"]).lower()] = ((r.get("signature") or "").lower(), r.get("signer") or "")
+        if len(self.signatures) > SIG_PATHS:  # the snapshot is a few dozen paths; a bigger map is churn, relearned in 5 min
+            self.signatures = dict(list(self.signatures.items())[-SIG_PATHS:])
+
+    def signature_of(self, path: str) -> tuple[str, str]:
+        return self.signatures.get((path or "").lower(), ("", ""))
+
+    def remember_connection(self, c: dict, ts: float) -> None:
+        if c.get("path"):
+            self.connected[str(c["path"]).lower()] = (ts, c)
+            if len(self.connected) > SIG_PATHS:
+                self.connected = {p: v for p, v in self.connected.items() if ts - v[0] <= SIG_WINDOW}
+
+    def connection_of(self, path: str, ts: float) -> dict | None:
+        """The last outside connection `path` held within SIG_WINDOW of `ts`, if any."""
+        hit = self.connected.get((path or "").lower())
+        return hit[1] if hit and ts - hit[0] <= SIG_WINDOW else None
 
 
 class HostDetector(Detector):
@@ -207,8 +235,12 @@ class HostDetector(Detector):
             return []
         if rec.get("action") == "removed":
             return []
+        if name == SIGS:
+            self.state.update_signatures(rows)
         out: list[Case] = []
         for c in rows:
+            if name == SNAPSHOT and outside(c.get("remote_address", ""), c.get("remote_port")):
+                self.state.remember_connection(c, _row_ts(c, ts))
             if name == SYSMON and str(c.get("eventid")) == "1":
                 path = c.get("path") or ""
                 self.state.remember(c.get("guid") or "", Start(_row_ts(c, ts), _basename(path).lower(),
@@ -397,8 +429,15 @@ class LolbinConnects(HostDetector):
 
 
 class BadSignatureConnects(HostDetector):
-    """R21. A program whose code signature Windows rejects held an outside connection, from the Windows
-    agent's 1-minute `outbound_connections` snapshot, which carries osquery's authenticode result.
+    """R21. A program whose code signature Windows rejects held an outside connection: the Windows agent's
+    1-minute `outbound_connections` rows (program, parent, socket) joined by path to its 5-minute
+    `process_signatures` snapshot (osquery's authenticode result per program with a socket). Until 2026-10-17
+    the socket query carried the signature itself, checked per socket: 15 s on a quiet PC (57 sockets, 11
+    programs; publishers osquery "could not find" cost seconds each), so osquery's watchdog killed it and
+    denylisted it by name for 24 h, twice, and this rule and the Windows host context were blind for a day
+    each time. Per path the check is 5.8 s for 11 programs. Either side can arrive first, so a connection
+    whose signature is already known fires at once, and a bad signature arriving within SIG_WINDOW of the
+    program's last connection fires then; rows from an older agent that still carry `signature` work as before.
 
     osquery reports four results: trusted, missing, untrusted and distrusted. A file changed after it was
     signed (a hash mismatch), a self-signed or self-built binary and an expired certificate all come back
@@ -412,11 +451,20 @@ class BadSignatureConnects(HostDetector):
     """
 
     name = "host_bad_sig"
-    QUERIES: ClassVar[tuple[str, ...]] = (SNAPSHOT,)
+    QUERIES: ClassVar[tuple[str, ...]] = (SNAPSHOT, SIGS)
     BAD: ClassVar[dict[str, int]] = {"untrusted": 4, "distrusted": 4}
 
     def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if query == SIGS:  # a signature for a program that connected out in the last SIG_WINDOW
+            sig, signer = (c.get("signature") or "").lower(), c.get("signer") or ""
+            conn = self.state.connection_of(c.get("path") or "", ts) if sig in self.BAD else None
+            if conn is None:
+                return []
+            c = {**conn, "signature": sig, "signer": signer}
         sig = (c.get("signature") or "").lower()
+        if not sig:
+            sig, signer = self.state.signature_of(c.get("path") or "")
+            c = {**c, "signature": sig, "signer": signer}
         if sig not in self.BAD or not outside(c.get("remote_address", ""), c.get("remote_port")):
             return []
         path = c.get("path") or ""

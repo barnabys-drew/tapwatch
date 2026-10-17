@@ -60,6 +60,12 @@ def snapshot_conn(t, name, path, signature, signer="", remote=DST, port=443, act
                         "signature": signature, "signer": signer, "parent_name": "explorer.exe"}}
 
 
+def sigs(t, *rows):
+    """A process_signatures snapshot: (path, signature, signer) per program that holds a socket."""
+    return {"_type": "osquery", "name": "process_signatures", "action": "snapshot", "unixTime": int(t), "ts": int(t),
+            "snapshot": [{"path": p, "signature": sig, "signer": signer} for p, sig, signer in rows]}
+
+
 def addrs(t, *ips):
     return {"_type": "osquery", "name": "host_addresses", "action": "snapshot", "unixTime": int(t), "ts": int(t),
             "snapshot": [{"address": a} for a in ips]}
@@ -240,6 +246,43 @@ def test_untrusted_and_distrusted_signatures_alert_missing_is_ignored():
     assert run(BadSignatureConnects(st()), snapshot_conn(T0, "a.exe", app, "missing"), snapshot_conn(T0, "b.exe", app, ""),
                snapshot_conn(T0, "c.exe", app, "trusted"), snapshot_conn(T0, "d.exe", app, "untrusted", action="removed"),
                snapshot_conn(T0, "e.exe", app, "untrusted", remote="192.168.50.9")) == []
+
+
+def test_signature_and_connection_join_by_path_whichever_comes_first():
+    """2026-10-17: the signature moved out of the socket query (15 s per socket, watchdog-killed, denylisted 24 h)
+    into a 5-minute per-path snapshot, so either row can arrive first."""
+    app = r"C:\Users\<user>\AppData\Local\Temp\tapwatch-sig-test.exe"
+    # signature known, then the connection: fires on the connection row
+    (a,) = run(BadSignatureConnects(st()), sigs(T0, (app, "untrusted", "")),
+               snapshot_conn(T0 + 30, "tapwatch-sig-test.exe", app, ""))
+    assert a.base_severity == 4 and a.facts["signature"] == "untrusted" and a.facts["folder"] == "temp"
+    assert a.facts["port"] == 443 and a.facts["parent"] == "explorer.exe"
+    # connection first, then the signature within the window: fires on the signature row, with the socket's facts
+    (b,) = run(BadSignatureConnects(st()), snapshot_conn(T0, "tapwatch-sig-test.exe", app, ""),
+               sigs(T0 + 240, (app, "Untrusted", "Self")))
+    assert b.facts["signer"] == "Self" and b.facts["port"] == 443 and b.indicators == ["tapwatch-sig-test.exe"]
+    # the window is 600 s inclusive; a signature for a program that last connected before that, or never, or to the
+    # LAN, or whose connection row was a `removed` one: nothing
+    assert len(run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, ""), sigs(T0 + 600, (app, "untrusted", "")))) == 1
+    assert run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, ""), sigs(T0 + 601, (app, "untrusted", ""))) == []
+    assert run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, "", action="removed"),
+               sigs(T0 + 60, (app, "untrusted", ""))) == []
+    assert run(BadSignatureConnects(st()), sigs(T0, (app, "untrusted", ""))) == []
+    assert run(BadSignatureConnects(st()), snapshot_conn(T0, "x.exe", app, "", remote="192.168.50.9"),
+               sigs(T0 + 60, (app, "untrusted", ""))) == []
+    # trusted or unreadable signatures, either order, and a connection with no signature known at all: nothing
+    assert run(BadSignatureConnects(st()), sigs(T0, (app, "trusted", "App Maker"), (r"C:\x\y.exe", "missing", "")),
+               snapshot_conn(T0 + 30, "a.exe", app, ""), snapshot_conn(T0 + 30, "y.exe", r"C:\x\y.exe", ""),
+               snapshot_conn(T0 + 30, "z.exe", r"C:\x\z.exe", "")) == []
+    # the path join is case-insensitive (Windows), and the maps stay bounded
+    (cased,) = run(BadSignatureConnects(st()), sigs(T0, (app.upper(), "untrusted", "")), snapshot_conn(T0 + 1, "t.exe", app, ""))
+    assert cased.facts["signature"] == "untrusted"
+    s = st()
+    s.update_signatures([{"path": f"C:\\p\\{i}.exe", "signature": "trusted"} for i in range(700)])
+    assert len(s.signatures) == 500 and s.signature_of(r"C:\p\699.exe") == ("trusted", "")
+    for i in range(700):
+        s.remember_connection({"path": f"C:\\q\\{i}.exe", "remote_address": DST, "remote_port": "443"}, T0 + i)
+    assert len(s.connected) <= 601 and s.connection_of(r"C:\q\699.exe", T0 + 699) is not None
 
 
 # ------------------------------------------------------------ the framework
