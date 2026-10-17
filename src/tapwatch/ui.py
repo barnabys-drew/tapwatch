@@ -32,7 +32,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from . import evidence
+from . import benchmark, evidence
 from .store import (
     DISPOSITIONS,
     STATUSES,
@@ -779,12 +779,39 @@ def render_stats(store: Store) -> tuple[str, str]:
                 f'<th class="hide-sm">last hit</th></tr></thead><tbody>{sup_rows}</tbody></table></div>') if sup \
         else '<div class="card empty">No suppression rules.</div>'
 
+    # Week by week: is the noise falling, is Jev agreeing more (benchmark.py; `tapwatch benchmark` prints the same)
+    weeks = benchmark.weekly(db)[-12:]
+    week_rows = "".join(
+        f'<tr><td class="mono">{e(w["week"])}</td><td class="num">{w["cases"]}</td><td class="num">{w["alerts"]}</td>'
+        f'<td class="num">{w["decided"]}</td>'
+        + (f'<td><span class="meter">{hbar(w["noise_rate"], "amber")} <span class="tnum">{_pct(w["noise_rate"])}</span></span></td>'
+           if w["noise_rate"] is not None else '<td class="faint">–</td>')
+        + f'<td class="num">{w["true_positives"]}</td>'
+        + (f'<td><span class="meter">{hbar(w["jev_agreement"], "green")} <span class="tnum">{_pct(w["jev_agreement"])}</span>'
+           f' <span class="faint">of {w["jev_decided"]}</span></span></td>' if w["jev_agreement"] is not None else '<td class="faint">–</td>')
+        + "</tr>" for w in weeks)
+    week_html = ('<div class="card flush scroll"><table><thead><tr><th>week</th><th class="num">cases</th>'
+                 '<th class="num">alerts</th><th class="num">decided</th><th>noise rate</th><th class="num">true positives</th>'
+                 '<th>Jev agreed with you</th></tr></thead><tbody>' + week_rows + '</tbody></table>'
+                 '<p class="pad faint">Noise rate is false positives plus expected benign activity over decided cases. '
+                 'Jev agreement: it called a case benign exactly when you did, over decided cases it gave a category.</p></div>') \
+        if weeks else '<div class="card empty">No cases yet.</div>'
+    h = benchmark.host_context(db)
+    who_rows = "".join(f'<tr><td class="mono">{e(label(k))}</td><td class="num">{v}</td></tr>' for k, v in sorted(h["who"].items()))
+    host_html = (f'<div class="card flush scroll"><table><thead><tr><th>code said</th><th class="num">cases</th></tr></thead>'
+                 f'<tbody>{who_rows}</tbody></table><p class="pad faint">{h["cases"]} cases on this PC, {h["corroborated"]} corroborated. '
+                 f'Jev agreed with code on {_pct(h["jev_agreement"])} of the {h["jev_asked"]} it was asked. '
+                 f'Where code claimed benign or hostile, your disposition agreed {_pct(h["accuracy"])} of {h["claims"]} times.</p></div>') \
+        if h["cases"] else '<div class="card empty">No cases with host context yet.</div>'
+
     return "Stats", (f'<h1>Stats</h1><p class="sub">How noisy each detector is, and how far to trust Jev</p>'
                      f'<div class="tiles">{tiles}</div>'
                      f'<h2>Cases per hour · last 48 hours</h2><div class="card">{chart}</div>'
+                     f"<h2>Week by week</h2>{week_html}"
                      f"<h2>Cases per detector per day</h2>{per_day_html}"
                      f"<h2>False-positive rate per detector</h2>{fp_html}"
                      f"<h2>Jev confidence vs disposition</h2>{conf_html}"
+                     f"<h2>Host context: code, Jev and you</h2>{host_html}"
                      f"<h2>Suppression hits</h2>{sup_html}")
 
 
