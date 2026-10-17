@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from . import config, detectors, evaluate, evidence, hostrules, zeek
+from . import config, detectors, evaluate, evidence, selfcheck, zeek
 from .pipeline import Pipeline
 from .store import Store
 from .summarizer import summarize
@@ -38,9 +38,7 @@ def without_ai(cfg: dict) -> dict:
 def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=None) -> Pipeline:
     if not use_ai:
         cfg = without_ai(cfg)
-    ips, doms = config.iocs(cfg)
-    dets = detectors.build(cfg, ips, doms, config.popular_domains(cfg), config.assets(cfg).table) + hostrules.build(cfg)
-    return Pipeline(dets, config.assets(cfg), Store(cfg.get("db_path", "tapwatch.db")),
+    return Pipeline(config.build_detectors(cfg), config.assets(cfg), Store(cfg.get("db_path", "tapwatch.db")),
                     client=config.jev_client(cfg) if use_ai else None,
                     notifier=config.notifier(cfg) if notify else None,
                     thresholds=config.thresholds(cfg), dedupe_seconds=cfg.get("dedupe_seconds", 3600),
@@ -158,6 +156,13 @@ def cmd_eval(args, cfg) -> int:
                        None if args.no_ai else config.jev_client(cfg), config.thresholds(cfg))
     print(evaluate.report(res))
     return 0
+
+
+def cmd_selfcheck(args, cfg) -> int:
+    """Push the scripted attack and false-positive shapes through the detectors as configured (AI off)."""
+    outcomes = selfcheck.run(without_ai(cfg), config.thresholds(cfg))
+    print(selfcheck.as_json(outcomes) if args.json else selfcheck.report(outcomes, source=f"the config file {args.config}"))
+    return 0 if all(o.passed for o in outcomes) else 1
 
 
 def cmd_digest(args, cfg) -> int:
@@ -392,6 +397,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--warmup", type=float, default=300, help="seconds of learning before first-seen rules fire")
     s.add_argument("--no-ai", action="store_true")
     s.set_defaults(fn=cmd_eval)
+
+    s = sub.add_parser("selfcheck", help="detection rate on scripted attack shapes, rules only; exit 1 on a regression")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_selfcheck)
 
     sub.add_parser("digest", help="send the pending digest").set_defaults(fn=cmd_digest)
 
