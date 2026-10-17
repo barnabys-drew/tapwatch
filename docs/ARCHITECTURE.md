@@ -250,7 +250,7 @@ When the case is on the tapwatch machine, `hostctx.py` asks the machine itself
 | A DNS lookup made through a proxy (WSL's) or a resolver Windows doesn't see (Chrome's own): the program that connected to one of its answers within 30 s | Zeek DNS answers + the connection owners above (`host_lookups_followed`) | **inferred** |
 | Started by a Claude Code session, attended, interactive entrypoint | `CLAUDE_CODE_*` environment markers on the process (they survive reparenting) | **process proof** |
 | Started from the owner's Herdr terminal, or from an SSH login | `HERDR_PANE_ID`, `SSH_CONNECTION` markers | **process proof** |
-| Agent ran a command naming the destination; minutes since the owner's prompt | that session's transcript | context |
+| Agent ran a command naming the destination; minutes since the owner's prompt | that session's transcript, matched by the destination's names (`host_matched_by`); its addresses are the needle only when the case has no name at all | context |
 | The owner's prompt named the destination | that session's transcript | context |
 | The agent read web content (WebFetch, WebSearch, browser tools) between the prompt and the command | that session's transcript | context |
 
@@ -259,8 +259,8 @@ Code reaches its own verdict (`hostctx.verdict`):
 | Verdict | When | Routing effect |
 |---|---|---|
 | `agent_misused` | The session was unattended or SSH-driven, **or** the agent read web content and then acted on a destination the owner never named | ALERT, ahead of suppressions |
-| `owner_using_agent` (corroborated) | An attended interactive session made it **and** the owner's prompt named the destination | LOG, unless Jev disagrees |
-| `owner_using_agent` (uncorroborated) | The exec chain ends at the agent's binary with no markers (attendance unknown), and the transcript that named the destination is the best guess at the session (`host_session_guessed`) | normal routing; never lowered on this alone |
+| `owner_using_agent` (corroborated) | An attended interactive session made it **and** the owner's prompt named the destination; **or** the exec chain ends at the agent's binary with no markers (attendance unknown, the session a best guess: `host_session_guessed`) and the owner's own prompt named the destination **by name**, with no outside content read in between | LOG, unless Jev disagrees. The chain-only form still lists "attendance could not be read" as a risk, so Jev's misuse vote can still alert it |
+| `owner_using_agent` (uncorroborated) | The chain-only form where the transcript matched only by address (the case had no name), or the agent read outside content between the prompt and the command | normal routing; never lowered on this alone |
 | `agent_unconfirmed` | An agent did it, but nothing proves the owner asked | normal routing. Jev can hold an alert to the digest, never log it |
 | `other_program` / `unknown` | No agent session involved, or nothing matched | normal routing, plus the program floor/cap |
 
@@ -270,6 +270,20 @@ transcript match is shown to Jev as context but **never feeds code's verdict** (
 A transcript that merely mentions a destination doesn't prove the agent made the connection.
 The parent-chain walk keeps a short connection on the process-proof side: the session is read from a running
 process's environment, not guessed from timing, so `host_who` and the transcript lookup work as for a marker-bearing row.
+
+**Why the chain-only path can be corroborated.** Measured on the live box 2026-10-16/17: of 84 cases with
+host context, 79 named the program, 66 were `other_program`, 14 `agent_unconfirmed`, and none a corroborated
+`owner_using_agent`. The markers (attended, entrypoint) live only on the agent's short-lived child shells,
+never on the `claude` process or its threads, so the marker path is unreachable in practice and the chain-only
+path is the one real cases take. The owner typing the destination's name in their own prompt is stronger
+evidence that a person was present than a marker is, so that prompt corroborates the chain-only verdict.
+Attendance stays unknown and the summary says so; the session id stays a best guess.
+
+**Names before addresses.** Transcripts are matched against the destination's names and base domains; its IP
+addresses are the needle only when the case has no name at all, and `host_matched_by` says which was used. Case
+#379 (www.ietf.org, 2026-10-17) was matched to the wrong transcript because that session had mentioned a shared
+Cloudflare address, never the site. A name match cannot be a shared-address coincidence, so only a name match
+corroborates; an address match is reported to Jev as such and never lowers a case.
 
 **Why Jev's misuse vote needs a code-seen risk.** Jev answers a `who` question and only sees
 code's facts as sentences. Its `agent_misused` answer counts only if all three hold:

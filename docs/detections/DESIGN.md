@@ -731,15 +731,20 @@ Network data can't tell the owner's coding agent from an attacker. On the tapwat
 | program holding the connection | live osquery (fresh cases) + agent's 1-min history |
 | started by a Claude Code session? attended? interactive (`cli`)? | process environment markers |
 | from the owner's Herdr terminal / an SSH login? | `HERDR_PANE_ID` / `SSH_CONNECTION` markers |
-| agent ran a command naming the destination; minutes since owner's prompt | the session's transcript |
+| agent ran a command naming the destination; minutes since owner's prompt | the session's transcript, matched by the destination's names; its addresses only when the case has no name (`host_matched_by`) |
 | owner's prompt named the destination | the session's transcript |
 | agent read web content between the prompt and the command | the session's transcript (WebFetch/WebSearch/browser tools) |
 
 Code verdict: **agent_misused** (unattended or SSH-driven session, or web content then an unrequested
 action) → ALERT past suppressions, and a Herdr pop-up. **owner_using_agent** only when an attended
-interactive session made it and the owner's prompt named the destination → LOG; when the agent is known
-only by its binary in the exec chain (no markers reached, so attendance unknown) and the owner's prompt
-named the destination, the same verdict is issued uncorroborated → normal routing. **other_program**
+interactive session made it and the owner's prompt named the destination → LOG. When the agent is known
+only by its binary in the exec chain (no markers reached, so attendance unknown and the session a best guess),
+the owner's own prompt naming the destination **by name**, with no outside content read in between, corroborates
+it too → LOG unless Jev disagrees; "attendance could not be read" stays on the risk list, so Jev's misuse vote
+can still alert it. Measured 2026-10-16/17: 84 cases with host context, 0 corroborated by markers, because the
+markers live on the agent's child shells and never on the `claude` process, so this is the path real cases take.
+Matched only by address (the case had no name; #379 matched a shared Cloudflare address to the wrong transcript),
+or with outside content read first, the verdict is issued uncorroborated → normal routing. **other_program**
 → normal routing. **agent_unconfirmed** → normal routing. Jev (`WHO` choice question) can hold it to
 DIGEST, never LOG. Must-alert cases are never lowered. Jev gets sentences only: no session ids,
 paths, command lines or prompt text.
