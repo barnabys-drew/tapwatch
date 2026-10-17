@@ -162,8 +162,8 @@ def test_a_monitor_case_never_gets_host_context(tmp_path):
         def is_this_pc(self, *a):
             return True
 
-        def collect(self, *a, **k):
-            raise AssertionError("host context must not run for a monitor case")
+        def collect(self, *a, **k):  # what #427 got: the window's programs judged benign, and a digest cap
+            return {"host_who": "other_program", "host_assessment": "likely_benign", "host_max_route": "digest"}
 
     store = Store(str(tmp_path / "t.db"))
     p = Pipeline([FeedSilence({"conn": (600, 4)}, host="192.168.50.10", started=T0)], Assets(), store,
