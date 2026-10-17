@@ -207,6 +207,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch who 42 --zeek-dir DIR` | ask the PC (osquery and agent transcripts) who made case 42's traffic |
 | `tapwatch explain [--apply]` | find repeat cases host context explains, and suggest or apply suppressions |
 | `tapwatch replay` / `tapwatch eval` | push finished logs through the pipeline, or score rules-only vs Jev on labelled traffic |
+| `tapwatch selfcheck` | detection rate on 18 scripted attack and false-positive shapes, rules only; exit 1 on a regression |
 | `tapwatch test-alert` / `tapwatch notify` | check your notification channels |
 
 Optional extras: [router syslog](docs/setup/router-syslog.md) adds the router's own IPS verdicts
