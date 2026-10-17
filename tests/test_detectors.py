@@ -60,6 +60,12 @@ def test_beaconing_beat_window_survives_a_restart():
     cases = run(second, [conn(T0 + i * 60) for i in range(6, 15)])
     assert len(cases) == 1 and cases[0].facts["interval_s"] == 60
     assert second.seen[next(iter(second.seen))].maxlen == 60  # the deque came back bounded
+    # a saved window whose shape no longer fits starts fresh instead of failing on the next record
+    for bad in ({"seen": "junk"}, {"seen": {"$dict": {"x": [1, 2]}}, "durations": {"$dict": {"x": [1.0]}}}):
+        fresh = Beaconing()
+        fresh.restore(bad)
+        assert fresh.seen == {} and fresh.durations == {}
+        assert len(run(fresh, [conn(T0 + i * 60) for i in range(15)])) == 1
 
 
 def test_beaconing_ignores_human_browsing_jitter():

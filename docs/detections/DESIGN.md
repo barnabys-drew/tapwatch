@@ -258,6 +258,7 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   normal heartbeats after 7 days. The beat window (last 60 times per pair) is saved with the
   learned state, so a heartbeat slower than the gap between alerter restarts can still reach ten
   beats (2026-10-16: seven restarts in a day; a 12-beat test that straddled one raised no case).
+  Each save first drops pairs quiet for a day and leaves single-beat pairs out of the copy.
 - **Dedupe:** `base domain (or address):port`. One case per (device, port, destination) every
   `reported_days` (7), at most `fanout_per_day` (3) per (device, port) a day for clients that poll
   many servers the same way. Until 2026-10-15 it was one case per (device, port) forever, which
