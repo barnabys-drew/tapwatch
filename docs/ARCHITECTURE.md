@@ -66,8 +66,10 @@ flowchart LR
         ZEEK["Zeek capture"] --> LOGS[("JSON logs<br/>conn · dns · ssl · http · dhcp · ftp<br/>hourly rotation")]
         SYS["tapwatch syslog"] -->|udm.log| LOGS
         SUR["Suricata (optional)"] -.->|eve.json| LOGS
+        AGT["Endpoint agents (optional)<br/>osquery results"] -->|osqueryd.*.log| LOGS
         LOGS --> FOL["Follower<br/>tail -F, survives rotation"]
-        FEEDS[("Offline lists<br/>Tranco · IEEE OUI · iptoasn")] --> DET
+        FEEDS[("Offline lists<br/>Tranco · IEEE OUI · iptoasn · UT1 kinds")] --> DET
+        DET -.->|"unlisted domain, once per 30 days"| CAT["Categorizer (optional)<br/>small model, rate-limited"]
         FOL --> DET["Detectors (code)<br/>baselines · first-seen · prevalence"]
         DET --> DEDUPE{"seen within<br/>dedupe window?"}
         DEDUPE -->|yes| HIT["count a hit"]
