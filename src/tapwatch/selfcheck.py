@@ -118,7 +118,7 @@ def _sweep():
 
 def _tunnel():
     rng = random.Random(7)
-    chunk = lambda: "".join(rng.choice("abcdef0123456789") for _ in range(48))  # noqa: E731
+    chunk = lambda: "".join(rng.choice("abcdef0123456789") for _ in range(48))
     return [dns(T0 + i, f"{chunk()}.t.exfil-zone.net", qtype_name="TXT") for i in range(210)]
 
 
