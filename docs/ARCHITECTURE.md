@@ -321,7 +321,8 @@ Everything lives in one SQLite file (`db_path`, default `tapwatch.db`):
 | `suppressions` | scope, reason, expiry, hit count |
 
 - **Learned state survives restarts.** Each detector lists its learned attributes in `PERSIST`
-  (sliding windows are left out on purpose). `run` restores them at start, saves every 10 minutes,
+  (sliding windows are left out on purpose, except beaconing's beat times: a slow heartbeat needs hours of
+  watching and the alerter restarts on every deploy). `run` restores them at start, saves every 10 minutes,
   and saves again on SIGTERM. All detectors are saved in one transaction. A detector whose saved
   shape no longer fits starts fresh instead of crashing. The 24 h warmup start is saved too.
 - **Additive-only schema.** Migrations only add columns and tables, so an older `run` can keep

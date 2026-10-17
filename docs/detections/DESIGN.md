@@ -255,7 +255,9 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Logic:** existing `detectors.Beaconing` (CV ≤ 0.15, ≥10 hits, ≥10 min), plus code facts in
   the case: `sni_popular` (Tranco), `shared_by_n_devices`, `device_role`, `bytes_per_hit`.
 - **Baseline:** none for detection. Suppression learns which (role, base-domain) pairs are
-  normal heartbeats after 7 days.
+  normal heartbeats after 7 days. The beat window (last 60 times per pair) is saved with the
+  learned state, so a heartbeat slower than the gap between alerter restarts can still reach ten
+  beats (2026-10-16: seven restarts in a day; a 12-beat test that straddled one raised no case).
 - **Dedupe:** `base domain (or address):port`. One case per (device, port, destination) every
   `reported_days` (7), at most `fanout_per_day` (3) per (device, port) a day for clients that poll
   many servers the same way. Until 2026-10-15 it was one case per (device, port) forever, which

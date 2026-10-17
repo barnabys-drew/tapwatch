@@ -188,7 +188,8 @@ class Detector:
     name = "base"
     # Attributes that hold what the detector has learned (baselines, first-seen sets, things
     # already reported). The pipeline saves them so a restart doesn't start learning from scratch.
-    # Sliding windows and caches are left out on purpose: stale after a restart anyway.
+    # Sliding windows and caches are left out on purpose: stale after a restart anyway. The exception is a
+    # window whose detection needs longer than the gap between restarts (Beaconing's beat times).
     PERSIST: ClassVar[tuple[str, ...]] = ()
 
     def snapshot(self) -> dict:
@@ -370,7 +371,12 @@ class Beaconing(Detector):
     """
 
     name = "beaconing"
-    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "users", "device")  # users/device: the shared_by cap
+    # seen/durations are the beat window itself. Ten beats at least ten minutes apart from the first is the bar, so
+    # a slow heartbeat needs hours of uninterrupted watching, and the alerter restarts on every deploy (seven
+    # times on 2026-10-16; a 12-beat test heartbeat that straddled the 17:54 restart raised nothing while the
+    # offline replay of the same rows did). Saved with single-beat pairs dropped: measured 2026-10-17, 8.6k pairs
+    # a day on this network, about 2 MB of JSON, in line with the hourly and odd_port baselines.
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "users", "device", "seen", "durations")  # users/device: the shared_by cap
     DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("reported",)
 
     def __init__(self, min_count: int = 10, min_span: float = 600, max_cv: float = 0.15, min_interval: float = 5,
@@ -414,8 +420,14 @@ class Beaconing(Detector):
             self.reported = {}
 
     def snapshot(self) -> dict:
-        self._prune(max(self.reported.values(), default=0.0))
-        return super().snapshot()
+        now = max((*self.reported.values(), *(t[-1] for t in self.seen.values() if t)), default=0.0)
+        self._prune(now)
+        self._forget_quiet(now)
+        out = super().snapshot()
+        keep = {p for p, t in self.seen.items() if len(t) >= 2}  # one beat alone can't make a case; not worth the bytes
+        out["seen"] = encode({p: self.seen[p] for p in keep})
+        out["durations"] = encode({p: self.durations[p] for p in keep if p in self.durations})
+        return out
 
     def _prune(self, now: float) -> None:
         self.reported = {k: t for k, t in self.reported.items() if now - t < self.reported_s}

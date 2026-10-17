@@ -47,6 +47,21 @@ def test_beaconing_fires_on_regular_heartbeat():
     assert cases[0].facts["regularity"] == "very regular"
 
 
+def test_beaconing_beat_window_survives_a_restart():
+    # 2026-10-16: a 12-beat heartbeat straddled an alerter restart and raised nothing, because the beat times were
+    # not saved; the offline replay of the same rows did. Six beats, save, restore into a fresh detector, nine more.
+    import json
+    first = Beaconing()
+    assert run(first, [conn(T0 + i * 60) for i in range(6)] + [conn(T0 + 7, dst="203.0.113.9")]) == []  # one lone beat
+    saved = json.loads(json.dumps(first.snapshot()))
+    second = Beaconing()
+    second.restore(saved)
+    assert len(second.seen) == 1 and len(second.seen[next(iter(second.seen))]) == 6  # the single-beat pair was dropped
+    cases = run(second, [conn(T0 + i * 60) for i in range(6, 15)])
+    assert len(cases) == 1 and cases[0].facts["interval_s"] == 60
+    assert second.seen[next(iter(second.seen))].maxlen == 60  # the deque came back bounded
+
+
 def test_beaconing_ignores_human_browsing_jitter():
     rng = random.Random(1)
     ts, recs = T0, []
