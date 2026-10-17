@@ -81,6 +81,25 @@ def signatures(ts, *rows):
             "action": "snapshot", "snapshot": [{"path": p, "signature": s, "signer": who} for p, s, who in rows]}
 
 
+def persistence(ts, query, change="added", **cols):
+    """One differential row of a persistence query (R23); `change` is osquery's added/removed, the task's own
+    `action` column travels in `cols`."""
+    return {"_type": "osquery", "_log": WIN, "name": query, "unixTime": int(ts), "ts": int(ts), "action": change,
+            "columns": cols}
+
+
+def _new_task(action):
+    """A scheduled task appearing in one hourly run, then the tick that lets R23 read the run as a batch."""
+    return [persistence(T0, "scheduled_tasks", name="tapwatch-selfcheck", action=action, path="\\tapwatch-selfcheck",
+                        enabled="1", last_run_time="0"), tick(T0 + 130)]
+
+
+def _task_inventory():
+    rows = [persistence(T0, "scheduled_tasks", name=f"T{i}", action=rf"wscript.exe C:\Users\<user>\t{i}.vbs",
+                        path=f"\\T{i}", enabled="1", last_run_time="0") for i in range(30)]
+    return rows + [tick(T0 + 130)]
+
+
 def tick(ts):
     return {"_type": "tick", "ts": ts}
 
@@ -172,9 +191,15 @@ SCENARIOS: list[Scenario] = [
     Scenario("R21 tampered binary (untrusted signature) connects out",
              [signatures(T0, (TAMPERED, "untrusted", "")), socket_row(T0 + 30, "tapwatch-sig-test.exe", TAMPERED)],
              "host_bad_sig", Route.ALERT),
+    Scenario("R23 new scheduled task runs an encoded PowerShell command",
+             _new_task("powershell.exe -w hidden -enc " + "Q" * 40), "host_persist", Route.ALERT),
+    Scenario("R23 new scheduled task runs a script from Downloads",
+             _new_task(r"wscript.exe C:\Users\<user>\Downloads\up.vbs"), "host_persist", Route.ALERT),
     Scenario("R22 the Zeek conn feed stops for 21 minutes", [conn(T0)] + [tick(T0 + 60 * i) for i in range(1, 22)],
              "feed_silence", Route.ALERT, config={"detectors": {"feed_silence": {"enabled": True}}}),
     Scenario("quiet: a 15-minute UDP voice call split into minute records (#63)", _video_call(), "beaconing", None),
+    Scenario("quiet: the agent's first run lists 30 scheduled tasks at once (an inventory)", _task_inventory(),
+             "host_persist", None),
     Scenario("quiet: WebRTC media with a client certificate on changing ports (#417)", _webrtc_media(), "tls_odd", None),
     Scenario("quiet: a phone resetting ad sessions after two-way data (#363)", _reset_after_data(), "scan", None),
 ]
