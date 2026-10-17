@@ -1885,10 +1885,18 @@ class TlsOddities(Detector):
         who = self.dev_key(src)
         if still_reported(self.reported, (who, port), ts, self.reported_s):
             return []
-        signs = {"no_name": not rec.get("server_name"),
+        # Real-time media (WebRTC's DTLS-SRTP) has no server name and self-signed certificates on both ends by
+        # design: the fingerprints travel through the app's signalling. Measured 2026-10-17 over two days of ssl.log:
+        # every DTLS session with a client certificate was a call (the baby monitor streaming to a phone on cellular,
+        # 13, eight digest cases #332-#417 on eight ICE-chosen ports; the Mac on video calls, 6; four others, 1-4).
+        # Those two signs don't count for that shape; port and address still do, so it stays under the threshold
+        # until another sign (JA4) joins. client_cert_chain_fuids is the Zeek 4/5 name of the field.
+        media = (rec.get("version") or "").startswith("DTLS") and bool(rec.get("client_cert_chain_fps")
+                                                                        or rec.get("client_cert_chain_fuids"))
+        signs = {"no_name": not rec.get("server_name") and not media,
                  "unexplained_ip": ts - self.answered.get(dst, -1e18) > 3600,
                  "odd_port": port != 443,
-                 "bad_cert": rec.get("validation_status") in self.BAD_CERT}
+                 "bad_cert": rec.get("validation_status") in self.BAD_CERT and not media}
         score = sum(signs.values())
         if score < self.threshold:
             return []
