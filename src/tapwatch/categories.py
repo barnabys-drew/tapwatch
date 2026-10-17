@@ -21,10 +21,10 @@ question the triage model is measured to get wrong (triage.py), and it is not as
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -98,6 +98,7 @@ def load(path: str | Path | None, learned: str | Path | None = None) -> int:
     if learned is None and path:
         learned = Path(path).with_name(LEARNED_FILE)
     set_learned(load_learned(learned), learned)
+    compact_learned(learned)
     return len(table)
 
 
@@ -111,6 +112,25 @@ def load_learned(path: str | Path | None) -> dict[str, tuple[str, str]]:
         if len(parts) == 4 and parts[0] and parts[1] in LABELS and parts[2] == "ai":
             table[parts[0].strip().lower()] = (parts[1], parts[3].strip())
     return table
+
+
+def compact_learned(path: str | Path | None) -> bool:
+    """Rewrite the learned file from the loaded table when re-asked domains have doubled its line count (the
+    file is append-only between loads, so growth is bounded by this, at startup). Atomic, like feeds._write."""
+    if not path or not Path(path).exists() or not LEARNED:
+        return False
+    lines = sum(1 for line in Path(path).read_text(errors="replace").splitlines() if line)
+    if lines <= 2 * len(LEARNED):
+        return False
+    body = "".join(f"{dom}\t{label}\tai\t{day}\n" for dom, (label, day) in sorted(LEARNED.items()))
+    tmp = Path(path).with_name(Path(path).name + ".part")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as e:
+        log.warning("could not compact %s: %s", path, e)
+        return False
+    return True
 
 
 def category(name: str | None) -> str:
@@ -134,16 +154,13 @@ def askable(name: str | None) -> str:
     if not name:
         return ""
     n = name.lower().strip().rstrip(".")
-    if not n or "." not in n or detectors.is_internal(n):
+    if not n or "." not in n or detectors.is_internal(n):  # is_internal parses the address: a LAN IP is out here
         return ""
-    try:
-        ipaddress.ip_address(n)
-        return ""
-    except ValueError:
-        pass
     if n.endswith(detectors.LOCAL_ONLY_SUFFIXES) or n.endswith(NEVER_ASK_SUFFIXES):
         return ""
     dom = detectors.base_domain(n)
+    # An alphabetic last label: a public IP (203.0.113.9) ends in digits and is out; so is a punycode TLD
+    # (`xn--...`), which is never asked, a bounded loss (none seen in a home's logs).
     if "." not in dom or "_" in dom or not dom.rsplit(".", 1)[-1].isalpha():
         return ""
     return dom
@@ -213,20 +230,27 @@ def from_config(cfg: dict) -> AiCategorizer | None:
 class AiCategorizer:
     """One closed question per registrable domain to a small model: which label from `LABELS`.
 
-    Budget: at most `per_hour` questions in any sliding hour (failures count: a broken key or a down API
-    must not retry in a loop), every answer cached by `resolve()` so a domain is asked once in 30 days,
-    an 8 s timeout, no retries, and any failure is "" with one warning per hour. The first hours after
+    Budget: at most `per_hour` questions in any sliding hour (failures count: a down API must not retry in
+    a loop), every answer cached by `resolve()` so a domain is asked once in 30 days, a 3 s timeout, no
+    retries, and any failure is "" with one warning per hour. A rejected key (HTTP 401/403) disables the
+    categorizer for the life of the process: the next hour would fail the same way. The first hours after
     warmup are the busiest (measured 2026-10-16: ~150 first-seen pairs an hour on an active evening,
     mostly under domains the Tranco list already covers), so the cap bounds the first day's spend; after
-    that the cache answers nearly everything. A question is a few hundred tokens."""
+    that the cache answers nearly everything. A question is a few hundred tokens.
 
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL, per_hour: int = 60, timeout: float = 8.0,
+    The call is synchronous, inside the detector loop: log reading stalls for each question, so the worst
+    hour blocks for `timeout` x `per_hour` (3 min at the defaults) and a normal one for well under a
+    minute (measured 2026-10-16: real calls took 0.5 to 2.5 s each). A background fill of the cache
+    would remove the stall and is the fuller fix."""
+
+    def __init__(self, api_key: str, model: str = DEFAULT_MODEL, per_hour: int = 60, timeout: float = 3.0,
                  runner=None):
         self.api_key, self.model, self.per_hour, self.timeout = api_key, model, per_hour, timeout
         self.runner = runner or self._post  # runner(body: dict) -> response dict; tests inject a stub
         self.asked: deque[float] = deque()  # timestamps of questions in the sliding hour
         self.over_budget = 0  # questions not asked because the hour's budget was spent
         self.failures = 0
+        self.disabled = False  # set on HTTP 401/403: the key is wrong, asking again cannot help
         self._warned_at: float | None = None
 
     def request(self, domain: str) -> dict:
@@ -244,18 +268,22 @@ class AiCategorizer:
 
     @staticmethod
     def parse(resp: dict) -> str:
-        """The label in the first text block, or `unknown` for anything outside the set."""
+        """The label in the first text block ("security vendor" and "security-vendor" read as security_vendor),
+        `unknown` only when the model said so, and "" for anything else: prose, no text, a leaked thinking
+        tag. "" is a failure, not an answer, so it is not cached and the domain is asked again later."""
         text = ""
         for block in resp.get("content") or ():
             if isinstance(block, dict) and block.get("type") == "text":
                 text = str(block.get("text", ""))
                 break
-        label = text.strip().lower().strip(".'\"` ")
-        return label if label in LABELS else "unknown"
+        label = re.sub(r"[\s-]+", "_", text.strip().lower().strip(".'\"` "))
+        return label if label in LABELS else ""
 
     def ask(self, domain: str, now: float | None = None) -> str:
         """A label from `LABELS` (`unknown` included), or "" when over budget or the call failed."""
         now = time.time() if now is None else now
+        if self.disabled:
+            return ""
         while self.asked and now - self.asked[0] >= 3600:
             self.asked.popleft()
         if len(self.asked) >= self.per_hour:
@@ -263,9 +291,17 @@ class AiCategorizer:
             return ""
         self.asked.append(now)
         try:
-            return self.parse(self.runner(self.request(domain)))
+            label = self.parse(self.runner(self.request(domain)))
+            if not label:
+                self._warn(now, "the reply was not a label")
+            return label
         except urllib.error.HTTPError as e:
-            self._warn(now, f"{API_URL} returned HTTP {e.code}")
+            if e.code in (401, 403):
+                self.disabled = True
+                self._warned_at = None  # this one is always said, whatever the hour had
+                self._warn(now, f"{API_URL} returned HTTP {e.code}: the key is rejected, not asking again")
+            else:
+                self._warn(now, f"{API_URL} returned HTTP {e.code}")
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, TypeError, KeyError, AttributeError) as e:
             self._warn(now, f"{e.__class__.__name__}: {e}")
         return ""

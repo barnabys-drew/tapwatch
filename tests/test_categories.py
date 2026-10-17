@@ -45,17 +45,23 @@ def test_labels_are_the_ut1_set_plus_the_kinds_the_list_lacks():
     assert "unknown" in categories.SYSTEM_PROMPT and "security_vendor" in categories.SYSTEM_PROMPT
 
 
-def test_categorizer_parses_one_label_strictly_and_junk_is_unknown():
+def test_categorizer_parses_one_label_strictly_and_junk_is_a_failure(caplog):
     sent = []
     answers = iter([api("security_vendor"), api(" CDN.\n"), api("Sure! It is a news site."), api("advertising; unknown"),
-                    {"content": []}, {"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "saas"}]}])
+                    {"content": []}, {"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "saas"}]},
+                    api("Unknown"), api("Security vendor"), api("developer-tools"), api("<thinking>cdn</thinking>")])
     cat = AiCategorizer("k", runner=lambda body: (sent.append(body), next(answers))[1])
-    assert cat.ask("vendor.example", NOW) == "security_vendor"
-    assert cat.ask("cdn.example", NOW) == "cdn"           # case and punctuation stripped
-    assert cat.ask("prose.example", NOW) == "unknown"     # a sentence is not a label
-    assert cat.ask("two.example", NOW) == "unknown"       # two labels is not one
-    assert cat.ask("empty.example", NOW) == "unknown"     # no text block
-    assert cat.ask("thought.example", NOW) == "saas"      # the text block, wherever it sits
+    with caplog.at_level(logging.WARNING, logger="tapwatch"):
+        assert cat.ask("vendor.example", NOW) == "security_vendor"
+        assert cat.ask("cdn.example", NOW) == "cdn"           # case and punctuation stripped
+        assert cat.ask("prose.example", NOW) == ""            # a sentence is not a label: a failure, not `unknown`
+        assert cat.ask("two.example", NOW) == ""              # two labels is not one
+        assert cat.ask("empty.example", NOW) == ""            # no text block
+        assert cat.ask("thought.example", NOW) == "saas"      # the text block, wherever it sits
+        assert cat.ask("nothing.example", NOW) == "unknown"   # only a literal unknown is unknown
+        assert cat.ask("spaced.example", NOW) == "security_vendor" and cat.ask("dashed.example", NOW) == "developer_tools"
+        assert cat.ask("leak.example", NOW) == ""             # a leaked thinking tag is not a label
+    assert cat.failures == 4 and sum("not a label" in r.getMessage() for r in caplog.records) == 1
     body = sent[0]
     assert body["model"] == "claude-haiku-5-5" and body["max_tokens"] == 12 and "temperature" not in body
     assert body["messages"] == [{"role": "user", "content": "vendor.example"}]  # the registrable domain, nothing else
@@ -80,6 +86,49 @@ def test_categorizer_failures_are_empty_with_one_warning_an_hour(caplog):
     assert any("HTTP 401" in r.getMessage() for r in caplog.records)
 
     assert AiCategorizer("k", runner=lambda body: "not json").ask("e.example", NOW) == ""   # a bad shape is a failure too
+
+
+def test_a_rejected_key_disables_the_categorizer_for_good(caplog):
+    calls = []
+
+    def http(body):
+        calls.append(1)
+        raise urllib.error.HTTPError(categories.API_URL, 403, "forbidden", {}, None)
+    cat = AiCategorizer("k", runner=http)
+    with caplog.at_level(logging.WARNING, logger="tapwatch"):
+        assert cat.ask("a.example", NOW) == "" and cat.disabled
+        assert cat.ask("b.example", NOW + 10) == "" and cat.ask("c.example", NOW + 7200) == ""
+    assert len(calls) == 1 and cat.failures == 1   # not asked again, whatever the hour
+    assert sum("key is rejected" in r.getMessage() for r in caplog.records) == 1
+    assert AiCategorizer("k", runner=lambda b: api("news")).ask("d.example", NOW) == "news"   # a fresh one is fine
+
+
+def test_learned_file_is_compacted_on_load_when_re_asks_have_doubled_it(tmp_path):
+    f = tmp_path / "categories.tsv"
+    f.write_text("ads.example\tadvertising\n")
+    learned = tmp_path / "categories.learned.tsv"
+    lines = [f"a.example\tcdn\tai\t2027-01-0{i}" for i in range(1, 6)] + ["b.example\tsaas\tai\t2027-01-10"]
+    learned.write_text("\n".join(lines) + "\n")   # 6 lines, 2 entries
+    categories.load(str(f))
+    assert learned.read_text() == "a.example\tcdn\tai\t2027-01-05\nb.example\tsaas\tai\t2027-01-10\n"
+    assert categories.LEARNED == {"a.example": ("cdn", "2027-01-05"), "b.example": ("saas", "2027-01-10")}
+    learned.write_text("a.example\tcdn\tai\t2027-01-04\na.example\tcdn\tai\t2027-01-05\nb.example\tsaas\tai\t2027-01-10\n")
+    categories.load(str(f))
+    assert learned.read_text().count("\n") == 3   # 3 lines for 2 entries: left alone
+    assert not categories.compact_learned(tmp_path / "missing.tsv")
+
+
+def test_no_ai_keeps_the_categorizer_out_of_replay_and_eval(tmp_path, monkeypatch):
+    from tapwatch import cli
+    monkeypatch.setenv("CAT_KEY", "sk-test")
+    cfg = {"db_path": str(tmp_path / "t.db"), "categories": {"ai": True, "api_key_env": "CAT_KEY"},
+           "typesafe": {"enabled": False}}
+    assert cli.without_ai(cfg)["categories"] == {"ai": False, "api_key_env": "CAT_KEY"}
+    assert cli.without_ai({})["categories"] == {"ai": False} and "categories" not in {}
+    cli._pipeline(cfg, use_ai=False, notify=False)
+    assert categories._categorizer is None            # --no-ai: nothing leaves for a model
+    cli._pipeline(cfg, use_ai=True, notify=False)
+    assert isinstance(categories._categorizer, AiCategorizer) and categories._categorizer.api_key == "sk-test"
 
 
 def test_categorizer_budget_is_a_sliding_hour_and_failures_count():
@@ -127,7 +176,7 @@ def test_without_a_categorizer_resolve_never_calls_anything():
 def test_unknown_answers_are_cached_but_never_shown(tmp_path):
     asked = []
     set_learned({}, tmp_path / "categories.learned.tsv")
-    set_categorizer(AiCategorizer("k", runner=lambda body: (asked.append(1), api("no idea"))[1]))
+    set_categorizer(AiCategorizer("k", runner=lambda body: (asked.append(1), api("unknown"))[1]))
     assert resolve("a.mystery.example", NOW) == ("", "") and resolve("b.mystery.example", NOW) == ("", "")
     assert len(asked) == 1 and categories.LEARNED["mystery.example"][0] == "unknown"
     assert (tmp_path / "categories.learned.tsv").read_text() == "mystery.example\tunknown\tai\t2027-01-15\n"

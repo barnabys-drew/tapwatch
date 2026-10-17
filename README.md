@@ -207,7 +207,7 @@ connection and feed the five host rules.
   address. Domain names in them are defanged.
 - **Public list downloads** (`update-feeds`): downloads only, nothing is sent.
 - **Domain categorizer**, if enabled (`categories: {ai: true}`, off by default): the public registrable
-  domain only (`example.com`), to Anthropic, once per domain, cached for 30 days, at most 60 an hour.
+  domain only (`example.com`), to Anthropic, once per domain, cached for 30 days, at most `per_hour` (default 60) an hour.
 
 Packet contents and MAC addresses never leave, and internal addresses never reach the AI.
 
