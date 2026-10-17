@@ -346,6 +346,9 @@ def _on_the_pc(f: dict) -> str:
     progs = ", ".join(json.dumps(clean_untrusted(p)) for p in f.get("host_programs", [])) or "unknown"
     what = "holding the connection" if f.get("host_matched") else "that made the DNS lookups"
     parts = [f"On the PC itself (checked locally): the program {what} was {progs}."]
+    if f.get("host_matched") and not f.get("host_scoped") and f.get("host_conns", 0) > 1:
+        parts.append("Those are every program the PC connected out with in the three minutes around the case, "
+                     "not only the one that reached this destination.")
     if f.get("host_agent_session"):
         if f.get("host_attended_known", True):  # older cases carry no flag: their markers were read
             who = "that a person was attending" if f.get("host_attended") else "that nobody was attending"

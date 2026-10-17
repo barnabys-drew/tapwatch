@@ -254,9 +254,11 @@ def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) 
 
 
 def names_match(query: str, names: set[str]) -> bool:
-    """Is `query` one of the case's names, under one, or on the same registrable domain?"""
-    q = query.lower().rstrip(".")
-    return any(q == n or q.endswith("." + n) or ("." in n and base_domain(q) == base_domain(n)) for n in names)
+    """Is `query` one of the case's names, under one, or an apex one of them sits under? Not a sibling: on shared
+    hosting (d1.cloudfront.net vs d2.cloudfront.net, two *.github.io tenants) the same registrable domain is
+    another service, and scoping to it would attribute another program's connection to the case again."""
+    q = query.strip().lower().rstrip(".")
+    return any(q == n or q.endswith("." + n) or n.endswith("." + q) for n in names)
 
 
 def case_destinations(case, dns_rows: list[dict]) -> tuple[set[str], set[str]]:
@@ -269,7 +271,7 @@ def case_destinations(case, dns_rows: list[dict]) -> tuple[set[str], set[str]]:
             ips.add(str(ipaddress.ip_address(n.strip())))
         except ValueError:
             if n.strip():
-                names.add(n.lower().rstrip("."))
+                names.add(n.strip().lower().rstrip("."))
     for r in dns_rows:
         if r.get("query") and names_match(str(r["query"]), names):
             for a in r.get("answers") or ():
@@ -868,6 +870,8 @@ class HostContext:
             lookups_matched += bool(found)
             lookups_followed += followed
             owners += found
+        # dest_ips may hold answers no row went to: the names they pull in below only widen the transcript needles
+        # by one hop, and names win over addresses in transcript_facts, so that is harmless.
         ips = {r["id.resp_h"] for r in outbound} | dest_ips
         names = set(dest_names)
         names |= {(r.get("query") or "").lower() for r in dns_rows if set(r.get("answers") or ()) & ips}
@@ -908,7 +912,8 @@ class HostContext:
                  "host_inherited": any(o.inherited for o in owners),  # credited through the exec parent chain
                  "host_via_ssh": any(o.via_ssh for o in owners), "host_in_terminal": any(o.in_herdr for o in owners),
                  "host_transcript_only": transcript_only,
-                 "host_scoped": bool(scoped or scoped_lookups)}  # rows narrowed to the case's own destination
+                 "host_scoped": bool(scoped),  # the connection rows are the case's own destination's, not the window's
+                 "host_lookups_scoped": bool(scoped_lookups)}
         facts.update({f"host_{k}": v for k, v in tf.items()})
         self.check_signatures(owners)
         assessment, signals = assess(owners, who, programs[:3])

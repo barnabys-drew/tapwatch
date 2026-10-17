@@ -606,12 +606,22 @@ def test_collect_scopes_the_window_to_the_cases_destination(tmp_path):
     # no answer for the case's name in the window: the whole window is the context, as before
     facts = hc.collect(case(), conns, [], now=T0)
     assert not facts["host_scoped"] and facts["host_conns"] == 2 and facts["min_route"] == "alert"
+    from tapwatch.summarizer import Assets, summarize
+    assert "every program the PC connected out with" in summarize(case(facts={"channel": "callback", "via": "DNS", **facts}), Assets())
     # a bare-IP indicator scopes by itself; a case that names nothing (a scan) never does
     assert hc.collect(case(indicators=[DST]), conns, [], now=T0)["host_conns"] == 1
     assert hc.collect(case(indicators=[]), conns, [], now=T0)["host_conns"] == 2
-    # the destination resolved to an address the window has no row for (CDN rotation): fall back to the window
-    facts = hc.collect(case(), conns, [{"ts": T0, "id.orig_h": PC, "query": "webhook.site", "answers": ["203.0.113.99"]}], now=T0)
-    assert not facts["host_scoped"] or facts["host_conns"] == 2
+    # the destination resolved to an address the window has no row for (CDN rotation): the connections fall back
+    # to the window and say so, even though the lookup itself matched
+    dns_rows = [{"ts": T0, "id.orig_h": PC, "query": "webhook.site", "answers": ["203.0.113.99"]},
+                {"ts": T0, "id.orig_h": PC, "query": "other.example", "answers": ["203.0.113.77"]}]
+    facts = hc.collect(case(), conns, dns_rows, now=T0)
+    assert not facts["host_scoped"] and facts["host_conns"] == 2
+    assert facts["host_lookups_scoped"] and facts["host_lookups"] == 1
+    # a sibling on shared hosting is another service, not the case's destination; an apex of the indicator is
+    from tapwatch.hostctx import names_match
+    assert not names_match("d2.cloudfront.example", {"d1.cloudfront.example"})
+    assert names_match("webhook.site", {"abc.webhook.site"}) and names_match("x.abc.webhook.site", {"abc.webhook.site"})
 
 
 def test_collect_counts_dns_lookups_tied_to_a_program(tmp_path):
