@@ -28,6 +28,8 @@ CODE_ONLY = {"new_domain",
              "dns_bypass",
              # A steady uploader going quiet is a fact about the device; nothing for Jev to weigh.
              "upload_stopped",
+             # R22: a feed that stopped is a fact about tapwatch itself; nothing for Jev to weigh.
+             "feed_silence",
              # R11: whether the owner logged in is a fact only the owner knows.
              "udm_admin",
              # R10 has no names to judge; Jev called a camera's vendor TLS "c2 0.95" (home eval).

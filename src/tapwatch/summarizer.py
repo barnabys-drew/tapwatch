@@ -232,6 +232,15 @@ def _observed(c: Case, words: dict) -> str:
                 f"{f['direction']} traffic).")
     if f.get("source") == "endpoint":
         return _endpoint(c)
+    if c.detector == "feed_silence":
+        feeds = f.get("feeds") or []
+        one = len(feeds) == 1
+        what = (f"The {feeds[0]} feed" if one else "The " + ", ".join(feeds) + " feeds") + f" from {f.get('source')}"
+        how = (("has" if one else "have") + " not arrived since tapwatch started" if f.get("never_seen")
+               else f"stopped {f.get('silent_minutes')} minutes ago")
+        it, arrives, resumes, them = ("it", "arrives", "resumes", "it") if one else ("they", "arrive", "resume", "them")
+        return (f"{what} {how}; {it} normally {arrives} at least every {f.get('limit_minutes')} minutes. "
+                f"Until {it} {resumes}, the rules that read {them} are blind.")
     return c.title + "."
 
 

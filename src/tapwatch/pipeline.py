@@ -60,9 +60,11 @@ class Pipeline:
         self._pc_warned: str | None = None
 
     def process(self, rec: dict) -> list[tuple[int, Case, Verdict | None, Route]]:
+        """One record through every detector; a `{"_type": "tick", "ts": now}` record is the minute tick instead."""
         out = []
+        tick = rec.get("_type") == "tick"
         for d in self.detectors:
-            for case in d.feed(rec):
+            for case in (d.tick(rec["ts"]) if tick else d.feed(rec)):
                 handled = self.handle(case)
                 if handled:
                     out.append(handled)

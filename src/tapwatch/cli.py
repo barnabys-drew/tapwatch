@@ -91,8 +91,12 @@ FOLLOW_PC_EVERY = 300    # seconds: the agents report the PC's addresses every 5
 def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
     digest = DigestClock(cfg.get("digest_hour_utc", 13))
     keep_days, next_prune = cfg.get("zeek_retention_days", 30), 0.0
-    next_save, next_follow = time.time() + STATE_SAVE_EVERY, 0.0
+    next_save, next_follow, next_tick = time.time() + STATE_SAVE_EVERY, 0.0, time.time() + 60
     for rec in zeek.Follower(args.zeek_dir + config.host_log_dirs(cfg)).follow(idle_ticks=True):
+        if time.time() >= next_tick:  # once a minute, whether records are flowing or not (R22 watches the feeds)
+            for case_id, case, _, route in p.process({"_type": "tick", "ts": time.time()}):
+                log.info("#%s %s %s -> %s", case_id, case.detector, case.host, route.value)
+            next_tick = time.time() + 60
         if time.time() >= next_follow:  # DHCP moves the PC: keep its rules on the address it has now
             p.follow_this_pc()
             next_follow = time.time() + FOLLOW_PC_EVERY
