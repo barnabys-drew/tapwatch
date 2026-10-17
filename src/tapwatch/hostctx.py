@@ -269,10 +269,17 @@ def names_match(query: str, names: set[str]) -> bool:
 
 
 def case_destinations(case, dns_rows: list[dict]) -> tuple[set[str], set[str]]:
-    """(addresses, names) the case is about: its indicators, split into bare addresses and names, plus the
-    addresses the PC's own DNS lookups of those names returned in the window. Empty when the case names nothing
-    (a scan, an upload spike): then every connection in the window is the case's context."""
+    """(addresses, names) the case is about: the detector's own `dests` fact (the address the case's connection
+    went to, exact), its indicators split into bare addresses and names, plus the addresses the PC's own DNS lookups
+    of those names returned in the window (a fallback: a connection made from a cached lookup has no answer in the
+    window, review of #117). Empty when the case names nothing (a scan, an upload spike): then every connection in
+    the window is the case's context."""
     ips, names = set(), set()
+    for a in [*(case.facts.get("dests") or []), case.facts.get("server")]:
+        try:
+            ips.add(str(ipaddress.ip_address(str(a).strip())))
+        except ValueError:
+            continue
     for n in case.indicators:  # a bare-IP indicator (an HTTP Host header, an IP intel hit) is an address, not a name
         try:
             ips.add(str(ipaddress.ip_address(n.strip())))

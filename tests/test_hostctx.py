@@ -646,7 +646,10 @@ def test_collect_scopes_the_window_to_the_cases_destination(tmp_path):
     assert not facts["host_scoped"] and facts["host_conns"] == 2 and facts["min_route"] == "alert"
     from tapwatch.summarizer import Assets, summarize
     assert "every program the PC connected out with" in summarize(case(facts={"channel": "callback", "via": "DNS", **facts}), Assets())
+    # the detector's own `dests` fact scopes without any lookup in the window (a cached-lookup connection has none);
     # a bare-IP indicator scopes by itself; a case that names nothing (a scan) never does
+    exact = hc.collect(case(facts={"channel": "callback", "via": "DNS", "dests": [DST]}), conns, [], now=T0)
+    assert exact["host_scoped"] and exact["host_conns"] == 1 and "min_route" not in exact
     assert hc.collect(case(indicators=[DST]), conns, [], now=T0)["host_conns"] == 1
     assert hc.collect(case(indicators=[]), conns, [], now=T0)["host_conns"] == 2
     # the destination resolved to an address the window has no row for (CDN rotation): the connections fall back

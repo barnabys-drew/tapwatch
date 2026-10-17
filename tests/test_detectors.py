@@ -258,6 +258,39 @@ def test_cases_carry_the_site_category_from_the_offline_list():
         set_categories({})
 
 
+def test_cases_name_the_outside_address_they_are_about():
+    """`dests`: the exact address the case's connection went to, so host context scopes to it instead of inferring
+    the destination from DNS answers in the window (review of #117, 2026-10-17)."""
+    from tapwatch.detectors import DnsBypass, TakeoverChannel, TlsOddities
+    (b,) = run(Beaconing(), [conn(T0 + i * 60) for i in range(15)])
+    assert b.facts["dests"] == ["203.0.113.5"]
+    odd = {"_type": "ssl", "ts": T0, "id.orig_h": "192.168.50.10", "id.resp_h": "198.51.100.7", "id.resp_p": 4443,
+           "established": True, "validation_status": "self signed certificate"}
+    assert run(TlsOddities(Warmup(0)), [odd])[0].facts["dests"] == ["198.51.100.7"]
+    (i,) = run(IOCMatch({"203.0.113.5"}, set()), [conn(T0)])
+    assert i.facts["dests"] == ["203.0.113.5"]
+    resolver = dict(conn(T0, dst="203.0.113.53", port=53), service="dns")
+    resolver["proto"] = "udp"
+    assert run(DnsBypass(Warmup(0)), [resolver])[0].facts["dests"] == ["203.0.113.53"]
+    nd = NewExternalDomain(Warmup(0), window=300)
+    hello = dict(dns(T0, "one.example"), answers=["203.0.113.11", "203.0.113.12", "cname.example"])
+    tls = {"_type": "ssl", "ts": T0 + 1, "id.orig_h": "192.168.50.10", "id.resp_h": "203.0.113.13", "id.resp_p": 443,
+           "established": True, "server_name": "two.example"}
+    (n,) = run(nd, [hello, tls]) + nd.flush()
+    assert n.facts["dests"] == ["203.0.113.11", "203.0.113.12", "203.0.113.13"]   # CNAME answers are not addresses
+    # a window with many names: the addresses behind the three shown names survive the cap of eight
+    nd = NewExternalDomain(Warmup(0), window=300)
+    many = [dict(dns(T0 + k, f"site{k}.example"), answers=[f"203.0.113.{100 + k}"]) for k in range(12)]
+    many.append(dict(dns(T0 + 20, "x7q9zk2pv4m8.example"), answers=["203.0.113.250"]))   # random-looking: shown first
+    (m,) = run(nd, many) + nd.flush()
+    assert len(m.facts["dests"]) == 8 and m.facts["dests"][0] == "203.0.113.250"
+    (tk,) = run(TakeoverChannel(), [dict(dns(T0, "abc.webhook.site"), answers=["203.0.113.21"])])
+    assert tk.facts["dests"] == ["203.0.113.21"]
+    # nothing outside and known: no key at all, so a scan or an upload spike keeps the whole window as its context
+    from tapwatch.detectors import dests
+    assert dests("192.168.50.1", "", None, "not-an-ip") == {}
+
+
 def test_first_seen_rules_quiet_during_warmup():
     w = Warmup(600)
     nd, dev = NewExternalDomain(w), NewDevice(w)

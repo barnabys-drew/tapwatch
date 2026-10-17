@@ -171,6 +171,15 @@ def decode(obj):
 PERMANENT = -1.0  # a `reported` entry learned during warm-up: it never expires
 
 
+def dests(*addrs) -> dict:
+    """{"dests": [...]} naming the outside addresses a case is about, or {} when none is known. Host context
+    scopes the PC's connection rows to these (hostctx.case_destinations); until 2026-10-17 it inferred them from
+    the DNS answers in the window, which misses a connection made from a cached lookup (review of #117)."""
+    out = list(dict.fromkeys(a for a in addrs if isinstance(a, str) and a and _is_ip(a) and not is_internal(a)))
+    return {"dests": out[:8]} if out else {}  # first-seen order, so a caller can put the ones that matter first
+
+
+
 def still_reported(reported: dict, key, ts: float, ttl: float) -> bool:
     """Was `key` reported within `ttl` seconds before `ts`, or learned for good (PERMANENT)?
 
@@ -318,7 +327,7 @@ class IOCMatch(Detector):
         if hit is None:
             return []
         return [Case(self.name, src, rec["ts"], f"Contact with threat-intel listed {what}",
-                     {"what": what, "port": rec.get("id.resp_p")}, [hit],
+                     {"what": what, "port": rec.get("id.resp_p"), **dests(rec.get("id.resp_h"))}, [hit],
                      must_alert=True, base_severity=5)]
 
 
@@ -519,7 +528,7 @@ class Beaconing(Detector):
         me = self.device.get(src, src)
         shared_by = len({self.device.get(ip, ip) for ip in self.users.get(dom, set())} - {me}) if dom else 0
         popular = dom in self.popular
-        facts = {"interval_s": round(mean), "count": len(times), "span_s": round(times[-1] - times[0]),
+        facts = {**dests(dst), "interval_s": round(mean), "count": len(times), "span_s": round(times[-1] - times[0]),
                  "regularity": "very regular" if cv < 0.05 else "regular", "port": port,
                  "service": rec.get("service") or "unknown", "popular": popular, "shared_by": shared_by,
                  "dedupe": f"{key}:{port}"}
@@ -1064,6 +1073,8 @@ class NewExternalDomain(Detector):
         win = self.pending.setdefault(host, {"start": rec["ts"], "items": []})
         cat, cat_source = resolve(name)  # the offline list, else the model's cached or fresh answer (categories.py)
         win["items"].append({"name": name, "via": "TLS" if rec["_type"] == "ssl" else "DNS",
+                             "ips": [rec.get("id.resp_h")] if rec["_type"] == "ssl"
+                             else [a for a in (rec.get("answers") or []) if _is_ip(a)][:4],
                              # numbered CDN hosts under widely used domains aren't DGA (home eval 2026-10-13:
                              # googlevideo, microsoftaik, cdn77 made 16 of 26 digest items)
                              "random": looks_random(name) and dom not in self.popular,
@@ -1081,6 +1092,8 @@ class NewExternalDomain(Detector):
     def _case(self, host: str, win: dict) -> Case:
         items = win["items"]
         n = len(items)
+        # Show the odd ones first: random-looking, then ones no other device uses.
+        shown = sorted(items, key=lambda i: (not i["random"], i["others"] > 0))[:3]
         facts = {"count": n, "window_min": round(self.window / 60),
                  "random": sum(i["random"] for i in items),
                  "shared": sum(i["others"] > 0 for i in items),
@@ -1088,14 +1101,14 @@ class NewExternalDomain(Detector):
                  "popular_known": bool(self.popular),
                  "via": items[0]["via"], "max_others": max(i["others"] for i in items),
                  "dedupe": f"{int(win['start'] // self.window)}",
+                 # the addresses behind the three names the case shows come first, so the cap keeps them
+                 **dests(*(ip for i in shown + items for ip in i.get("ips") or ())),
                  # what kind of sites, from the offline category list or the model: distinct, most frequent first,
                  # and where the kinds came from ("list", "ai") so the summary can say which
                  "categories": [c for c, _ in Counter(i["category"] for i in items if i.get("category")).most_common(3)],
                  "category_sources": [s for s in ("list", "ai")
                                       if any(i.get("category") and i.get("category_source") == s for i in items)]}
         title = "First contact with a new domain" if n == 1 else f"First contact with {n} new domains"
-        # Show the odd ones first: random-looking, then ones no other device uses.
-        shown = sorted(items, key=lambda i: (not i["random"], i["others"] > 0))[:3]
         return Case(self.name, host, win["start"], title, facts, [i["name"] for i in shown],
                     base_severity=2 if facts["random"] else 1)
 
@@ -1524,7 +1537,7 @@ class CleartextAuth(Detector):
         # one day, 2026-10-15, and a per-address rule matched none of them). Inside the LAN the server
         # is the point, so it stays in the key.
         return [Case(self.name, src, rec["ts"], "Unencrypted login or protocol",
-                     {"what": what, "port": rec.get("id.resp_p"), "outside": outside, "server": dst,
+                     {"what": what, "port": rec.get("id.resp_p"), "outside": outside, "server": dst, **dests(dst),
                       "dedupe": f"{what}|outside" if outside else f"{what}|{dst}"},
                      indicators, base_severity=severity)]
 
@@ -1650,7 +1663,7 @@ class OddPort(Detector):
             return []
         self.reported[(who, pp, new_port)] = rec["ts"]
         return [Case(self.name, src, rec["ts"], "Connection on an unusual port" if new_port else "Unusually long connection",
-                     {"proto": proto, "port": port, "service": rec.get("service") or "unknown",
+                     {"proto": proto, "port": port, "service": rec.get("service") or "unknown", **dests(dst),
                       "new_for_house": new_port, "minutes": round(dur / 60),
                       "mb_out": round((rec.get("orig_bytes") or 0) / 1e6, 1),
                       "mb_in": round((rec.get("resp_bytes") or 0) / 1e6, 1),
@@ -1703,7 +1716,7 @@ class DnsBypass(Detector):
             return []
         encrypted = how != "plain DNS to an outside server"
         return [Case(self.name, src, rec["ts"], "DNS bypassing the home resolver",
-                     {"how": how, "encrypted": encrypted, "dedupe": how},
+                     {"how": how, "encrypted": encrypted, "dedupe": how, **dests(dst)},
                      [rec["server_name"]] if kind == "ssl" else [], base_severity=3 if encrypted else 2)]
 
 
@@ -1906,7 +1919,7 @@ class TlsOddities(Detector):
             return []
         cat, cat_source = resolve(rec.get("server_name"))
         return [Case(self.name, src, ts, "Unusual encrypted connection",
-                     {**signs, "score": score, "port": port, "dedupe": f"{dst}:{port}",
+                     {**signs, "score": score, "port": port, "dedupe": f"{dst}:{port}", **dests(dst),
                       "category": cat, "category_source": cat_source},
                      [rec["server_name"]] if rec.get("server_name") else [], base_severity=2 if score < 4 else 3)]
 
@@ -2018,16 +2031,17 @@ class TakeoverChannel(Detector):
                 self.lookups.clear()
             self.lookups[host] = (rec["ts"], hit, name, {a for a in (rec.get("answers") or []) if _is_ip(a)})
             return []
-        return self._raise(host, rec["ts"], channel, hit, name, via)
+        return self._raise(host, rec["ts"], channel, hit, name, via,
+                           *((rec.get("answers") or []) if kind == "dns" else [rec.get("id.resp_h")]))
 
     LOOKUP_FOLLOW = 60  # seconds between a remote-control vendor lookup and a connection to its answer
 
-    def _raise(self, host: str, ts: float, channel: str, hit: str, name: str, via: str) -> list[Case]:
+    def _raise(self, host: str, ts: float, channel: str, hit: str, name: str, via: str, *addrs) -> list[Case]:
         self.reported.add((host, hit))
         always = channel in self.ALWAYS
         indicators = [hit] + ([name] if name.lower().rstrip(".") != hit else [])  # service first: stable key
         return [Case(self.name, host, ts, "Possible takeover: " + channel.replace("_", " ") + " service",
-                     {"channel": channel, "via": via, "dedupe": hit},
+                     {"channel": channel, "via": via, "dedupe": hit, **dests(*addrs)},
                      indicators, must_alert=always, base_severity=5 if always else 4)]
 
     def _followed_lookup(self, rec: dict) -> list[Case]:
@@ -2036,7 +2050,7 @@ class TakeoverChannel(Detector):
         if not p or dst not in p[3] or ts - p[0] > self.LOOKUP_FOLLOW or (host, p[1]) in self.reported:
             return []
         del self.lookups[host]
-        return self._raise(host, ts, "remote_control", p[1], p[2], "DNS, then a connection to the answer")
+        return self._raise(host, ts, "remote_control", p[1], p[2], "DNS, then a connection to the answer", dst)
 
     def _expected(self, host: str, service: str) -> dict | None:
         e = self.expected.get((host, service))
