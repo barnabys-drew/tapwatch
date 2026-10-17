@@ -3,6 +3,16 @@
 _Measured 2026-10-13 with jev-1.13.0, `audience: office` wording (the default; see [Wording](#wording-office-vs-home)
 for why). Reproduce the malware side with `eval/public_captures.sh` and `tapwatch eval`._
 
+## Self-check (scripted, every run)
+
+`tapwatch selfcheck` pushes 18 synthetic shapes through the detectors as configured, rules only: 15 attack shapes
+the owner used to stage by hand (a 60 s heartbeat, a port scan, an admin-port sweep, a DNS tunnel, internet
+exposure, a rogue DHCP server, a callback-catcher lookup, a cleartext FTP login, DNS bypass, a bare-address TLS
+stack, and the five endpoint rules R17, R19, R20, R21 and R22) and 3 false-positive shapes that must stay under
+alert (the split UDP voice call of #63, WebRTC media of #417, reset-after-data ad sessions of #363). It prints one
+line per shape and a detection rate, and exits 1 on a regression; `tests/test_selfcheck.py` runs the same corpus
+in CI, so the number is checked on every push. Added 2026-10-17 at 15/15 detected, 3/3 quiet.
+
 ## Summary
 
 | | Rules only | With Jev |
