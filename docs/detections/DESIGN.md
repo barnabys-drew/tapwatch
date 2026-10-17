@@ -703,6 +703,29 @@ can't read a quarter of valid signatures, and the encoded-command signal must be
 Linux rules (#28), and the host ↔ network correlation in #26 (a `host_lolbin` case and a `new_domain` case on
 the same PC within minutes becoming one story). Each builds on the same `HostDetector` base and `EndpointState`.
 
+### R22 A log feed has stopped arriving (`feed_silence`) — **built**
+- **Threat:** the monitor going quiet without anyone noticing. Measured 2026-10-14 and 2026-10-16: osquery's
+  watchdog denylisted the Windows socket query for 24 h each time, and R21 plus the Windows host context were
+  blind for a day before a person went looking.
+- **Data:** every record's arrival, by feed: Zeek's `conn` and `dns`; each endpoint agent's `outbound_connections`,
+  `sysmon_events`, `host_addresses`, `process_signatures` (Windows) or `outbound_connections_ctx`,
+  `bpf_process_events`, `bpf_connections`, `host_addresses` (Linux/WSL). The two agents share query names, so a
+  feed is (log directory, query). `run` ticks every detector once a minute, records flowing or not.
+- **Logic:** `detectors.FeedSilence`. Silence runs from the feed's last row or tapwatch's own start, whichever is
+  later, so a restart gives a full grace period and a feed already dead at start is still reported. Limits from
+  the measured gaps over 2026-10-15..17: conn and dns 20 min (99.9th-percentile gap 0.1 min; the one long gap,
+  34 min, was the box's reboot and should be reported); Windows sockets 10 min (ran every 1.1 min until it
+  stopped), Sysmon 15 (1.3), the 5-minute snapshots 20 (5.4); WSL socket history 30 (8.1), eBPF execs 15 (2.1),
+  eBPF connections 60 (idles 16 min at night), its address snapshot 30 (12.4). Inventory queries and the router
+  syslog (178 rows in two days) are too sparse to watch. Config `detectors.feed_silence`: `minutes: {feed: n}`,
+  `ignore: [feed]`, `enabled: false`.
+- **Baseline:** none; the limits are fixed and measured.
+- **Dedupe:** one case per silence per feed; a row arriving re-arms it.
+- **FPs:** a reboot, osquery or Zeek restarting, the PC asleep. Each is worth knowing; suppress per feed if not.
+- **Route:** ALERT (severity 4), code-only, suppressible by feed name. Jev is not asked: nothing to weigh.
+- **Safe test:** stop osqueryd (`Stop-Service osqueryd`, elevated) and wait eleven minutes; or `ignore` nothing and
+  put the PC to sleep for half an hour.
+
 ### Dev-workstation profile (built)
 `dev_profile.hosts` marks machines that run coding agents. For those hosts only, `beaconing`,
 `dns_anomaly` and `new_domain` skip traffic **tied by name** (DNS query or TLS SNI) to a dev

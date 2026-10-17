@@ -291,6 +291,51 @@ def test_cases_name_the_outside_address_they_are_about():
     assert dests("192.168.50.1", "", None, "not-an-ip") == {}
 
 
+def test_feed_silence_reports_a_stopped_feed_once_and_rearms_when_it_resumes():
+    """R22 (2026-10-17): osquery denylisted the Windows socket query twice and nobody noticed for a day."""
+    from tapwatch.detectors import FeedSilence
+    win = "/mnt/c/Program Files/osquery/log"
+    det = FeedSilence({"conn": 1200, f"{win}|outbound_connections": 600}, host="192.168.50.10", started=T0)
+    sockets = {"_type": "osquery", "_log": win, "name": "outbound_connections", "ts": T0 + 30, "action": "added"}
+    assert det.feed(conn(T0 + 10)) == [] and det.feed(sockets) == []
+    assert det.tick(T0 + 600) == []                                   # 570 s since the last socket row: under 600
+    (c,) = det.tick(T0 + 700)                                         # 670 s: the socket feed is silent
+    assert (c.detector, c.host, c.base_severity, c.indicators) == ("feed_silence", "192.168.50.10", 4, ["outbound_connections"])
+    assert c.facts["source"] == "the Windows agent" and c.facts["silent_minutes"] == 11 and not c.facts["never_seen"]
+    assert det.tick(T0 + 900) == []                                   # one case per silence
+    det.feed(dict(sockets, ts=T0 + 1000))                             # it resumed
+    assert det.tick(T0 + 1100) == []
+    # conn: silent since its last row at T0 + 10, limit 20 min; the socket feed is 300 s into its new life
+    assert [x.indicators for x in det.tick(T0 + 1300)] == [["conn.log"]]
+    (again,) = det.tick(T0 + 1700)                                    # the socket feed stopped again: a new case
+    assert again.indicators == ["outbound_connections"] and again.facts["silent_minutes"] == 12
+    # a feed never seen since start is measured from the start, so a feed dead at start is still reported
+    fresh = FeedSilence({f"{win}|sysmon_events": 900}, started=T0)
+    assert fresh.tick(T0 + 899) == []
+    (never,) = fresh.tick(T0 + 900)
+    assert never.facts["never_seen"] and never.host == "this PC" and never.facts["dedupe"] == f"{win}|sysmon_events"
+    # a replayed row has no log directory and belongs to no expected feed; other query names are not watched
+    fresh.feed({"_type": "osquery", "name": "sysmon_events", "ts": T0 + 950})
+    fresh.feed({"_type": "osquery", "_log": win, "name": "listening_ports", "ts": T0 + 950})
+    assert fresh.last == {}
+
+
+def test_feed_expectations_follow_the_agents_that_exist(tmp_path):
+    from tapwatch.detectors import feed_expectations
+    win = tmp_path / "mnt" / "c" / "osquery" / "log"; win.mkdir(parents=True)
+    (win / "osqueryd.results.log").write_text("")
+    wsl = tmp_path / "var" / "log" / "osquery"; wsl.mkdir(parents=True)
+    (wsl / "osqueryd.results.log").write_text("")
+    cfg = {"host_context": {"results_logs": [str(win / "osqueryd.results.log"), str(wsl / "osqueryd.results.log"),
+                                             str(tmp_path / "missing" / "osqueryd.results.log")]},
+           "detectors": {"feed_silence": {"minutes": {"conn": 45}, "ignore": ["bpf_connections"]}}}
+    exp = feed_expectations(cfg)
+    assert exp["conn"] == 2700 and exp["dns"] == 1200
+    assert exp[f"{wsl}|outbound_connections_ctx"] == 1800 and f"{wsl}|bpf_connections" not in exp
+    # the Windows set is chosen by the /mnt/ prefix of the real layout; this tmp path reads as Linux
+    assert f"{win}|bpf_process_events" in exp and not any(k.startswith(str(tmp_path / "missing")) for k in exp)
+
+
 def test_first_seen_rules_quiet_during_warmup():
     w = Warmup(600)
     nd, dev = NewExternalDomain(w), NewDevice(w)

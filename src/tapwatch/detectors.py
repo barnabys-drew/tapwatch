@@ -13,6 +13,7 @@ import logging
 import math
 import re
 import statistics
+import time
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterable
 from datetime import datetime
@@ -223,6 +224,11 @@ class Detector:
 
     def flush(self) -> list[Case]:
         """Emit anything still buffered (end of a replay). Most detectors buffer nothing."""
+        return []
+
+    def tick(self, now: float) -> list[Case]:  # pragma: no cover - interface
+        """Once a minute while `run` follows live logs, records or not: for rules about the passage of time
+        (R22 feed_silence). Replays never tick."""
         return []
 
     # Per-device baselines are keyed on the device identity (name:<hostname>, mac:<address>, else
@@ -2216,6 +2222,103 @@ def _expected_services(takeover_cfg: dict) -> dict[str, set[str]]:
     return dict(out)
 
 
+class FeedSilence(Detector):
+    """R22. A log feed tapwatch relies on has stopped arriving, so the rules that read it are blind.
+
+    The monitor did not monitor itself: osquery's watchdog denylisted the Windows socket query on 2026-10-14
+    and again on 2026-10-16, and R21 and the Windows host context were blind for a day each time before a
+    person noticed. Each expected feed gets a longest-allowed silence; `tick` (once a minute) raises one case
+    per silence, and a row arriving again re-arms it. Silence is measured from the feed's last row or from
+    tapwatch's own start, whichever is later, so a restart gives every feed a full grace period and a feed
+    that was already dead at start is still reported once the period passes.
+
+    Limits, from the gaps measured over 2026-10-15..17 (two days): Zeek's conn and dns rows never paused
+    over 0.1 min at the 99.9th percentile; the one long gap was the box's reboot (34 min), which this rule
+    should report. The Windows socket query ran every 1.1 min until it stopped, Sysmon every 1.3, the
+    5-minute snapshots within 5.4; WSL's eBPF connections idle up to 16 min at night and its 1-minute
+    socket history up to 8. Inventory queries (hourly to daily) and the router syslog (178 rows in two
+    days) are too sparse to watch and are not expected.
+    """
+
+    name = "feed_silence"
+    ZEEK: ClassVar[dict[str, int]] = {"conn": 1200, "dns": 1200}
+    WINDOWS: ClassVar[dict[str, int]] = {"outbound_connections": 600, "sysmon_events": 900, "host_addresses": 1200,
+                                         "process_signatures": 1200}
+    LINUX: ClassVar[dict[str, int]] = {"outbound_connections_ctx": 1800, "bpf_process_events": 900,
+                                       "bpf_connections": 3600, "host_addresses": 1800}
+
+    def __init__(self, expected: dict[str, float], host: str = "this PC", started: float | None = None):
+        self.expected = dict(expected)   # feed key -> longest allowed silence, seconds
+        self.host = host
+        self.started = time.time() if started is None else started
+        self.last: dict[str, float] = {}
+        self.silent: set[str] = set()
+
+    @staticmethod
+    def key(rec: dict) -> str:
+        """Zeek feeds by record type; agent feeds by log directory and query name (two agents share the names)."""
+        if rec.get("_type") == "osquery":
+            return f"{rec.get('_log', '')}|{rec.get('name', '')}"
+        return str(rec.get("_type", ""))
+
+    @staticmethod
+    def describe(key: str) -> tuple[str, str]:
+        """(feed name, where it comes from) for the case."""
+        if "|" in key:
+            where, name = key.split("|", 1)
+            return name, "the Windows agent" if where.startswith("/mnt/") else "the Linux agent"
+        return f"{key}.log", "the network tap"
+
+    def feed(self, rec: dict) -> list[Case]:
+        key, ts = self.key(rec), rec.get("ts") or 0.0
+        if key in self.expected and ts:
+            self.last[key] = max(self.last.get(key, 0.0), float(ts))
+            self.silent.discard(key)  # resumed: the next silence is a new case
+        return []
+
+    def tick(self, now: float) -> list[Case]:
+        out = []
+        for key, limit in self.expected.items():
+            since = max(self.last.get(key, 0.0), self.started)
+            if key in self.silent or now - since < limit:
+                continue
+            self.silent.add(key)
+            name, where = self.describe(key)
+            out.append(Case(self.name, self.host, now, "A log feed has stopped arriving",
+                            {"feed": name, "source": where, "silent_minutes": round((now - since) / 60),
+                             "limit_minutes": round(limit / 60), "never_seen": key not in self.last,
+                             "dedupe": key},
+                            [name], base_severity=4))
+        return out
+
+
+def feed_expectations(cfg: dict) -> dict[str, float]:
+    """Which feeds R22 expects and how long each may be silent: Zeek's conn and dns, plus the agent feeds of
+    every results log that exists (`host_context.results_logs`), keyed like FeedSilence.key. Config
+    `detectors.feed_silence`: `minutes: {feed: n}` overrides a limit by feed name, `ignore: [feed, ...]` drops one."""
+    from .config import (
+        HOST_LOGS,  # here, not at the top: config imports the modules this one feeds
+    )
+    fs = (cfg.get("detectors") or {}).get("feed_silence") or {}
+    minutes, ignore = fs.get("minutes") or {}, set(fs.get("ignore") or ())
+    out: dict[str, float] = {}
+    for name, secs in FeedSilence.ZEEK.items():
+        out[name] = secs
+    for p in (cfg.get("host_context") or {}).get("results_logs") or HOST_LOGS:
+        if not Path(p).is_file():
+            continue
+        where = str(Path(p).parent)
+        for name, secs in (FeedSilence.WINDOWS if where.startswith("/mnt/") else FeedSilence.LINUX).items():
+            out[f"{where}|{name}"] = secs
+    for key in list(out):
+        name = key.split("|", 1)[-1]
+        if name in ignore:
+            del out[key]
+        elif name in minutes:
+            out[key] = float(minutes[name]) * 60
+    return out
+
+
 def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | None = None,
           popular: set[str] | None = None, assets_table: dict | None = None) -> list[Detector]:
     d = cfg.get("detectors", {})
@@ -2255,6 +2358,8 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
         UdmIps(),
         UdmAdmin(warmup, **d.get("udm_admin", {})),
     ]
+    if (d.get("feed_silence") or {}).get("enabled", True):  # R22: the feeds themselves, ticked by `run` once a minute
+        dets.append(FeedSilence(feed_expectations(cfg), host=(cfg.get("host_context") or {}).get("host") or "this PC"))
     if ioc_ips or ioc_domains:
         dets.insert(0, IOCMatch(ioc_ips or set(), ioc_domains or set()))
     for det in dets:
