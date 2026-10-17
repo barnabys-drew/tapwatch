@@ -1879,27 +1879,24 @@ class TlsOddities(Detector):
             return []
         if kind != "ssl" or not rec.get("established"):
             return []
-        if (rec.get("version") or "").startswith("DTLS") and rec.get("client_cert_chain_fps"):
-            # Real-time media (WebRTC's DTLS-SRTP): both ends present self-signed certificates whose fingerprints
-            # were exchanged through the app's signalling, the peer was found by ICE/STUN rather than DNS, and the
-            # port is whatever ICE picked, so all four signs are the protocol's design and the (device, port) memory
-            # never covers the next call. Measured 2026-10-17 over two days of ssl.log: every DTLS session with a
-            # client certificate came from six devices in call-shaped sessions (the baby monitor streaming to a
-            # phone on cellular, 13; the Mac on video calls, 6), and the monitor alone raised eight digest cases
-            # on eight peer ports (#332-#417). This Zeek labels no STUN service (the monitor's flow: 149 unlabelled
-            # UDP rows and 7 "dtls"), so the client certificate is the observable. Server-authenticated DTLS and
-            # TLS with a client certificate (the hub's MQTT on 8883) still score.
-            return []
         src, dst, port = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec.get("id.resp_p")
         if not is_internal(src) or is_internal(dst):
             return []
         who = self.dev_key(src)
         if still_reported(self.reported, (who, port), ts, self.reported_s):
             return []
-        signs = {"no_name": not rec.get("server_name"),
+        # Real-time media (WebRTC's DTLS-SRTP) has no server name and self-signed certificates on both ends by
+        # design: the fingerprints travel through the app's signalling. Measured 2026-10-17 over two days of ssl.log:
+        # every DTLS session with a client certificate was a call (the baby monitor streaming to a phone on cellular,
+        # 13, eight digest cases #332-#417 on eight ICE-chosen ports; the Mac on video calls, 6; four others, 1-4).
+        # Those two signs don't count for that shape; port and address still do, so it stays under the threshold
+        # until another sign (JA4) joins. client_cert_chain_fuids is the Zeek 4/5 name of the field.
+        media = (rec.get("version") or "").startswith("DTLS") and bool(rec.get("client_cert_chain_fps")
+                                                                        or rec.get("client_cert_chain_fuids"))
+        signs = {"no_name": not rec.get("server_name") and not media,
                  "unexplained_ip": ts - self.answered.get(dst, -1e18) > 3600,
                  "odd_port": port != 443,
-                 "bad_cert": rec.get("validation_status") in self.BAD_CERT}
+                 "bad_cert": rec.get("validation_status") in self.BAD_CERT and not media}
         score = sum(signs.values())
         if score < self.threshold:
             return []

@@ -918,9 +918,12 @@ def test_tls_oddities_skip_dtls_media_with_a_client_certificate():
             "version": "DTLSv12", "established": True, "validation_status": "self signed certificate",
             "cert_chain_fps": ["927f"], "client_cert_chain_fps": ["5ce9"]}
     assert run(det, [call, dict(call, ts=T0 + 60, **{"id.resp_p": 1611})]) == []
-    # server-only DTLS and a TLS session with a client certificate are still the four-sign stack
+    old_zeek = {k: v for k, v in call.items() if k != "client_cert_chain_fps"}
+    assert run(det, [dict(old_zeek, ts=T0 + 90, client_cert_chain_fuids=["F1"], **{"id.resp_p": 1620})]) == []
+    # server-only DTLS, a TLS session with a client certificate, and a row with no version are still the stack
     assert len(run(det, [dict(call, ts=T0 + 120, **{"id.resp_p": 1630, "client_cert_chain_fps": []})])) == 1
     assert len(run(det, [dict(call, ts=T0 + 180, **{"id.resp_p": 1640, "version": "TLSv12"})])) == 1
+    assert len(run(det, [dict(call, ts=T0 + 240, **{"id.resp_p": 1650, "version": None})])) == 1
 
 
 def test_tls_oddities_learned_in_warmup_stay_quiet():
