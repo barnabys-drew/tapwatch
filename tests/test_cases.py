@@ -1,5 +1,6 @@
 """Case management: migration, workflow, suppressions, evidence and the web UI's security."""
 
+import html
 import http.client
 import json
 import re
@@ -319,10 +320,43 @@ def test_hostile_strings_are_escaped_on_every_page(tmp_path):
             assert href.startswith("/"), href
 
 
+def test_stats_tiles_open_the_cases_they_count(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    for i, (disposition, verdict) in enumerate((("true_positive", '{"category": "x"}'), ("false_positive", None),
+                                                ("benign_expected", None), (None, '{"category": "y"}'), (None, None))):
+        cid, _ = make_case(store, facts={"port": 3478 + i, "dedupe": f"port:{3478 + i}"})
+        store.db.execute("UPDATE cases SET disposition = ?, verdict = ?, status = 'closed' WHERE id = ?",
+                         (disposition, verdict, cid))
+    store.db.commit()
+    page = ui.render_stats(store)[1]
+    for href in ("/?status=all&route=all", "/?status=all&route=all&disposition=decided",
+                 "/?status=all&route=all&disposition=noise", "/?status=all&route=all&disposition=true_positive",
+                 "/?status=all&route=all&triaged=1", "/suppressions"):
+        assert f'href="{html.escape(href)}"' in page, href
+
+    def count(**params):
+        text = ui.render_queue(store, Assets(), {k: [v] for k, v in params.items()}, "tok")[1]
+        return text.count('href="/case/')
+
+    assert count(status="all", route="all") == 10          # two links per row: the id and the title
+    assert count(status="all", route="all", disposition="decided") == 6
+    assert count(status="all", route="all", disposition="noise") == 4
+    assert count(status="all", route="all", disposition="true_positive") == 2
+    assert count(status="all", route="all", triaged="1") == 4
+    assert count(status="all", route="all", disposition="junk", triaged="yes") == 10   # unknown values fall away
+    page = ui.render_queue(store, Assets(), {"status": ["all"], "route": ["all"], "disposition": ["noise"]}, "tok")[1]
+    assert "false positive or benign ×" in page   # the bucket shows as a pill that removes itself
+    assert 'name="disposition" value="noise"' in page   # and Apply keeps it
+    page = ui.render_queue(store, Assets(), {"status": ["all"], "route": ["all"], "triaged": ["1"]}, "tok")[1]
+    assert "Jev triaged ×" in page and 'name="triaged" value="1"' in page
+    assert 'href="/?status=all&amp;route=all&amp;detector=beaconing"' in ui.render_stats(store)[1]  # the table too
+
+
 def test_queue_filters_ignore_junk_and_stay_escaped():
     store, _ = hostile_store()
     page = ui.render_queue(store, Assets(), {"status": ['"><script>'], "device": ['"><img onerror=x>'],
-                                             "sort": ["id; DROP TABLE cases"]}, "tok")[1]
+                                             "sort": ["id; DROP TABLE cases"], "disposition": ['"><script>'],
+                                             "triaged": ['"><img onerror=x>']}, "tok")[1]
     assert_inert(page)
     assert store.db.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 1
 
