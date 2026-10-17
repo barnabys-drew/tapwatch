@@ -4,8 +4,11 @@ status: experimental
 description: |
   R21. A tampered or self-signed binary talking out: a patched updater, a repacked installer, a trusted
   program whose file no longer matches its signature. Source: the Windows endpoint agent's
-  `outbound_connections` query (osquery, every minute), which joins process_open_sockets to the authenticode
-  table (agents/config/osquery.conf). Not a Sysmon event, so the log source below is osquery's own.
+  `outbound_connections` query (osquery, every minute: process_open_sockets joined to processes) and its
+  `process_signatures` snapshot (every 5 minutes: the authenticode result per program path that holds a socket),
+  joined by path (agents/config/osquery.conf). Not a Sysmon event, so the log source below is osquery's own.
+  Until 2026-10-17 the socket query checked the signature per socket (15 s), osquery's watchdog killed it and
+  denylisted it for 24 h, and the rule was blind for a day each time.
   osquery's authenticode reports trusted, missing, untrusted or distrusted: a file changed after it was
   signed, a self-signed binary and an expired certificate all come back `untrusted`; `distrusted` is a
   publisher Windows blocks. Measured 2026-10-14/15 on a dev PC (34.5 h): 0 untrusted or distrusted. 7 distinct
@@ -19,7 +22,7 @@ references:
   - https://osquery.io/schema/current/#authenticode
 logsource:
   product: osquery
-  service: outbound_connections
+  service: outbound_connections, process_signatures   # joined by path
 detection:
   bad:
     signature: ['untrusted', 'distrusted']

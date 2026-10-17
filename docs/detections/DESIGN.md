@@ -670,8 +670,13 @@ can't read a quarter of valid signatures, and the encoded-command signal must be
 ### R21 Program with a bad code signature connects out (`host_bad_sig`) — **built**
 - **Threat:** a tampered or self-signed binary talking out: a patched updater, a repacked installer, a trusted
   program whose file no longer matches its signature (T1036.001, T1553.002).
-- **Data:** the Windows agent's `outbound_connections` snapshot (every minute): `name`, `path`, `parent_name`,
-  authenticode `signature` and `signer`, remote address, port.
+- **Data:** the Windows agent's `outbound_connections` rows (every minute: `name`, `path`, `parent_name`, remote
+  address, port) joined by path to its `process_signatures` snapshot (every 5 minutes: authenticode `signature`
+  and `signer` per program that holds a socket). Until 2026-10-17 the socket query carried the signature, checked
+  per socket: 15 s on a quiet PC, so osquery's watchdog killed it and denylisted it by name for 24 h (twice: 10-14
+  and 10-16), leaving this rule and the Windows host context blind for a day each time. Per path it is 5.8 s.
+  Either side can arrive first: a connection whose signature is known fires at once; a bad signature arriving
+  within 10 minutes of the program's last connection fires then. Older agents' rows that carry `signature` work.
 - **Logic:** `rules/R21-bad-signature-connects.yml`. osquery's authenticode reports four results: `trusted`,
   `missing`, `untrusted` and `distrusted`. A file changed after it was signed (a hash mismatch), a self-signed
   or self-built binary and an expired certificate all come back `untrusted`; `distrusted` is a publisher
@@ -688,8 +693,10 @@ can't read a quarter of valid signatures, and the encoded-command signal must be
 - **Jev:** none (the summary stays on the box). The signer name is kept as a local fact, quoted like a program
   name: on a self-signed certificate it can be the owner's own name, so it is never a title or an indicator.
 - **Safe test:** sign a copy of `curl.exe` with a test certificate (`New-SelfSignedCertificate` and
-  `Set-AuthenticodeSignature`) and fetch example.com → `untrusted` → alert. Appending one byte to a copy of a
-  signed program gives the same result (osquery folds the hash mismatch into `untrusted`).
+  `Set-AuthenticodeSignature`) and fetch example.com → `untrusted` → alert. Or flip one byte inside a copy of a
+  signed program's body: osquery reports the hash mismatch as `untrusted` and the binary still runs. Appending
+  bytes instead makes it say `missing`, which this rule ignores (measured 2026-10-17). The connection must be
+  open when the 5-minute signature snapshot runs, so fetch something large with `curl --limit-rate 1k`.
 
 **Not built yet, deliberately:** a standalone unsigned-program rule (see R21), the persistence snapshots
 (`scheduled_tasks`, `services`, `startup_items` diffs: they need a learned baseline and the warmup plumbing),
