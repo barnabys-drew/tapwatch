@@ -877,7 +877,7 @@ def test_gone_curl_under_an_agent_thread_without_markers_is_still_the_agents(tmp
     from tapwatch.summarizer import Assets, summarize
     text = summarize(case(indicators=[], facts={"channel": "callback", "via": "DNS", **facts}), Assets())
     assert "attendance could not be read" in text and "nobody was attending" not in text
-    assert "by address, not by name" in text
+    assert "the match was by address" in text
 
 
 def agent_thread_log(tmp_path, **thread_cols):
@@ -934,6 +934,34 @@ def test_chain_only_owner_with_an_ip_match_stays_uncorroborated(tmp_path):
     facts = hc.collect(case(indicators=[]), [out_conn(T0)], [], now=T0 + 3600)
     assert facts["host_matched_by"] == "ip" and facts["host_owner_named_dest"]
     assert facts["host_who"] == "owner_using_agent" and not facts["host_corroborated"]
+
+
+def test_an_ip_indicator_is_an_address_needle_not_a_name(tmp_path):
+    # an HTTP Host header or intel hit can carry a bare IP; as a "name" its base domain would be the two-octet
+    # substring "113.50", which matches almost anything, and the chain-only path would corroborate on it
+    log = agent_thread_log(tmp_path)
+    write_transcript(tmp_path / "t", [prompt(T0 - 60, f"curl {DST} every minute as a heartbeat"),
+                                      tool(T0 - 1, "Bash", {"command": f"curl -s https://{DST}/"})])
+    hc = HostContext(PC, None, [log], str(tmp_path / "t"))
+    facts = hc.collect(case(indicators=[DST]), [out_conn(T0)], [], now=T0 + 3600)
+    assert facts["host_matched_by"] == "ip" and not facts["host_corroborated"]
+    assert facts["host_who"] == "owner_using_agent"
+
+
+def test_ip_needles_match_whole_addresses(tmp_path):
+    p = write_transcript(tmp_path, [prompt(T0 - 300, "ping 10.0.0.10 and 110.0.0.1 for me"),
+                                    tool(T0 - 240, "Bash", {"command": "curl http://10.0.0.10/ http://110.0.0.1/"})])
+    f = transcript_facts(p, set(), T0, ips={"10.0.0.1"})
+    assert not f["agent_named_dest"] and not f["owner_named_dest"] and "matched_by" not in f
+    f = transcript_facts(p, set(), T0, ips={"10.0.0.10"})
+    assert f["agent_named_dest"] and f["owner_named_dest"] and f["matched_by"] == "ip"
+
+
+def test_transcript_only_summary_carries_the_address_caveat():
+    f = {"host_who": "unknown", "host_matched": 0, "host_transcript_only": True, "host_owner_named_dest": True,
+         "host_matched_by": "ip"}
+    text = summarize(case(facts={"channel": "callback", "via": "DNS", **f}), Assets())
+    assert "could not be tied to a program" in text and "the match was by address" in text
 
 
 @pytest.mark.parametrize("cols", [{"claude_attended": "0"}, {"via_ssh": "1"}])

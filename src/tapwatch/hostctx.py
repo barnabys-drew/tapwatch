@@ -44,6 +44,7 @@ from the Windows agent's log but no Claude markers. Other devices need Fleet.
 from __future__ import annotations
 
 import glob
+import ipaddress
 import json
 import logging
 import os
@@ -553,7 +554,12 @@ def transcript_facts(path: Path, names: set[str], ts: float, ips: set[str] = fro
     Tool calls and prompts are matched against the destination's `names`; the `ips` are used only when the
     case has no name at all, and `matched_by` ("name" | "ip") records which. Measured 2026-10-17 (#379):
     an address needle matched a transcript that mentioned a shared Cloudflare address, not the site."""
-    needles, matched_by = (names, "name") if names else (ips, "ip")
+    matched_by = "name" if names else "ip"
+    # addresses match whole: 10.0.0.1 must not match 10.0.0.10 or 110.0.0.1
+    patterns = [re.compile(rf"(?<![\d.]){re.escape(ip)}(?![\d.])") for ip in ips] if not names else []
+
+    def hit(text: str) -> bool:
+        return any(n in text for n in names) if names else any(p.search(text) for p in patterns)
     prompts: list[tuple[float, str]] = []
     calls: list[tuple[float, str, str, str]] = []  # (time, tool name, input as lowercase JSON, command text)
     try:
@@ -579,7 +585,7 @@ def transcript_facts(path: Path, names: set[str], ts: float, ips: set[str] = fro
                         calls.append((t, c.get("name", ""), json.dumps(inp).lower(), raw))
     except OSError:
         return {"transcript": False}
-    named = [c for c in calls if ts - BEFORE <= c[0] and any(n in c[2] for n in needles)]
+    named = [c for c in calls if ts - BEFORE <= c[0] and hit(c[2])]
     facts: dict = {"transcript": True, "agent_named_dest": bool(named),
                    "agent_busy": any(abs(c[0] - ts) <= AFTER for c in calls)}
     if named:
@@ -589,7 +595,7 @@ def transcript_facts(path: Path, names: set[str], ts: float, ips: set[str] = fro
     if before:
         p_ts, p_text = before[-1]
         facts["minutes_since_prompt"] = round((anchor - p_ts) / 60)
-        facts["owner_named_dest"] = any(n in p_text for n in needles)
+        facts["owner_named_dest"] = hit(p_text)
         facts["outside_content"] = any(
             p_ts <= c[0] <= anchor and (c[1] in OUTSIDE_TOOLS or (c[1].startswith("mcp__")
                                                                   and any(h in c[1].lower() for h in OUTSIDE_TOOL_HINTS)))
@@ -812,7 +818,12 @@ class HostContext:
             lookups_followed += followed
             owners += found
         ips = {r["id.resp_h"] for r in outbound}
-        names = {n.lower().rstrip(".") for n in case.indicators}
+        names = set()
+        for n in case.indicators:  # a bare-IP indicator (an HTTP Host header, an IP intel hit) is an address, not a name
+            try:
+                ips.add(str(ipaddress.ip_address(n.strip())))
+            except ValueError:
+                names.add(n.lower().rstrip("."))
         names |= {(r.get("query") or "").lower() for r in dns_rows if set(r.get("answers") or ()) & ips}
         # Names first; the addresses only when the case has no name at all (#379: a shared address matched
         # the wrong transcript). transcript_facts records which in `matched_by`.

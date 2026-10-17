@@ -329,6 +329,9 @@ def _new_domains(f: dict) -> str:
     return " ".join(parts)
 
 
+BY_ADDRESS = "The case has no name for this destination, so the match was by address; other services can share an address."
+
+
 def _on_the_pc(f: dict) -> str:
     """Host context facts (hostctx.py) as plain sentences. Program names are untrusted (a binary can be named anything)."""
     if not f.get("host_matched") and not f.get("host_lookups_matched"):
@@ -337,6 +340,8 @@ def _on_the_pc(f: dict) -> str:
             text += (" But a coding-agent session on the PC ran a command naming this destination"
                      + (", and the owner's message named it." if f.get("host_owner_named_dest")
                         else "; the owner's message did not name it."))
+            if f.get("host_matched_by") == "ip":
+                text += " " + BY_ADDRESS
         return text
     progs = ", ".join(json.dumps(clean_untrusted(p)) for p in f.get("host_programs", [])) or "unknown"
     what = "holding the connection" if f.get("host_matched") else "that made the DNS lookups"
@@ -357,8 +362,6 @@ def _on_the_pc(f: dict) -> str:
                 mins = f.get("host_minutes_since_prompt")
                 parts.append("The agent ran a command naming this destination"
                              + (f" {mins} minutes after the owner's last message." if mins is not None else "."))
-                if f.get("host_matched_by") == "ip":
-                    parts.append("That match was by address, not by name; other services can share an address.")
             else:
                 parts.append("The agent's log shows no command naming this destination.")
             if f.get("host_session_guessed"):
@@ -366,6 +369,8 @@ def _on_the_pc(f: dict) -> str:
             if "host_owner_named_dest" in f:
                 parts.append("The owner's message named this destination." if f["host_owner_named_dest"]
                              else "The owner's message did not name this destination.")
+            if f.get("host_matched_by") == "ip":
+                parts.append(BY_ADDRESS)
             if f.get("host_outside_content"):
                 parts.append("Between the owner's message and the command, the agent read content from the web.")
     else:
