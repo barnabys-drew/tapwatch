@@ -241,6 +241,12 @@ A network sensor can't tell the owner's coding agent from an attacker using the 
 When the case is on the tapwatch machine, `hostctx.py` asks the machine itself
 (Linux/WSL and macOS with full markers; Windows with process names and code signatures only).
 
+The rows are the PC's connections and lookups within 180 s either side of the case. When the case's destination
+is known (its indicators, or the addresses the PC's own lookups of them returned in the window) only that
+destination's connections are its context (`host_scoped`; lookups narrow to its names the same way, `host_lookups_scoped`); a case that names nothing, or whose destination has no
+row in the window, gets the whole window. Measured 2026-10-17, case #413: a temp-folder test program
+connecting elsewhere in the same window was attributed to an eff.org case and escalated it to alert.
+
 | Fact | Source | Kind |
 |---|---|---|
 | Program holding the connection, its path, parent, redacted command line, on-disk state, container | live osquery (cases under 10 min old) + the agent's 1-minute `outbound_connections_ctx` history | **process proof** |
@@ -321,7 +327,8 @@ Everything lives in one SQLite file (`db_path`, default `tapwatch.db`):
 | `suppressions` | scope, reason, expiry, hit count |
 
 - **Learned state survives restarts.** Each detector lists its learned attributes in `PERSIST`
-  (sliding windows are left out on purpose). `run` restores them at start, saves every 10 minutes,
+  (sliding windows are left out on purpose, except beaconing's beat times: a slow heartbeat needs hours of
+  watching and the alerter restarts on every deploy). `run` restores them at start, saves every 10 minutes,
   and saves again on SIGTERM. All detectors are saved in one transaction. A detector whose saved
   shape no longer fits starts fresh instead of crashing. The 24 h warmup start is saved too.
 - **Additive-only schema.** Migrations only add columns and tables, so an older `run` can keep
