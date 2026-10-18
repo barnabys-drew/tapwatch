@@ -374,22 +374,26 @@ LOCAL_ONLY_SUFFIXES = (".arpa", ".local", ".localdomain", ".lan", ".home", ".int
 HOUSEKEEPING_UDP_PORTS = {3478, 3479, 5349, 41641, 123, *range(19302, 19310)}
 
 
-def jitter_regular(gaps: list[float], min_interval: float = 5) -> bool:
-    """A heartbeat with random sleep jitter, which the CV test misses: C2 frameworks sleep a random 0-50% less than
-    the interval (Cobalt Strike's `jitter`), or the interval plus or minus a share. Measured on synthetic beacons
-    at the 12-beat minimum: CV <= 0.15 caught 4 of 200 with 50% jitter, 0 of 200 with +-40%, 0 of 200 with two
-    missed beats; this test 432/500, 333/500 and 445/500 (and +-25% 499/500).
+JITTER_MAD, JITTER_IN_BAND = 0.2, 0.9   # see jitter_regular and DESIGN.md R04
+
+
+def jitter_regular(gaps: list[float], min_interval: float = 5, max_mad: float = JITTER_MAD,
+                   min_in_band: float = JITTER_IN_BAND) -> float | None:
+    """The interval of a heartbeat with random sleep jitter, which the CV test misses, or None. C2 frameworks sleep
+    a random 0-50% less than the interval (Cobalt Strike's `jitter`), or the interval plus or minus a share.
 
     Missed beats first: a gap near 2 or 3 times the median counts as that many beats (an offline laptop, a dropped
-    check-in). Then three conditions on the folded gaps: the median absolute deviation is at most 20% of the
-    median; at least 90% of gaps lie within +-50% of it; at most 20% of the beats were folded. The robust measure
-    alone is far too loose on a home network (measured 2026-10-17 over two days of conn logs: 1,436 extra pairs,
-    keepalives whose gaps mix a few lengths); with the band and fold limits it was 14 extra pairs next to the 38
-    CV already finds, and 17 of 500 synthetic human-browsing windows (5-400 s gaps). So a jittered case is a
-    digest item at most (Beaconing caps it)."""
+    check-in). Then, on the folded gaps: the median absolute deviation is at most `max_mad` of the median, at least
+    `min_in_band` of the gaps lie within +-50% of it, and at most 20% of the beats were folded. The value returned
+    is the folded median, the beat interval (the mean is inflated by missed beats and skewed by one-sided jitter).
+    Measured on synthetic 11-gap windows (Beaconing's minimum is 10 beats): CV <= 0.15 caught 4/200 with Cobalt
+    Strike-style 50% jitter, 0/200 at +-40%, 0/200 with two missed beats; this test 432/500, 342/500 and 449/500,
+    and 14/500 synthetic human-browsing windows (5-400 s gaps). On two days of home traffic through Beaconing it
+    raised 38 jittered cases next to 17 regular ones, all but 5 popular, shared or of a known class and logged.
+    Tighter limits (MAD <= 0.15, 95% in band) cut that to 21 but lost half the jittered beacons, so these stay."""
     m0 = statistics.median(gaps)
-    if m0 < min_interval:
-        return False
+    if m0 <= 0 or m0 < min_interval:
+        return None
     folded: list[float] = []
     for g in gaps:
         k = round(g / m0)
@@ -400,7 +404,8 @@ def jitter_regular(gaps: list[float], min_interval: float = 5) -> bool:
     m = statistics.median(folded)
     mad = statistics.median(abs(g - m) for g in folded)
     in_band = sum(abs(g - m) <= 0.5 * m for g in folded) / len(folded)
-    return mad <= 0.2 * m and in_band >= 0.9 and (len(folded) - len(gaps)) <= 0.2 * len(folded)
+    ok = mad <= max_mad * m and in_band >= min_in_band and (len(folded) - len(gaps)) <= 0.2 * len(folded)
+    return m if ok else None
 
 
 class Beaconing(Detector):
@@ -423,7 +428,7 @@ class Beaconing(Detector):
     # the 20k-pair bound at 60 beats each: measured 31 MB and about 2 s to encode, every 10 minutes and on stop.
     # The pairs are keyed by source address, not device identity (unlike reported): after a lease change the
     # restored window sits under the old address until _forget_quiet drops it a day later.
-    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "users", "device", "seen", "durations")  # users/device: the shared_by cap
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "reported_jitter", "users", "device", "seen", "durations")  # users/device: the shared_by cap
     DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("reported",)
 
     def __init__(self, min_count: int = 10, min_span: float = 600, max_cv: float = 0.15, min_interval: float = 5,
@@ -446,6 +451,7 @@ class Beaconing(Detector):
         self.seen: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=60))
         self.durations: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=60))
         self.reported: dict[tuple, float] = {}  # (host, port, base domain or address) -> when it was reported
+        self.reported_jitter: dict[tuple, float] = {}  # the same, for jittered cases only (never blocks a regular one)
         self.regular: dict[tuple, set[str]] = defaultdict(set)  # (host, port) -> destinations with regular timing
         self.sni: dict[str, str] = {}  # external ip -> last TLS server name seen
         self.dns: dict[str, str] = {}  # external ip -> name a client looked up to reach it
@@ -554,18 +560,29 @@ class Beaconing(Detector):
         if rec.get("proto") == "udp" and statistics.median(self.durations[pair]) >= 0.8 * mean:
             return []
         cv = statistics.pstdev(gaps) / mean  # coefficient of variation: 0 = perfectly regular
-        jittered = cv > self.max_cv and self.jitter and jitter_regular(gaps, self.min_interval)
+        beat = jitter_regular(gaps, self.min_interval) if cv > self.max_cv and self.jitter else None
+        jittered = beat is not None
         if cv > self.max_cv and not jittered:
             return []
-        self.reported[(who, port, key)] = rec["ts"]
-        if len(self.reported) > 5000:
-            self._prune(rec["ts"])
+        if jittered:
+            # Its own reporting memory: a jittered hit must not use the destination's 7-day slot or the (host, port)
+            # fan-out budget, or a later regular, alert-capable case there is hidden (review of #143: 7 of 20 were).
+            jkey = (who, port, key)
+            if rec["ts"] - self.reported_jitter.get(jkey, -1e18) < self.reported_s:
+                return []
+            self.reported_jitter[jkey] = rec["ts"]
+            if len(self.reported_jitter) > 5000:
+                self.reported_jitter = {k: t for k, t in self.reported_jitter.items() if rec["ts"] - t < self.reported_s}
+        if not jittered:
+            self.reported[(who, port, key)] = rec["ts"]
+            if len(self.reported) > 5000:
+                self._prune(rec["ts"])
         indicators = [name] if name else []
         dom = base_domain(name) if name else ""
         me = self.device.get(src, src)
         shared_by = len({self.device.get(ip, ip) for ip in self.users.get(dom, set())} - {me}) if dom else 0
         popular = dom in self.popular
-        facts = {**dests(dst), "interval_s": round(mean), "count": len(times), "span_s": round(times[-1] - times[0]),
+        facts = {**dests(dst), "interval_s": round(beat if jittered else mean), "count": len(times), "span_s": round(times[-1] - times[0]),
                  "regularity": "jittered" if jittered else "very regular" if cv < 0.05 else "regular", "port": port,
                  "service": rec.get("service") or "unknown", "popular": popular, "shared_by": shared_by,
                  "dedupe": f"{key}:{port}"}
@@ -586,6 +603,11 @@ class Beaconing(Detector):
             facts["known_class"] = cls
         if (cls or popular or jittered) and facts.get("max_route") != "log":
             facts["max_route"] = "digest"  # jittered: a looser test, measured noisier (jitter_regular), so the digest
+        if jittered and (popular or cls):
+            # Measured 2026-10-17, two days through this detector with the live config: 38 jittered cases, 26 already
+            # logged (popular and shared), 7 popular-not-shared and 5 obscure. A popular or known-class service with
+            # loose timing is the measured noise; an obscure destination is what the tier is for.
+            facts["max_route"] = "log"
         return [Case(self.name, src, rec["ts"], "Regular repeating connection to an external host",
                      facts, indicators, base_severity=3)]
 
