@@ -749,7 +749,9 @@ class NewPersistence(HostDetector):
                      "script": False, "shell": False, "signals": [], "url": False, "registry": False}
             return self.emit(ts, f"New {PERSIST_QUERIES[query]} on the PC", facts, 4 if key else 3, facts["program"],
                              (self.state.host, query, _entry_key(entry)))
-        if query == "startup_items" and entry.lower().endswith(".scope"):
+        if (query == "startup_items" and entry.lower().endswith(".scope") and "\\" not in target
+                and not str(c.get("source") or "").upper().startswith("HKEY")):
+            # (Linux rows only: a Windows Run-key value can be named anything, `.scope` included; review of #150.)
             # A systemd scope is transient, made at run time for a container or a login session, never something that
             # starts at boot. Measured 2026-10-18, #811: the Zeek capture container's docker-<id>.scope, new each time
             # the sensor restarts.

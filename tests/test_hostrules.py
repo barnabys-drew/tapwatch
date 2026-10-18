@@ -758,3 +758,7 @@ def test_transient_systemd_scopes_are_not_startup_items():
     scope = persist(T0, "startup_items", name="docker-19b6954697.scope", path="docker-19b6954697.scope", args="",
                     source="systemd", status="active", username="root")
     assert settle(NewPersistence(st()), scope) == []
+    disguised = persist(T0, "startup_items", name="Updater.SCOPE", path=r"C:\Users\Public\evil.exe", args="",
+                        source=r"HKEY_USERS\S-1-5-21-1-2-3-1001\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                        status="enabled", username="u")
+    assert len(settle(NewPersistence(st()), disguised)) == 1                      # a Run key named like a scope still counts

@@ -1494,7 +1494,10 @@ def test_unifi_discovery_answers_to_the_controller_are_not_a_scan():
         r = conn(T0 + i * 0.5, src="192.168.50.44", dst=gw, port=40000 + i * 7, state="S0")
         r.update({"proto": "udp", "id.orig_p": 10001, "orig_bytes": 820})
         recs.append(r)
-    assert run(PortScan(), recs) == []
+    assert run(PortScan(gateways=Gateways({gw})), recs) == []
     for r in recs:
         r["id.orig_p"] = 50000                                                     # the same sweep from any other port
-    assert len(run(PortScan(), recs)) == 1
+    assert len(run(PortScan(gateways=Gateways({gw})), recs)) == 1
+    for r in recs:
+        r["id.orig_p"], r["id.resp_h"] = 10001, "192.168.50.77"                    # `nmap -sU -g 10001` at another host
+    assert len(run(PortScan(gateways=Gateways({gw})), recs)) == 1
