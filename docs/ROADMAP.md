@@ -95,7 +95,7 @@ the Windows path installs on a clean machine from the docs alone, and the README
 | [#7](https://github.com/barnabys-drew/tapwatch/issues/7) | Check the UniFi admin-login mapping against real events | **built** 2026-10-16 ([#88](https://github.com/barnabys-drew/tapwatch/pull/88)): verified against a real admin-access line |
 | [#8](https://github.com/barnabys-drew/tapwatch/issues/8) | Router port-forward and UPnP events enrich internet-exposure cases | **partial** 2026-10-16 ([#88](https://github.com/barnabys-drew/tapwatch/pull/88)): the feed now parses the gateway's real firewall lines; port-forward and UPnP change events still need samples |
 | [#10](https://github.com/barnabys-drew/tapwatch/issues/10) | Measure Jev with `audience: home` wording vs `office` | **done** |
-| [#12](https://github.com/barnabys-drew/tapwatch/issues/12) | Apply `tapwatch explain` suggestions from the case desk | planned |
+| [#12](https://github.com/barnabys-drew/tapwatch/issues/12) | Apply `tapwatch explain` suggestions from the case desk | **done** 2026-10-18: an "Explained by host context" section on the suppressions page with one Apply per group (same rule and closing as `explain --apply`, audited under the user), and a digest line while suggestions wait |
 | [#9](https://github.com/barnabys-drew/tapwatch/issues/9) | Screenshots of the case desk on synthetic data | **done** |
 | [#11](https://github.com/barnabys-drew/tapwatch/issues/11) | Stats page refreshes itself | **done** |
 | [#13](https://github.com/barnabys-drew/tapwatch/issues/13) | Test matrix: Python 3.10–3.13 in CI | **done** |

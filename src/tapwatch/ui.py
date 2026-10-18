@@ -459,6 +459,8 @@ def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str
     verdict = json.loads(r["verdict"]) if r["verdict"] else None
 
     def fact_value(k, v) -> str:
+        if k == "host_program_path" and isinstance(v, str):  # the path names the user: the file name only
+            return e(v.replace("\\", "/").rsplit("/", 1)[-1])
         if k == "correlated" and isinstance(v, list):  # pipeline.correlate: the other side of the story, as links
             return " · ".join(f'<a href="/case/{int(p["id"])}">#{int(p["id"])}</a> {e(p.get("detector", ""))} '
                               f'({e(str(p.get("route", "")))}, {abs(int(p.get("minutes", 0)))} min)'
@@ -560,7 +562,8 @@ def _suppress_form(r, facts: dict, indicators: list, csrf: str) -> str:
     this = f"this device ({dev}, {r['host']})" if dev != r["host"] else f"this device ({r['host']})"
     choices = []
     if facts.get("host_program_path"):  # host context tied every connection to one program
-        choices.append(("device_program", f"{r['detector']} + {this} + program {facts['host_program_path']}"))
+        name = str(facts["host_program_path"]).replace("\\", "/").rsplit("/", 1)[-1]  # the path names the user
+        choices.append(("device_program", f"{r['detector']} + {this} + program {name}"))
     if ind:
         choices.append(("device_indicator", f"{r['detector']} + {this} + {ind}"))
         if dom and dom != ind:  # a named host: offer its whole domain too (zone-02 after zone-01)
@@ -651,7 +654,31 @@ def render_suppressions(store: Store, csrf: str) -> tuple[str, str]:
         '<div class="card empty">No suppression rules yet. Create one from a case page with "Suppress similar".</div>'
     return "Suppressions", ('<h1>Suppressions</h1><p class="sub">Cases matching a rule go to log only. Always-alert '
                             'cases are never suppressed. <code>tapwatch run</code> checks rules for every new case.</p>'
-                            f'<div class="tiles">{tiles}</div>{table}')
+                            f'<div class="tiles">{tiles}</div>{render_explained(store, csrf)}{table}')
+
+
+def render_explained(store: Store, csrf: str) -> str:
+    """`tapwatch explain`'s suggestions (#12): groups of 3+ cases in 30 days, every one assessed likely benign on
+    the PC, one program. Each Apply makes the same program-scoped rule as `explain --apply` (30 days) and closes
+    the group's open cases, audited under the user who pressed it."""
+    from . import explain
+    sugg = explain.suggestions(store)
+    if not sugg:
+        return ""
+    rows = []
+    for g in sugg:
+        program = explain.program_name(g["program"])   # the name only: the path holds the user's name
+        rows.append(f'<tr><td class="mono">{e(g["detector"])}</td><td class="mono">{e(g["host"])}</td>'
+                    f'<td class="mono">{e(program)}</td><td class="mono">{e(g["destination"])}</td>'
+                    f'<td class="num"><b>{g["cases"]}</b> <span class="faint">({len(g["open"])} open)</span></td>'
+                    f'<td>{e(explain.reason(g, name_only=True))}</td>'
+                    f'<td><form method="post" action="/explain/{explain.group_key(g)}/apply">{csrf_field(csrf)}'
+                    f'<button>Apply</button></form></td></tr>')
+    return ('<h2 id="explained">Explained by host context</h2><p class="sub">Cases that keep firing for one program '
+            'the PC checked and found benign. Apply makes a 30-day rule for that program on that device and closes '
+            'the open cases.</p><div class="card flush scroll"><table><thead><tr><th>rule</th><th>device</th>'
+            '<th>program</th><th>destination</th><th class="num">cases</th><th>reason</th><th></th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>')
 
 
 CONF_BUCKETS = [(0.0, 0.6, "under 60%"), (0.6, 0.8, "60–80%"), (0.8, 0.9, "80–90%"), (0.9, 1.01, "90–100%")]
@@ -883,6 +910,7 @@ class App:
 
 CASE_PATH = re.compile(r"^/case/(\d{1,12})(/update|/suppress)?$")
 SUPPRESSION_DELETE = re.compile(r"^/suppressions/(\d{1,12})/delete$")
+EXPLAIN_APPLY = re.compile(r"^/explain/([0-9a-f]{16})/apply$")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1060,6 +1088,13 @@ class Handler(BaseHTTPRequestHandler):
                 if first.get("close"):  # one form: the rule and the case it came from, closed as expected
                     store.update_case(case_id, actor, status="closed", disposition="benign_expected",
                                       note=f"suppressed: rule #{rid}")
+                return self._send(303, location="/suppressions")
+            if m := EXPLAIN_APPLY.match(path):
+                from . import explain
+                g = next((g for g in explain.suggestions(store) if explain.group_key(g) == m.group(1)), None)
+                if g is None:  # applied already, or no longer all likely benign: nothing to do
+                    return self._error(409, "That suggestion is gone: it was applied, or a case in it changed.", sid)
+                explain.apply(store, g, actor=actor, name_only=True)
                 return self._send(303, location="/suppressions")
             if m := SUPPRESSION_DELETE.match(path):
                 store.delete_suppression(int(m.group(1)), actor)
