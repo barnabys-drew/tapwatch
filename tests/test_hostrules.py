@@ -660,6 +660,16 @@ def test_three_discovery_tools_from_one_program_alert_and_a_shell_is_a_digest_it
     no_paths(c)
     (typed,) = run(DiscoveryBurst(st()), start(T0, WHOAMI, CMD), start(T0 + 20, NLTEST, CMD), start(T0 + 40, SYSINFO, CMD))
     assert typed.base_severity == 3 and typed.facts["parent_class"] == "shell"
+    # `cmd /c whoami` from an implant: the shell's own start shows a non-interactive parent, so it alerts
+    det = DiscoveryBurst(st())
+    burst = [start(T0, CMD, ODD, guid="{shell}")] + [
+        dict(start(T0 + 5 + i, p, CMD, guid=f"{{c{i}}}"), columns={**start(T0 + 5 + i, p, CMD, guid=f"{{c{i}}}")["columns"], "parent_guid": "{shell}"})
+        for i, p in enumerate((WHOAMI, NLTEST, SYSINFO))]
+    (implant,) = run(det, *burst)
+    assert implant.base_severity == 4 and implant.facts["parent_started_by"] == "updater.exe"
+    det = DiscoveryBurst(st())
+    burst[0] = start(T0, CMD, r"C:\Windows\explorer.exe", guid="{shell}")
+    assert run(det, *burst)[0].base_severity == 3                                    # a shell Explorer started: typing
 
 
 def test_weak_tools_spread_out_or_alone_raise_nothing_and_a_burst_is_one_case():
@@ -682,8 +692,11 @@ def test_new_extensions_by_what_they_can_reach():
     a, b = settle(det, *rows)
     assert (a.base_severity, a.facts["apis"], a.detector) == (4, ["debugger"], "host_extension")
     assert (b.base_severity, b.facts["apis"]) == (3, ["cookies"])
-    upd = [ext(T0 + 86400, "Coupon finder", "b" * 32, "cookies, storage", "removed"), ext(T0 + 86400, "Coupon finder", "b" * 32, "cookies, storage")]
-    assert settle(det, *upd) == []                                                  # an update is a change, not a new extension
+    upd = [ext(T0 + 86400, "Coupon finder", "b" * 32, "cookies, storage", "removed"), ext(T0 + 86400, "Coupons", "b" * 32, "cookies, storage")]
+    assert settle(det, *upd) == []                                                  # an update (even renamed) is a change
+    opt = ext(T0 + 86400, "Helper", "d" * 32, "storage")
+    opt["columns"]["optional_permissions"] = "debugger"
+    assert settle(det, opt)[0].base_severity == 4                                   # asked for at runtime still counts
     dump = [ext(T0 + 2 * 86400, f"E{i}", str(i) * 32, "cookies") for i in range(DUMP_MIN)]
     assert settle(det, *dump) == []                                                 # the first run lists everything
 
@@ -695,4 +708,4 @@ def test_a_new_wmi_consumer_is_an_alert_whatever_it_runs():
     assert c.base_severity == 4 and c.facts["kind"] == "WMI event subscription" and c.facts["program"] == "cmd.exe"
     script = persist(T0, "wmi_persistence", kind="script", name="Beacon", action="VBScript", args="")
     (s,) = settle(NewPersistence(st()), script)
-    assert s.base_severity == 4 and s.facts["script"] and s.facts["program"] == "vbscript"
+    assert s.base_severity == 4 and s.facts["script"] and s.facts["program"] == "vbscript" and s.facts["folder"] == "unknown"

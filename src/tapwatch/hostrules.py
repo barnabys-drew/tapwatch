@@ -716,8 +716,9 @@ class NewPersistence(HostDetector):
             # is an alert, whatever it runs.
             first = (_target_tokens(target) or [""])[0]
             prog = _basename(first).lower() or str(c.get("action") or "script").lower()
+            script = c.get("kind") == "script"
             facts = {"kind": PERSIST_QUERIES[query], "entry": entry[:120], "program": prog,
-                     "folder": win_folder_class(first) if first else "unknown", "script": c.get("kind") == "script",
+                     "folder": "unknown" if script or not first else win_folder_class(first), "script": script,
                      "shell": prog in WIN_SHELLS or prog in WIN_LOLBINS, "signals": [], "url": "http" in target.lower(),
                      "registry": False}
             return self.emit(ts, "New WMI event subscription on the PC", facts, 4, prog or "wmi",
@@ -780,6 +781,8 @@ DISCOVERY_STRONG = {"whoami.exe", "systeminfo.exe", "nltest.exe", "net.exe", "ne
 DISCOVERY_WEAK = {"ipconfig.exe", "netstat.exe", "nslookup.exe", "route.exe", "hostname.exe", "tasklist.exe",
                   "getmac.exe"}
 RECON_WINDOW = 300
+INTERACTIVE_PARENTS = {"explorer.exe", "windowsterminal.exe", "openconsole.exe", "conhost.exe", "code.exe",
+                       "wezterm-gui.exe", "alacritty.exe"}   # what starts a shell a person types in
 
 
 class DiscoveryBurst(HostDetector):
@@ -813,6 +816,7 @@ class DiscoveryBurst(HostDetector):
         self.recent[parent.lower()] = seen[-30:]
         if len(self.recent) > 500:
             self.recent = {k: v for k, v in self.recent.items() if v and ts - v[-1][0] <= RECON_WINDOW}
+            self.fired = {k: t for k, t in self.fired.items() if ts - t <= RECON_WINDOW}
         tools = sorted({p for _, p in seen})
         if len(tools) < 3 or len(set(tools) & DISCOVERY_STRONG) < 2:
             return []
@@ -820,8 +824,15 @@ class DiscoveryBurst(HostDetector):
             return []   # the same burst keeps going: one case
         self.fired[parent.lower()] = ts
         pclass = parent_class(parent)
-        severity = 3 if pclass == "shell" else 4
+        # A shell parent is someone typing only if that shell was started by Explorer or a terminal: an implant
+        # runs `cmd /c whoami` too (review of #147). The shell's own start is known when it began within the last
+        # ten minutes (EndpointState); a long-open terminal is not, and keeps the digest.
+        shell_start = self.state.start_of(c.get("parent_guid") or "", ts)
+        interactive = shell_start is None or shell_start.parent.lower() in INTERACTIVE_PARENTS
+        severity = 3 if pclass == "shell" and interactive else 4
         facts = {"programs": tools[:8], "parent": parent, "parent_class": pclass, "count": len(tools)}
+        if shell_start is not None:
+            facts["parent_started_by"] = shell_start.parent
         return self.emit(ts, "Burst of discovery commands on the PC", facts, severity, parent,
                          (self.state.host, parent.lower()))
 
@@ -856,8 +867,15 @@ class BrowserExtension(NewPersistence):
     def entry_of(query: str, c: dict) -> str:
         return str(c.get("name") or "")
 
+    def key(self, query: str, c: dict) -> tuple:
+        """The identifier alone: an update that renames or relocalises the extension is the same extension. The
+        4-tuple shape matches R23's saved state."""
+        return (self.state.host, query, "", self.target_of(query, c))
+
     def judge(self, query: str, c: dict, ts: float) -> list[Case]:
-        perms = {p.strip().lower() for p in re.split(r"[,\s]+", str(c.get("permissions") or "")) if p.strip()}
+        # optional_permissions are granted at runtime on request: an extension can ask for the debugger later
+        raw = f'{c.get("permissions") or ""},{c.get("optional_permissions") or ""}'
+        perms = {p.strip().lower() for p in re.split(r"[,\s]+", raw) if p.strip()}
         broad = any(h.lower() in perms for h in BROAD_HOSTS)
         apis = sorted(perms & SENSITIVE_APIS)
         if not broad and not apis:
