@@ -843,12 +843,13 @@ def test_linux_system_changes_by_how_close_they_are_to_root():
             persist(T0, "suid_bin", path="/home/u/.cache/x/helper", permissions="S"),
             persist(T0, "suid_bin", path="/usr/bin/newgrp2", permissions="S"),
             persist(T0, "kernel_modules", name="hid_logger", status="Live"),
-            persist(T0, "risky_containers", name="/dev-box", image="ubuntu:24.04", privileged="1", sock="0")]
+            persist(T0, "risky_containers", name="/secret-project", image="ubuntu:24.04", privileged="1", sock="0")]
     pre, home_suid, pkg_suid, mod, ctr = settle(det, *rows)
     assert (pre.base_severity, pre.must_alert, pre.facts["entry"]) == (5, True, "ld.so.preload")
     assert (home_suid.base_severity, home_suid.facts["folder"], home_suid.facts["entry"]) == (4, "profile", "helper")
     assert pkg_suid.base_severity == 3 and mod.base_severity == 3 and mod.facts["entry"] == "hid_logger"
     assert ctr.facts["privileged"] and not ctr.facts["docker_socket"] and ctr.base_severity == 3
+    assert ctr.facts["entry"] == "ubuntu:24.04" and "secret-project" not in json.dumps(ctr.facts)   # the image, not the name
     for c in (pre, home_suid, ctr):
         assert "/home/" not in json.dumps(c.facts)
 
@@ -865,6 +866,18 @@ def test_new_linux_listeners_only_from_shells_or_user_folders():
     assert home.facts["folder"] == "profile" and not home.facts["shell"]
     loop = persist(T0 + 3600, "listening_ports", name="dev", path="/home/u/app", port="9000", protocol="6", address="127.0.0.1")
     assert settle(det, loop) == []                                                  # loopback only: nothing
+    # review of #169: a dev server in the home folder that stops and comes back an hour later is a restart
+    dev = {"name": "uvicorn", "path": "/home/u/.venv/bin/uvicorn", "port": "8000", "protocol": "6", "address": "0.0.0.0"}
+    fresh = NewPersistence(st())
+    assert settle(fresh, persist(T0, "listening_ports", "removed", **dev)) == []
+    assert settle(fresh, persist(T0 + 3600, "listening_ports", **dev)) == []
+    # node on 0.0.0.0 under /usr is a dev server, not a bind shell; a /tmp copy taking over a known port is new
+    node = persist(T0, "listening_ports", name="node", path="/usr/bin/node", port="3000", protocol="6", address="0.0.0.0")
+    assert settle(NewPersistence(st()), node) == []
+    other = NewPersistence(st())
+    settle(other, persist(T0, "listening_ports", "removed", name="nginx", path="/usr/sbin/nginx", port="8080", protocol="6", address="0.0.0.0"))
+    (tmp,) = settle(other, persist(T0 + 3600, "listening_ports", name="nginx", path="/tmp/nginx", port="8080", protocol="6", address="0.0.0.0"))
+    assert tmp.facts["folder"] == "temp"
 
 
 def test_a_cryptominer_command_line_is_an_r28_case():

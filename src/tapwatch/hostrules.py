@@ -689,11 +689,13 @@ class NewPersistence(HostDetector):
             return str(c.get("key_tail") or "")
         if query == "listening_ports":
             port = int(c.get("port") or 0)
-            # ephemeral ports change every run; the program and protocol are the listener
-            return f'{c.get("protocol")}/{port if port < 32768 else "ephemeral"}'
+            # ephemeral ports change every run; the program, its folder and the protocol are the listener (a /tmp
+            # copy taking over a port must not match the installed program's key)
+            where = posix_folder_class(str(c.get("path") or "")) if str(c.get("path") or "").startswith("/") else "win"
+            return f'{c.get("protocol")}/{port if port < 32768 else "ephemeral"}/{where}'
         if query in ("suid_bin", "ld_preload"):
             return str(c.get("path") or "")
-        if query == "risky_containers":
+        if query == "risky_containers":   # the image: a container's name is the owner's choice and can name a project
             return str(c.get("image") or "")
         return str(c.get("path") or "")   # services, startup items
 
@@ -706,6 +708,8 @@ class NewPersistence(HostDetector):
             return f"authorized key ({c.get('algorithm') or 'unknown type'})"
         if query in ("suid_bin", "ld_preload"):
             return _basename(str(c.get("path") or "")) or query
+        if query == "risky_containers":
+            return str(c.get("image") or "container")
         if query == "listening_ports":
             return _basename(str(c.get("path") or c.get("name") or "")) or "unknown"
         return str(c.get("label") if query == "launchd_run_at_load" else c.get("name") or "")
@@ -718,10 +722,10 @@ class NewPersistence(HostDetector):
         path = str(c.get("path") or "")
         folder = posix_folder_class(path) if path.startswith("/") else "other"
         if query == "listening_ports":
-            if not path.startswith("/") or str(c.get("address") or "") in ("127.0.0.1", "::1"):
+            if not path.startswith("/") or str(c.get("address") or "") in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
                 return []   # Windows rows churn (47 new listeners in 21 h, mostly svchost): Linux, outside loopback only
             name = _basename(path).lower()
-            bind_shell = name in POSIX_REMOTE_SHELLS or name in POSIX_SHELLS
+            bind_shell = name in POSIX_REMOTE_SHELLS   # a shell or netcat; interpreters fall under the folder test
             if not (bind_shell or folder in ("temp", "profile")):
                 return []   # an installed service starting to listen is routine
             facts = _linux_system_facts(kind, entry, folder)
@@ -733,8 +737,11 @@ class NewPersistence(HostDetector):
         facts = _linux_system_facts(kind, entry, folder)
         if query == "risky_containers":
             facts.update({"privileged": str(c.get("privileged")) == "1", "docker_socket": str(c.get("sock") or "0") != "0"})
-        return self.emit(ts, f"New {kind} on the PC (Linux)", facts, severity, entry[:80], (self.state.host, query, entry),
-                         must_alert=query == "ld_preload")
+        if query == "risky_containers":
+            entry = str(c.get("image") or "container")
+            facts["entry"] = facts["program"] = entry[:80]
+        return self.emit(ts, f"New {kind} on the PC (Linux)", facts, severity, entry[:80],
+                         (self.state.host, query, entry, folder), must_alert=query == "ld_preload")
 
     def key(self, query: str, c: dict) -> tuple:
         """What makes an entry the same entry across runs: never `last_run_time`, which changes whenever it runs."""
@@ -750,6 +757,12 @@ class NewPersistence(HostDetector):
         for bkey in [k for k, b in self.pending.items() if now - b["ts"] >= BATCH_GRACE]:
             query, b = bkey[0], self.pending.pop(bkey)
             gone = {self.key(query, c) for c in b["removed"]}
+            if query == "listening_ports":
+                # The query is old, so no first-run inventory comes with this rule: a dev server that is down at one
+                # hourly run and up at the next would look new every time. A listener seen stopping is learned, so
+                # its return is a restart (review of #169).
+                for k in gone:
+                    self.known[k] = b["ts"]
             new = [c for c in b["added"] if self.key(query, c) not in gone]
             inventory = b.get("first_run") or (len(new) >= DUMP_MIN and not b["removed"])
             for c in new:
