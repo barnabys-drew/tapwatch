@@ -28,16 +28,27 @@ Checked on a clean Windows 11 install (2026-10-18). Commands marked **admin** ne
    ```
    Then `wsl --shutdown` from Windows and reopen Ubuntu. `systemctl is-system-running` should say `running`
    or `degraded`, and `ip -4 addr` should show the same address Windows has (mirrored), not a 172.x one.
+   Inside a virtual machine (Hyper-V with nested virtualization, measured with WSL 3.0.3) WSL stays in NAT
+   mode whatever `.wslconfig` says. Capture still works, since Npcap runs on Windows; only reaching the case
+   desk from other devices needs mirrored mode.
 3. **Python, git and Docker inside Ubuntu:**
    ```bash
-   sudo apt update && sudo apt install -y git python3-venv
-   curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh   # Docker Engine
-   sudo usermod -aG docker $USER                                                 # then close and reopen Ubuntu
+   sudo apt update && sudo apt install -y git python3-venv docker.io
+   sudo usermod -aG docker $USER
    ```
-   Docker Desktop with WSL integration works too, instead of Docker Engine. (tapwatch's own R28 rule flags
-   `curl … | sh`, which is why the script is saved first and then run.)
-4. **Wireshark with Npcap** on Windows (https://www.wireshark.org). Tick "Install Npcap". This
-   provides `dumpcap.exe`.
+   Then `wsl --shutdown` from Windows and reopen Ubuntu: closing the window is not enough for the new group
+   to apply, and until it does `docker` needs sudo and capture fails with "Broken pipe". `docker run --rm
+   hello-world` should then work without sudo. `docker.io` is Ubuntu's own package; Docker Desktop with WSL
+   integration works too.
+4. **Wireshark and Npcap** on Windows. Wireshark provides `dumpcap.exe`:
+   `winget install -e --id WiresharkFoundation.Wireshark --interactive`. Its installer offers Npcap, but
+   on a clean machine it may not install it, and winget has no Npcap package. Download the installer from
+   https://npcap.com and check its signature before running it:
+   ```powershell
+   Get-AuthenticodeSignature "$env:USERPROFILE\Downloads\npcap-*.exe" | Select-Object Status, @{n="Signer";e={$_.SignerCertificate.Subject}}
+   ```
+   It should say `Valid` with a signer containing "Nmap Software LLC". After installing,
+   `Get-Service npcap` should say `Running`.
 5. A **second Ethernet port** on the PC, plugged into the switch's mirror port
    ([mirror-port.md](mirror-port.md)). Note its name in Windows (Settings → Network → Ethernet, e.g. "Ethernet 2").
    To try tapwatch first on a PC with one network port (or in a virtual machine), give `--capture-iface` that
@@ -54,6 +65,14 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/tapwatch service install --zeek-dir logs/zeek --capture-iface "Ethernet 2"   # add --syslog for router logs
 loginctl enable-linger $USER            # keep the services running after you close the terminal
 ```
+
+`init` asks where alerts should go (ntfy, Discord, email). To add or change a channel later, put it in
+`.env` (for example `TAPWATCH_DISCORD_URL=https://discord.com/api/webhooks/…`), then run
+`.venv/bin/tapwatch test-alert` and `systemctl --user restart tapwatch-alerter`.
+
+**Testing in a virtual machine:** Hyper-V's "Type clipboard text" sends keystrokes, and it can drop
+characters such as `$` and quotes, so check a typed command before pressing Enter, or type
+`$USER` as your user name.
 
 `service install` starts five systemd user services: capture, alerter, case desk, watchdog
 (and syslog). Check them with `systemctl --user status 'tapwatch-*'`.
