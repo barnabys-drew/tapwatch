@@ -47,7 +47,10 @@ _categorizer: AiCategorizer | None = None  # None (the default, and in tests) me
 # does not carry and a home network's cases turn on (measured 2026-10-16, above). `unknown` is an
 # answer too (cached, never shown) so a name the model cannot place is not asked every day.
 EXTRA_LABELS = ("security_vendor", "conferencing", "cdn", "cloud_infrastructure", "saas", "developer_tools",
-                "telemetry", "news", "shopping", "games")
+                "telemetry", "news", "shopping", "games", "healthcare", "finance", "government", "education")
+# Added 2026-10-18: a medical-device maker came back as "saas" and its patient app as "unknown" (2026-10-17), and 78
+# of the 257 cached answers were "unknown". An "unknown" cached before this day is asked again with the new labels.
+LABELS_SINCE = "2026-10-18"
 LABELS = frozenset(UT1_CATEGORIES.values()) | frozenset(EXTRA_LABELS) | {"unknown"}
 
 API_URL = "https://api.anthropic.com/v1/messages"
@@ -166,11 +169,13 @@ def askable(name: str | None) -> str:
     return dom
 
 
-def _expired(day: str, now: float) -> bool:
+def _expired(day: str, now: float, label: str = "") -> bool:
     try:
         then = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
     except ValueError:
         return True
+    if label == "unknown" and day < LABELS_SINCE:
+        return True   # asked before the label set grew: worth asking again once
     return now - then > LEARNED_DAYS * 86400
 
 
@@ -201,7 +206,7 @@ def resolve(name: str | None, now: float | None = None) -> tuple[str, str]:
         return "", ""
     now = time.time() if now is None else now
     entry = LEARNED.get(dom)
-    if entry and not _expired(entry[1], now):
+    if entry and not _expired(entry[1], now, entry[0]):
         label = entry[0]
     elif _categorizer is None:
         return "", ""

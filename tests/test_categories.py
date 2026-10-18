@@ -42,6 +42,14 @@ def test_labels_are_the_ut1_set_plus_the_kinds_the_list_lacks():
     from tapwatch.feeds import UT1_CATEGORIES
     assert set(UT1_CATEGORIES.values()) < categories.LABELS
     assert {"security_vendor", "conferencing", "cdn", "saas", "developer_tools", "unknown"} < categories.LABELS
+    assert {"healthcare", "finance", "government", "education"} < categories.LABELS   # added 2026-10-18
+
+
+def test_an_unknown_from_before_the_label_set_grew_is_asked_again():
+    from tapwatch.categories import _expired
+    now = 1_792_000_000.0   # 2026-10-14; inside 30 days of both dates below
+    assert _expired("2026-10-17", now, "unknown") and not _expired("2026-10-17", now, "saas")
+    assert not _expired("2026-10-18", now, "unknown")
     assert "unknown" in categories.SYSTEM_PROMPT and "security_vendor" in categories.SYSTEM_PROMPT
 
 
