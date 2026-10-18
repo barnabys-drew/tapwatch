@@ -354,6 +354,16 @@ def _endpoint(c: Case) -> str:
         return (f"On the PC itself, {prog} ran a command that means {what}.{started_by}{cmdline}{folder} Ransomware "
                 "removes backups and recovery before it encrypts, and an intruder clears logs and adds accounts; "
                 "an owner doing this on purpose knows the alert is coming.")
+    if c.detector == "host_persist" and f.get("kind") in ("set-user-ID program", "kernel module", "preloaded library (/etc/ld.so.preload)",
+                                                         "privileged or Docker-socket container", "listening port"):
+        why = {"set-user-ID program": "It runs as its owner, usually root, whoever starts it: a way back to root.",
+               "kernel module": "It is code running inside the kernel.",
+               "preloaded library (/etc/ld.so.preload)": "Every program on the PC now loads it: the classic Linux rootkit.",
+               "privileged or Docker-socket container": "Either one gives the container root on the PC itself.",
+               "listening port": "It now waits for connections from other machines" + (", and it is a shell: a bind shell."
+                                                                                       if f.get("shell") else ".")}[f["kind"]]
+        return (f"On the PC itself (Linux), a new {f['kind']} appeared: {_program(f.get('entry', ''))}, in "
+                f"{FOLDER_WORDS.get(f.get('folder'), 'an unknown location')}. {why}")
     if c.detector == "host_persist":
         what = (f"a script through {prog}" if f.get("script") and f.get("shell") else "a script" if f.get("script")
                 else f"a shell or script host, {prog}," if f.get("shell") else f"a program, {prog},")

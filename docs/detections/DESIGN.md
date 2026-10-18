@@ -929,6 +929,14 @@ second account is not seen again (the key identity has no account).
   lists one module of lsass (it opens lsass with VM_READ and reads nothing secret) → one severity-4 case for
   powershell.exe.
 
+**R23 on Linux, pass 2 (#28, 2026-10-18)** adds five kinds from new agent queries, each checked with osqueryi first:
+a new set-user-ID program (`suid_bin`; severity 4 from a home, temporary or unknown folder, 3 under the package
+folders), a new kernel module (3), `/etc/ld.so.preload` with content (5, must_alert: every program loads it), a
+privileged or Docker-socket container (3), and a new Linux listener outside loopback when it is a shell or netcat
+(a bind shell) or runs from a home or temporary folder (4). Windows listeners are left out: 47 new ones in 21 h,
+mostly svchost. Measured on the WSL box: 40 SUID programs, 23 modules, no preload, no such container, 11 stable
+listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (stratum URLs, xmrig, `--donate-level`).
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
