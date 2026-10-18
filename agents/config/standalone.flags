@@ -5,7 +5,7 @@
 --logger_path=@LOG_PATH@
 # Results readable by root and the installing user's group (the installer makes the log directory group-owned
 # and setgid, so rotated files keep the group), not by every account: when a command-line signal fires the
-# agent keeps that command line, which can hold a token (R17, R28).
+# agent keeps that command line, which can hold a token (R17, R28). Windows overrides this (windows.flags).
 --logger_mode=0640
 --database_path=@DB_PATH@
 --host_identifier=uuid

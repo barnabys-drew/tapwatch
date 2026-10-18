@@ -1021,7 +1021,8 @@ class LsassAccess(HostDetector):
 
     Sysmon event 10 (process access) with lsass.exe as the target; sysmon.xml already drops svchost, wininit, csrss,
     services, wmiprvse and the Defender engine, which open it all day. Only an access mask with PROCESS_VM_READ
-    (0x10) counts: querying lsass (0x1000, 0x1400) is what Task Manager and monitoring tools do. A program from a
+    (0x10) counts: querying lsass (0x1000, 0x1400) is what monitoring tools do; Task Manager sometimes asks 0x1410,
+    which does count (suppress it per program if it shows up). A program from a
     temporary, Downloads or shared folder, or one a document or mail app started, is must_alert; anything else is
     severity 4, suppressible per program (an EDR or a password manager may read it). No baseline yet: event 10 was
     off before 2026-10-18, so the first days after the Sysmon config is reloaded are the measurement.
@@ -1041,7 +1042,7 @@ class LsassAccess(HostDetector):
             return []
         src = c.get("source_path") or ""
         prog, folder = _basename(src).lower() or "unknown", folder_class(src)
-        started = _start_facts(self.state.start_of(c.get("guid") or "", ts))
+        started = _start_facts(self.state.start_of(c.get("source_guid") or "", ts))   # event 10 has no ProcessGuid
         must = folder in ("temp", "downloads", "shared") or started.get("parent_class") == "document"
         facts = {"program": prog, "folder": folder, "access": hex(mask), **started}
         return self.emit(ts, "A program read the memory of Windows' credential store (lsass)", facts, 5 if must else 4,

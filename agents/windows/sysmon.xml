@@ -39,8 +39,20 @@
         <SourceImage condition="is">C:\Windows\system32\csrss.exe</SourceImage>
         <SourceImage condition="is">C:\Windows\system32\services.exe</SourceImage>
         <SourceImage condition="is">C:\Windows\system32\wbem\wmiprvse.exe</SourceImage>
-        <SourceImage condition="end with">\MsMpEng.exe</SourceImage>
-        <SourceImage condition="end with">\MsSense.exe</SourceImage>
+        <!-- Defender and Defender for Endpoint, by folder too: a program merely named MsMpEng.exe elsewhere still counts -->
+        <Rule groupRelation="and">
+          <SourceImage condition="begin with">C:\ProgramData\Microsoft\Windows Defender\Platform\</SourceImage>
+          <SourceImage condition="end with">\MsMpEng.exe</SourceImage>
+        </Rule>
+        <Rule groupRelation="and">
+          <SourceImage condition="begin with">C:\ProgramData\Microsoft\Windows Defender\Platform\</SourceImage>
+          <SourceImage condition="end with">\MpDefenderCoreService.exe</SourceImage>
+        </Rule>
+        <Rule groupRelation="and">
+          <SourceImage condition="begin with">C:\ProgramData\Microsoft\Windows Defender\Platform\</SourceImage>
+          <SourceImage condition="end with">\NisSrv.exe</SourceImage>
+        </Rule>
+        <SourceImage condition="is">C:\Program Files\Windows Defender Advanced Threat Protection\MsSense.exe</SourceImage>
       </ProcessAccess>
     </RuleGroup>
     <!-- Off: empty include rules match nothing. -->

@@ -921,9 +921,10 @@ second account is not seen again (the key identity has no account).
 - **Logic:** `hostrules.LsassAccess`. An access mask with PROCESS_VM_READ (0x10) → severity 4, suppressible per
   program (an EDR, a password manager); from a temp, Downloads or shared folder, or started by a document or mail
   app → severity 5, must_alert. Query-only masks (0x1000, 0x1400: Task Manager, monitors) → nothing.
-- **Baseline:** none yet; event 10 was off before 2026-10-18. The first days after `Sysmon64 -c sysmon.xml` are the
-  measurement, and an opener that turns up on the owner's PC is either added to the Sysmon exclusions or
-  suppressed.
+- **Baseline:** none yet; event 10 was off before 2026-10-18 (0 events), so the volume could not be measured. The
+  first day after `Sysmon64 -c sysmon.xml` is the measurement. Likely openers with VM_READ to check for then:
+  WerFault, Process Explorer, GPU and RGB utilities and anti-cheat that list modules (0x1410), Task Manager. One
+  that turns up on the owner's PC is added to the Sysmon exclusions (by folder, never by name alone) or suppressed.
 - **Route:** ALERT, code-only. **Safe test:** in an admin PowerShell, `(Get-Process lsass).Modules | Select -First 1`
   lists one module of lsass (it opens lsass with VM_READ and reads nothing secret) → one severity-4 case for
   powershell.exe.

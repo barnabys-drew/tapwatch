@@ -805,8 +805,12 @@ def test_the_agent_keeps_the_linux_command_line_only_when_a_signal_fires():
 
 # ------------------------------------------------------------ R29 LSASS memory read
 
-def lsass(t, source, granted="0x1010", guid="{a1}"):
-    return sysmon(10, t, guid, source_path=source, target_path=r"C:\Windows\system32\lsass.exe", granted=granted)
+def lsass(t, source, granted="0x1010", source_guid="{a1}"):
+    """A real event-10 row: no ProcessGuid (the agent's `guid` is null), SourceProcessGUID instead."""
+    row = sysmon(10, t, "", source_path=source, target_path=r"C:\Windows\system32\lsass.exe", granted=granted,
+                 source_guid=source_guid)
+    row["columns"]["guid"] = None
+    return row
 
 
 def test_reading_lsass_memory_alerts_and_from_temp_it_is_must_alert():
@@ -822,3 +826,10 @@ def test_querying_lsass_or_another_target_raises_nothing():
     assert run(LsassAccess(st()), lsass(T0, r"C:\Windows\System32\Taskmgr.exe", granted="0x1400")) == []
     other = sysmon(10, T0, "{a2}", source_path=TEMP_EXE, target_path=r"C:\Windows\explorer.exe", granted="0x1fffff")
     assert run(LsassAccess(st()), other) == []
+
+
+def test_a_document_app_starting_the_lsass_reader_is_must_alert():
+    """Review of #166: the parent comes through the start's SourceProcessGUID join."""
+    tool = r"C:\Program Files\Vendor\helper.exe"
+    (c,) = run(LsassAccess(st()), start(T0, tool, WORD, guid="{x9}"), lsass(T0 + 2, tool, source_guid="{x9}"))
+    assert c.must_alert and c.facts["parent_class"] == "document" and c.facts["parent"] == "WINWORD.EXE"
