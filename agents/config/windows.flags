@@ -10,3 +10,8 @@
 --logger_rotate=true
 --logger_rotate_size=104857600
 --logger_rotate_max_files=10
+# Windows keeps 0644. osquery turns --logger_mode into explicit file ACEs: 0640 adds Everyone:(DENY) read, which
+# shuts out the signed-in user tapwatch reads the log as (the files are owned by SYSTEM), and 0644 adds an explicit
+# Everyone:(R) that no folder ACL can take back. Measured 2026-10-18 with osqueryd 5.23.1. So on Windows the results
+# log stays readable by local accounts; the agent keeps a command line only when a suspicious signal fires.
+--logger_mode=0644

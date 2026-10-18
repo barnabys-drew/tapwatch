@@ -3,7 +3,9 @@
   connection?" for network alerts, plus basic process history.
 
   Logged: process starts (1), network connections (3, except loopback),
-  process ends (5), DNS queries (22). Everything else is off to keep the log small.
+  process ends (5), DNS queries (22), and other programs opening lsass.exe (10, R29: credential theft reads
+  its memory), minus the Windows components that do so all the time. Everything else is off to keep the
+  log small.
   For a fuller config see https://github.com/olafhartong/sysmon-modular.
 -->
 <Sysmon schemaversion="4.50">
@@ -25,6 +27,34 @@
     <RuleGroup name="dns query" groupRelation="or">
       <DnsQuery onmatch="exclude"/>
     </RuleGroup>
+    <RuleGroup name="lsass access" groupRelation="or">
+      <ProcessAccess onmatch="include">
+        <TargetImage condition="end with">\lsass.exe</TargetImage>
+      </ProcessAccess>
+    </RuleGroup>
+    <RuleGroup name="lsass access: Windows itself" groupRelation="or">
+      <ProcessAccess onmatch="exclude">
+        <SourceImage condition="is">C:\Windows\system32\svchost.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\system32\wininit.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\system32\csrss.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\system32\services.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\system32\wbem\wmiprvse.exe</SourceImage>
+        <!-- Defender and Defender for Endpoint, by folder too: a program merely named MsMpEng.exe elsewhere still counts -->
+        <Rule groupRelation="and">
+          <SourceImage condition="begin with">C:\ProgramData\Microsoft\Windows Defender\Platform\</SourceImage>
+          <SourceImage condition="end with">\MsMpEng.exe</SourceImage>
+        </Rule>
+        <Rule groupRelation="and">
+          <SourceImage condition="begin with">C:\ProgramData\Microsoft\Windows Defender\Platform\</SourceImage>
+          <SourceImage condition="end with">\MpDefenderCoreService.exe</SourceImage>
+        </Rule>
+        <Rule groupRelation="and">
+          <SourceImage condition="begin with">C:\ProgramData\Microsoft\Windows Defender\Platform\</SourceImage>
+          <SourceImage condition="end with">\NisSrv.exe</SourceImage>
+        </Rule>
+        <SourceImage condition="is">C:\Program Files\Windows Defender Advanced Threat Protection\MsSense.exe</SourceImage>
+      </ProcessAccess>
+    </RuleGroup>
     <!-- Off: empty include rules match nothing. -->
     <RuleGroup name="off" groupRelation="or">
       <FileCreateTime onmatch="include"/>
@@ -32,7 +62,6 @@
       <ImageLoad onmatch="include"/>
       <CreateRemoteThread onmatch="include"/>
       <RawAccessRead onmatch="include"/>
-      <ProcessAccess onmatch="include"/>
       <FileCreate onmatch="include"/>
       <RegistryEvent onmatch="include"/>
       <FileCreateStreamHash onmatch="include"/>

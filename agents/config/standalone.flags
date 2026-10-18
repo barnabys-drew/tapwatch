@@ -3,8 +3,9 @@
 --config_path=@CONF_PATH@
 --logger_plugin=filesystem
 --logger_path=@LOG_PATH@
-# Results readable by the local user, so tapwatch can name the program behind a connection
-# without root. They hold process names and remote addresses, nothing secret.
---logger_mode=0644
+# Results readable by root and the installing user's group (the installer makes the log directory group-owned
+# and setgid, so rotated files keep the group), not by every account: when a command-line signal fires the
+# agent keeps that command line, which can hold a token (R17, R28). Windows overrides this (windows.flags).
+--logger_mode=0640
 --database_path=@DB_PATH@
 --host_identifier=uuid

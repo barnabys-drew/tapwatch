@@ -27,6 +27,12 @@ for admin rights once.
 queries ([config/osquery.conf](config/osquery.conf)) and writes the results to
 local logs, and you can ask it anything with `osqueryi`:
 
+On Linux and macOS the results log is readable only by root and the installing user's group (group-owned and
+setgid, mode 0640), because it can hold a command line with a token when a signal fires; re-running the installer
+applies this to an existing install. On Windows it stays readable by local accounts: osquery writes explicit
+per-file permissions, and the mode that would hide it from other accounts also hides it from the user tapwatch
+reads it as.
+
 After pulling a new `config/osquery.conf` (a rule added a signal), re-run the installer or copy it over the
 installed one and restart osqueryd: the flags a rule reads are computed inside these queries, so until then
 the new rule has nothing to read.
