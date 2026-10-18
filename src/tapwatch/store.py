@@ -185,6 +185,35 @@ class Store:
         self.db.commit()
         return cur.lastrowid
 
+    def nearby(self, case: Case, window: float) -> list[sqlite3.Row]:
+        """Cases raised on the same device within `window` seconds of `case`, newest first, other keys only. The
+        device is its MAC when both sides know it (identity facts), else the address."""
+        rows = self.db.execute("SELECT * FROM cases WHERE first_ts BETWEEN ? AND ? AND key != ? ORDER BY id DESC LIMIT 50",
+                               (case.ts - window, case.ts + window, case.key)).fetchall()
+        mac = case.facts.get("device_mac")
+        out = []
+        for r in rows:
+            facts = json.loads(r["facts"] or "{}")
+            if (mac and facts.get("device_mac") == mac) or r["host"] == case.host:
+                out.append(r)
+        return out
+
+    def link_cases(self, case_id: int, other_id: int, entry: dict, note: str, actor: str = "tapwatch") -> None:
+        """Record on an existing case that a later one pairs with it: a `correlated` fact entry and a note."""
+        row = self.get(case_id)
+        if row is None:
+            return
+        facts = json.loads(row["facts"] or "{}")
+        linked = [e for e in facts.get("correlated", []) if isinstance(e, dict)]
+        if any(e.get("id") == other_id for e in linked):
+            return
+        facts["correlated"] = linked + [entry]
+        now = time.time()
+        with self.db:
+            self.db.execute("UPDATE cases SET facts=?, updated_ts=? WHERE id=?", (json.dumps(facts), now, case_id))
+            self.db.execute("INSERT INTO notes (case_id, ts, actor, text) VALUES (?,?,?,?)", (case_id, now, actor, note))
+            self._audit(case_id, actor, "note", None, note, now)
+
     def pending_digest(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM cases WHERE route='digest' AND digested=0 ORDER BY first_ts").fetchall()
 

@@ -304,6 +304,13 @@ def test_pc_address_follows_the_agents_snapshots_and_prefers_the_lan():
     assert configured.host == PC                                                            # the configured one wins
     (c,) = run(EncodedCommand(s), start(T0, PS, WORD, cmd_enc="1", cmd_dl="1"))
     assert c.host == "10.0.0.5"
+    # the router's network decides between two LAN-looking addresses: WSL in mirrored mode also lists
+    # 10.255.255.254, which sorted ahead of the real address (measured 2026-10-17, #792-#794)
+    routed = EndpointState("", gateways=["192.168.50.1"])
+    EncodedCommand(routed).feed(addrs(T0, "10.255.255.254", "192.168.50.77", "172.17.0.1"))
+    assert routed.host == "192.168.50.77"
+    EncodedCommand(routed).feed(addrs(T0 + 300, "10.255.255.254", "172.17.0.1"))
+    assert routed.host == "10.255.255.254"                                                  # nothing on the router's net: as before
 
 
 def test_wsl_nat_snapshot_never_moves_the_host_off_the_lan():

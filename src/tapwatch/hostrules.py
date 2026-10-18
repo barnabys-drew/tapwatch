@@ -162,9 +162,13 @@ class EndpointState:
     the wrong host (review of PR #87), which splits the dedupe key and misses same-device suppressions.
     Until an address is known the cases name the PC as `PC_UNKNOWN`, never an empty string."""
 
-    def __init__(self, host: str = ""):
+    def __init__(self, host: str = "", gateways: list[str] | None = None):
         self.configured = host
         self._host = host
+        # the router's networks (network.gateways): the LAN address is the one on a router's /24. Measured
+        # 2026-10-17: the WSL agent in mirrored mode also lists 10.255.255.254, which sorted ahead of 192.168.x
+        # and gave three host cases a host no identity knew (#792-#794)
+        self.lan_nets = {".".join(g.split(".")[:3]) for g in (gateways or ()) if g.count(".") == 3}
         self.starts: dict[str, Start] = {}
         self.latest = 0.0
         # Signatures arrive every 5 minutes per program path (process_signatures), connections every minute
@@ -183,7 +187,10 @@ class EndpointState:
             return
         v4 = [a for a in addrs if ":" not in a and is_internal(a)]
         lan = sorted(a for a in v4 if a.startswith(LAN_PREFIXES))
-        if lan:
+        routed = [a for a in lan if ".".join(a.split(".")[:3]) in self.lan_nets]
+        if routed:
+            self._host = routed[0]
+        elif lan:
             self._host = lan[0]
         elif v4 and not self._host:
             self._host = min(v4)   # better than nothing, replaced by the first LAN address seen
@@ -704,7 +711,8 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     d = cfg.get("detectors", {})
     if (d.get("host_rules") or {}).get("enabled", True) is False:
         return []
-    state = EndpointState((cfg.get("host_context") or {}).get("host") or "")
+    state = EndpointState((cfg.get("host_context") or {}).get("host") or "",
+                          [str(g) for g in (cfg.get("network") or {}).get("gateways") or ()])
     classes = (EncodedCommand, AppSpawnsShell, TempFolderConnects, LolbinConnects, BadSignatureConnects)
     rules = [cls(state, **d.get(cls.name, {})) for cls in classes]
     rules.append(NewPersistence(state, warmup=warmup or Warmup(cfg.get("warmup_seconds", 86400)),

@@ -61,6 +61,26 @@ RANK = {Route.LOG: 0, Route.DIGEST: 1, Route.ALERT: 2}
 def route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
           suppression: str | None = None, learning: str | None = None) -> tuple[Route, str]:
     """`learning` is the pipeline's label ("learning period (day 1 of 3)") while the install is new."""
+    r, reason = _route_with_guardrails(case, verdict, t, suppression, learning)
+    best = case.facts.get("correlated_best")
+    if best in ("alert", "digest") and not case.must_alert and not suppression and not learning:
+        # A host case and a network case on the same device within five minutes are one story (pipeline.correlate).
+        # Applied last, after the code caps: next to an alert the other side is at least a digest item, and two
+        # digest-or-louder sides are an alert. A suppression still wins (the owner said that side is expected),
+        # and so does the learning period. Measured 2026-10-17: an encoded command (alert) followed 12 s later by
+        # a first contact with a new domain that was logged as popular and shared; this lifts it into the digest,
+        # where the pair reads as one story.
+        pair = (case.facts.get("correlated") or [{}])[0]
+        with_whom = f"#{pair.get('id')} ({pair.get('detector')}, {abs(pair.get('minutes', 0))} min apart)"
+        if r is Route.LOG and best == "alert":
+            return Route.DIGEST, f"paired with an alert on the same device: {with_whom}"
+        if r is Route.DIGEST:
+            return Route.ALERT, f"paired with another case on the same device: {with_whom}"
+    return r, reason
+
+
+def _route_with_guardrails(case: Case, verdict: Verdict | None, t: Thresholds | None,
+                           suppression: str | None, learning: str | None) -> tuple[Route, str]:
     r, reason = _route(case, verdict, t, suppression)
     if case.facts.get("min_route") == "alert" and not case.must_alert and r is not Route.ALERT:
         # Code saw something suspicious on the PC itself (a program in /tmp, a deleted binary, a

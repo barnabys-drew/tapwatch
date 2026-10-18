@@ -244,6 +244,19 @@ def test_learning_period_sends_ai_alerts_to_the_digest_but_not_always_alert_rule
     assert route(floor, hot, learning="learning period (day 1 of 3)")[0] is Route.ALERT
 
 
+def test_a_paired_case_on_the_same_device_is_floored_but_a_suppression_still_wins():
+    pair = [{"id": 7, "detector": "host_encoded_cmd", "title": "Encoded command", "route": "alert", "minutes": 0}]
+    logged = case(facts={**case().facts, "correlated": pair, "correlated_best": "alert", "max_route": "log"})
+    r, reason = route(logged, None)
+    assert r is Route.DIGEST and reason.startswith("paired with an alert on the same device: #7 (host_encoded_cmd, 0 min apart)")
+    digest = case(facts={**case().facts, "correlated": pair, "correlated_best": "digest"}, base_severity=3)
+    assert route(digest, None)[0] is Route.ALERT                       # two digest-or-louder sides are an alert
+    low = case(facts={**case().facts, "correlated": pair, "correlated_best": "digest"}, base_severity=1)
+    assert route(low, None)[0] is Route.LOG                            # a logged case next to a digest item stays logged
+    assert route(digest, None, suppression="#3 beaconing (port 443)")[0] is Route.LOG   # the owner's word stands
+    assert route(case(must_alert=True, facts={**case().facts, "correlated_best": "digest"}), None)[0] is Route.ALERT
+
+
 def test_assets_match_by_dhcp_hostname_then_mac_then_ip_and_the_ai_never_sees_the_raw_identity():
     assets = Assets({"192.168.50.10": {"name": "dock", "role": "workstation"},
                      "MAC:AA:BB:CC:DD:EE:01": {"name": "work laptop", "role": "workstation"},

@@ -704,10 +704,9 @@ can't read a quarter of valid signatures, and the encoded-command signal must be
   alert, severity 4, no host-context facts, no command line. The osquery denylist that had hidden the first
   attempt was cleared by resetting osquery.db with osqueryd stopped; no old cases re-raised.
 
-**Not built yet, deliberately:** a standalone unsigned-program rule (see R21), the persistence snapshots
-(`scheduled_tasks`, `services`, `startup_items` diffs: they need a learned baseline and the warmup plumbing),
-Linux rules (#28), and the host ↔ network correlation in #26 (a `host_lolbin` case and a `new_domain` case on
-the same PC within minutes becoming one story). Each builds on the same `HostDetector` base and `EndpointState`.
+**Not built yet, deliberately:** a standalone unsigned-program rule (see R21) and the Linux rules (#28). The
+persistence snapshots became R23 and the host ↔ network correlation is below, both on 2026-10-17; each builds on
+the same `HostDetector` base and `EndpointState`.
 
 ### R22 A log feed has stopped arriving (`feed_silence`) — **built**
 - **Threat:** the monitor going quiet without anyone noticing. Measured 2026-10-14 and 2026-10-16: osquery's
@@ -771,6 +770,31 @@ the same PC within minutes becoming one story). Each builds on the same `HostDet
   Delete both afterwards.
 - **Blind spots:** WMI subscriptions, Office add-ins, browser extensions (#27 pass 2); a persistence entry
   pointing at an installed, signed program (an attacker who writes to Program Files is past this rule).
+
+### Host ↔ network correlation (built 2026-10-17)
+- **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
+  same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
+  an encoded command ran and a first contact followed; a program in Temp connected and the sensor saw where.
+- **Logic:** `pipeline.correlate`, when a case is handled: the store's cases on the same device (MAC when both
+  sides know it, else the address) within ±300 s whose side differs (`source: endpoint` against the rest; R22's
+  monitor cases pair with nothing). Up to three partners go into the case's `correlated` facts, newest first,
+  with the loudest partner's route as `correlated_best`; the earlier case gets the same entry pointing back
+  and a note on its page. The summary tells Jev in one sentence that the other side raised a case and what.
+- **Routing** (`router.route`, applied after the code caps): next to an alert the other side is at least a
+  digest item; two digest-or-louder sides make an alert. A suppression still wins, and so does the learning
+  period; must-alert cases are untouched.
+- **Measured** 2026-10-17 on the live case history, the 06:00 replay flood excluded: the pairs that were one
+  story sat 0.0, 0.2, 2.5, 3.7 and 4.4 minutes apart (a temp-folder curl and its new domain, #403/#405; a
+  tampered binary and its new domain, #429/#430; a LOLBin and a new domain, #775/#776; an encoded command and
+  the new domain it reached, #786/#788), and the nearest unrelated cases 6.2 and 11 minutes away: a five-minute
+  window. With the floor, #788 (a first contact logged as popular and shared) would have reached the digest
+  next to its encoded command; the three alert pairs change nothing.
+- **FPs:** a dev PC raises a logged new-domain case every few minutes, so a host digest item will often find
+  one; the pair then reads together in the digest, which is the point. Nothing is lifted above digest unless
+  both sides were already digest or louder.
+- **Fixed alongside:** the host rules' PC address. WSL in mirrored mode reports 10.255.255.254 next to the
+  LAN address, and it sorted first, so three host cases carried a host no identity knew (#792–#794). The LAN
+  address is now the one on a configured router's /24 (`network.gateways`), with the old order as the fallback.
 
 ### Dev-workstation profile (built)
 `dev_profile.hosts` marks machines that run coding agents. For those hosts only, `beaconing`,
