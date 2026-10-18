@@ -1623,3 +1623,10 @@ def test_feed_silence_watches_the_router_syslog_once_its_heartbeat_was_seen():
     restarted = FeedSilence({}, started=now[0], clock=lambda: now[0])
     restarted.restore({k: decode(encode(v)) for k, v in fs.snapshot().items()})
     assert "udm" in restarted.expected                                           # still armed after a restart
+    ignored = FeedSilence({}, started=now[0], clock=lambda: now[0], router=None)
+    ignored.restore({k: decode(encode(v)) for k, v in fs.snapshot().items()})
+    ignored.feed({"_type": "udm", "ts": now[0], "kind": "stats", "counts": {"system": 1}})
+    assert "udm" not in ignored.expected and not ignored.armed                    # `ignore: [udm]` wins over saved state
+    short = FeedSilence({}, started=T0, clock=lambda: now[0], router=(600, 3))
+    short.feed({"_type": "udm", "ts": T0, "kind": "stats", "counts": {"system": 1}})
+    assert short.expected["udm"] == (600, 3)                                     # `minutes: {udm: 10}`

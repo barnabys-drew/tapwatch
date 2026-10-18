@@ -2471,7 +2471,7 @@ class FeedSilence(Detector):
                                                    "bpf_connections": (3600, 3), "host_addresses": (1800, 3)}
 
     def __init__(self, expected: dict[str, tuple[float, int]], host: str = "this PC", started: float | None = None,
-                 clock=time.time):
+                 clock=time.time, router: tuple[float, int] | None = ROUTER):
         self.expected = dict(expected)   # feed key -> (longest allowed silence in seconds, severity)
         self.host, self.clock = host, clock
         self.started = clock() if started is None else started
@@ -2479,11 +2479,14 @@ class FeedSilence(Detector):
         self.silent: set[str] = set()
         self._last_tick: float | None = None
         self.armed: set[str] = set()   # feeds expected once seen (the router syslog): persisted, so a restart keeps them
+        self.router = router           # its limit and severity from config (feed_silence minutes/ignore); None: ignored
 
     def restore(self, data: dict) -> None:
         super().restore(data)
+        if self.router is None:
+            self.armed.clear()   # `ignore: [udm]` after a listener was retired: drop the saved arming too
         for key in self.armed:
-            self.expected.setdefault(key, self.ROUTER)
+            self.expected.setdefault(key, self.router)
 
     @staticmethod
     def key(rec: dict) -> str:
@@ -2506,9 +2509,9 @@ class FeedSilence(Detector):
 
     def feed(self, rec: dict) -> list[Case]:
         key = self.key(rec)
-        if key == "udm" and rec.get("kind") == "stats" and key not in self.armed:
+        if key == "udm" and rec.get("kind") == "stats" and key not in self.armed and self.router is not None:
             self.armed.add(key)
-            self.expected.setdefault(key, self.ROUTER)
+            self.expected.setdefault(key, self.router)
         if key in self.expected:
             self.last[key] = self.clock()
             self.silent.discard(key)  # resumed: the next silence is a new case
@@ -2528,7 +2531,7 @@ class FeedSilence(Detector):
                 continue
             self.silent.add(key)
             name, tag, where = self.describe(key)
-            gone.setdefault(tag, []).append((name, severity, since, key not in self.last, limit, where))
+            gone.setdefault(tag, []).append((name, severity, since, key not in self.last and key not in self.armed, limit, where))
         out = []
         for tag, feeds in gone.items():
             feeds.sort(key=lambda f: (-f[1], f[0]))  # the feed that matters most leads: it is the case's key
@@ -2614,7 +2617,11 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
         UdmAdmin(warmup, **d.get("udm_admin", {})),
     ]
     if (d.get("feed_silence") or {}).get("enabled", True):  # R22: the feeds themselves, ticked by `run` once a minute
-        dets.append(FeedSilence(feed_expectations(cfg), host=(cfg.get("host_context") or {}).get("host") or "this PC"))
+        fs = d.get("feed_silence") or {}
+        router = None if "udm" in set(fs.get("ignore") or ()) else (
+            (float(fs["minutes"]["udm"]) * 60, FeedSilence.ROUTER[1]) if "udm" in (fs.get("minutes") or {}) else FeedSilence.ROUTER)
+        dets.append(FeedSilence(feed_expectations(cfg), host=(cfg.get("host_context") or {}).get("host") or "this PC",
+                                router=router))
     if ioc_ips or ioc_domains:
         dets.insert(0, IOCMatch(ioc_ips or set(), ioc_domains or set()))
     for det in dets:
