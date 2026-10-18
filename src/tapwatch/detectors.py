@@ -767,13 +767,22 @@ class PortScan(Detector):
     RESET: ClassVar[set[str]] = {"RSTO", "RSTR"}  # answered when both sides sent data; a probe otherwise
     # DNS, DHCP, NTP, NetBIOS, SSDP, WS-Discovery, mDNS, LLMNR, UniFi discovery
     DISCOVERY_UDP: ClassVar[set[int]] = {53, 67, 68, 123, 137, 138, 1900, 3702, 5353, 5355, 10001}
+    # Discovery answered from the protocol's own port to the asker's random one. Measured 2026-10-18, 12 cases
+    # (#768-#770 and nine more): the UDM's controller sweeps for its devices on udp/10001 every two hours, and each
+    # UniFi device (three cameras, an access point) answers from 10001 to the controller's ephemeral port, 684-820
+    # bytes a packet, several packets each; Zeek logs every answer as a fresh, unanswered UDP connection from the
+    # device, ~12,100 distinct "ports" on the gateway per device in two days. Exempt only when the answer goes to a
+    # gateway (the controller), since any host can send a UDP sweep from port 10001 (`nmap -sU -g 10001`; review of
+    # #150): a sweep of anything else from that port, or of the gateway from any other port, still counts.
+    DISCOVERY_REPLY_UDP: ClassVar[set[int]] = {10001}
     # The router's CEF event names for a Wi-Fi client changing state (syslogin.py keeps `name` as sent).
     WIFI_EVENTS: ClassVar[dict[str, str]] = {"WiFi Client Roamed": "roamed", "WiFi Client Disconnected": "disconnected"}
     WIFI_WINDOW: ClassVar[float] = 180     # s: the failure window plus two minutes either side of the trigger
     WIFI_KEEP: ClassVar[int] = 200         # events remembered: a few a minute in a busy house (measured 2026-10-16)
 
-    def __init__(self, window: float = 60, threshold: int = 50):
+    def __init__(self, window: float = 60, threshold: int = 50, gateways: Gateways | None = None):
         self.window, self.threshold = window, threshold
+        self.gateways = gateways or Gateways()  # where UniFi discovery answers go (DISCOVERY_REPLY_UDP)
         self.events: dict[str, deque] = defaultdict(deque)
         self.ok: dict[str, deque] = defaultdict(deque)  # source -> times of its answered connections
         self.cooldown: dict[str, float] = {}
@@ -787,7 +796,8 @@ class PortScan(Detector):
             return []
         src, dst, ts = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec["ts"]
         proto, port = rec.get("proto") or "tcp", rec.get("id.resp_p")
-        if not is_internal(src) or (proto == "udp" and port in self.DISCOVERY_UDP):
+        if not is_internal(src) or (proto == "udp" and (port in self.DISCOVERY_UDP or (
+                rec.get("id.orig_p") in self.DISCOVERY_REPLY_UDP and dst in self.gateways))):
             return []  # discovery traffic is left out of both sides of failed_pct
         state = rec.get("conn_state")
         if state in self.ANSWERED or (state in self.RESET and int(rec.get("orig_bytes") or 0) > 0
@@ -2421,7 +2431,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
         Beaconing(dev=dev, popular=popular, expected=_expected_services(d.get("takeover", {})),
                   **d.get("beaconing", {})),
         SuspiciousDNS(popular=popular, dev=dev, **d.get("dns_anomaly", {})),
-        PortScan(**d.get("scan", {})),
+        PortScan(gateways=gateways, **d.get("scan", {})),
         HourlyProfile(**{"timezone": tz, "asn": asn_table, "managed": managed_hosts(assets_table),
                          **d.get("upload_spike", {}), **d.get("hourly", {})}),
         NewExternalDomain(warmup, popular=popular, dev=dev, **d.get("new_domain", {})),
