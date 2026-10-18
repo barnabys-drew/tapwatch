@@ -374,6 +374,35 @@ LOCAL_ONLY_SUFFIXES = (".arpa", ".local", ".localdomain", ".lan", ".home", ".int
 HOUSEKEEPING_UDP_PORTS = {3478, 3479, 5349, 41641, 123, *range(19302, 19310)}
 
 
+def jitter_regular(gaps: list[float], min_interval: float = 5) -> bool:
+    """A heartbeat with random sleep jitter, which the CV test misses: C2 frameworks sleep a random 0-50% less than
+    the interval (Cobalt Strike's `jitter`), or the interval plus or minus a share. Measured on synthetic beacons
+    at the 12-beat minimum: CV <= 0.15 caught 4 of 200 with 50% jitter, 0 of 200 with +-40%, 0 of 200 with two
+    missed beats; this test 432/500, 333/500 and 445/500 (and +-25% 499/500).
+
+    Missed beats first: a gap near 2 or 3 times the median counts as that many beats (an offline laptop, a dropped
+    check-in). Then three conditions on the folded gaps: the median absolute deviation is at most 20% of the
+    median; at least 90% of gaps lie within +-50% of it; at most 20% of the beats were folded. The robust measure
+    alone is far too loose on a home network (measured 2026-10-17 over two days of conn logs: 1,436 extra pairs,
+    keepalives whose gaps mix a few lengths); with the band and fold limits it was 14 extra pairs next to the 38
+    CV already finds, and 17 of 500 synthetic human-browsing windows (5-400 s gaps). So a jittered case is a
+    digest item at most (Beaconing caps it)."""
+    m0 = statistics.median(gaps)
+    if m0 < min_interval:
+        return False
+    folded: list[float] = []
+    for g in gaps:
+        k = round(g / m0)
+        if k >= 2 and abs(g - k * m0) <= 0.15 * k * m0:
+            folded += [g / k] * k
+        else:
+            folded.append(g)
+    m = statistics.median(folded)
+    mad = statistics.median(abs(g - m) for g in folded)
+    in_band = sum(abs(g - m) <= 0.5 * m for g in folded) / len(folded)
+    return mad <= 0.2 * m and in_band >= 0.9 and (len(folded) - len(gaps)) <= 0.2 * len(folded)
+
+
 class Beaconing(Detector):
     """Same internal host -> same external host:port at very regular intervals (C2 heartbeat).
 
@@ -401,9 +430,10 @@ class Beaconing(Detector):
                  ignore_udp_ports: set[int] | None = None, dev: DevProfile | None = None, burst: float = 10,
                  popular: set[str] | None = None, expected: dict[str, set[str]] | None = None,
                  benign_classes: dict[str, Iterable[str]] | None = None, reported_days: float = 7,
-                 fanout_per_day: int = 3):
+                 fanout_per_day: int = 3, jitter: bool = True):
         self.min_count, self.min_span, self.max_cv, self.min_interval = min_count, min_span, max_cv, min_interval
         self.burst, self.popular = burst, popular or set()
+        self.jitter = jitter  # also catch beacons with random sleep jitter (jitter_regular); digest at most
         self.reported_s, self.fanout_per_day = reported_days * 86400, fanout_per_day
         self.expected = expected or {}             # host -> services it's expected to poll (takeover.expected)
         self.classes = {k: set(v) for k, v in BEACON_CLASSES.items()}  # class -> domains (config adds to it)
@@ -524,7 +554,8 @@ class Beaconing(Detector):
         if rec.get("proto") == "udp" and statistics.median(self.durations[pair]) >= 0.8 * mean:
             return []
         cv = statistics.pstdev(gaps) / mean  # coefficient of variation: 0 = perfectly regular
-        if cv > self.max_cv:
+        jittered = cv > self.max_cv and self.jitter and jitter_regular(gaps, self.min_interval)
+        if cv > self.max_cv and not jittered:
             return []
         self.reported[(who, port, key)] = rec["ts"]
         if len(self.reported) > 5000:
@@ -535,7 +566,7 @@ class Beaconing(Detector):
         shared_by = len({self.device.get(ip, ip) for ip in self.users.get(dom, set())} - {me}) if dom else 0
         popular = dom in self.popular
         facts = {**dests(dst), "interval_s": round(mean), "count": len(times), "span_s": round(times[-1] - times[0]),
-                 "regularity": "very regular" if cv < 0.05 else "regular", "port": port,
+                 "regularity": "jittered" if jittered else "very regular" if cv < 0.05 else "regular", "port": port,
                  "service": rec.get("service") or "unknown", "popular": popular, "shared_by": shared_by,
                  "dedupe": f"{key}:{port}"}
         # Code-proven ceiling from household prevalence (home eval 2026-10-13: Windows push, OneDrive
@@ -553,8 +584,8 @@ class Beaconing(Detector):
         cls = self.class_for(name)
         if cls:
             facts["known_class"] = cls
-        if (cls or popular) and facts.get("max_route") != "log":
-            facts["max_route"] = "digest"
+        if (cls or popular or jittered) and facts.get("max_route") != "log":
+            facts["max_route"] = "digest"  # jittered: a looser test, measured noisier (jitter_regular), so the digest
         return [Case(self.name, src, rec["ts"], "Regular repeating connection to an external host",
                      facts, indicators, base_severity=3)]
 

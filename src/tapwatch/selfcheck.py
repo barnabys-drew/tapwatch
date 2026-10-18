@@ -131,6 +131,16 @@ def _beacon():
     return [conn(T0 + i * 60) for i in range(15)]
 
 
+def _jittered_beacon():
+    """#24: a 5-minute heartbeat that sleeps a random 0-50% less each time (Cobalt Strike's jitter), one beat missed."""
+    import random
+    rng, ts, out = random.Random(3), T0, []
+    for i in range(20):
+        ts += 300 * rng.uniform(0.5, 1.0) * (2 if i == 9 else 1)
+        out.append(conn(ts))
+    return out
+
+
 def _scan():
     return [conn(T0 + i * 0.1, dst=f"192.168.50.{i % 20 + 2}", port=1000 + i, state="REJ", orig_bytes=0, resp_bytes=0)
             for i in range(60)]
@@ -172,6 +182,7 @@ def _reset_after_data():
 
 SCENARIOS: list[Scenario] = [
     Scenario("C2 heartbeat every 60 s to a bare address", _beacon(), "beaconing"),
+    Scenario("C2 heartbeat every 5 min with 50% sleep jitter and a missed beat", _jittered_beacon(), "beaconing"),
     Scenario("port scan: 60 refused connections across 20 LAN hosts", _scan(), "scan"),
     Scenario("admin-port sweep: 80 unanswered SMB probes", _sweep(), "mgmt_access", Route.ALERT),
     Scenario("DNS tunnel: 210 distinct long names under one unpopular zone", _tunnel(), "dns_anomaly", Route.ALERT),

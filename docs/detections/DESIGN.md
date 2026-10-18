@@ -254,6 +254,14 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Data:** `conn` per (src, dst, port) inter-arrival times; `ssl.server_name`.
 - **Logic:** existing `detectors.Beaconing` (CV ≤ 0.15, ≥10 hits, ≥10 min), plus code facts in
   the case: `sni_popular` (Tranco), `shared_by_n_devices`, `device_role`, `bytes_per_hit`.
+- **Jitter tier** (#24, 2026-10-17): C2 frameworks add random sleep jitter, which the CV test misses (on
+  synthetic 12-beat beacons it caught 4/200 with Cobalt Strike-style 50% jitter, 0/200 at ±40%, 0/200 with two
+  missed beats). `jitter_regular` folds gaps near 2× or 3× the median as missed beats, then needs the median
+  absolute deviation ≤ 20% of the median, ≥ 90% of gaps within ±50% of it, and ≤ 20% of beats folded: it caught
+  432/500, 333/500 and 445/500 of those shapes. Measured on two days of home conn logs: the robust measure alone
+  added 1,436 pairs (keepalives mixing a few gap lengths); with the band and fold limits, 14 next to the 38 the
+  CV test finds, and 17/500 synthetic human-browsing windows. So a jittered case has `regularity: jittered` and
+  is capped at **digest**; `detectors.beaconing.jitter: false` turns the tier off.
 - **Baseline:** none for detection. Suppression learns which (role, base-domain) pairs are
   normal heartbeats after 7 days. The beat window (last 60 times per pair) is saved with the
   learned state, so a heartbeat slower than the gap between alerter restarts can still reach ten

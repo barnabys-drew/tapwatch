@@ -68,6 +68,26 @@ def test_beaconing_beat_window_survives_a_restart():
         assert len(run(fresh, [conn(T0 + i * 60) for i in range(15)])) == 1
 
 
+def test_beaconing_catches_jittered_c2_at_digest_but_not_with_jitter_off():
+    """#24: Cobalt Strike-style sleep jitter (a random 0-50% less than the interval) and a missed beat defeat
+    the CV test; the jitter tier catches them and caps them at digest."""
+    rng = random.Random(3)
+    ts, recs = T0, []
+    for i in range(20):
+        ts += 300 * rng.uniform(0.5, 1.0) * (2 if i == 9 else 1)
+        recs.append(conn(ts))
+    (c,) = run(Beaconing(), recs)
+    assert c.facts["regularity"] == "jittered" and c.facts["max_route"] == "digest"
+    assert run(Beaconing(jitter=False), recs) == []
+
+
+def test_jitter_regular_needs_the_band_and_few_folded_beats():
+    from tapwatch.detectors import jitter_regular
+    assert jitter_regular([300, 290, 310, 600, 305, 295, 300, 280, 320, 300, 310])     # one missed beat folds
+    assert not jitter_regular([30, 30, 30, 300, 30, 300, 30, 300, 30, 300, 30])         # two lengths: a keepalive mix
+    assert not jitter_regular([3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3])                        # under the minimum interval
+
+
 def test_beaconing_ignores_human_browsing_jitter():
     rng = random.Random(1)
     ts, recs = T0, []
