@@ -37,6 +37,6 @@ def test_selfcheck_command_reports_and_exits_clean(tmp_path, capsys):
     (tmp_path / "config.yaml").write_text(f"db_path: {tmp_path / 't.db'}\nfeeds_dir: {tmp_path / 'feeds'}\n")
     assert main(["-c", str(tmp_path / "config.yaml"), "selfcheck"]) == 0
     out = capsys.readouterr().out
-    assert "detected 22/22 (100%)" in out and "quiet shapes staying quiet 4/4" in out and "detectors built from the config file" in out
+    assert "detected 24/24 (100%)" in out and "quiet shapes staying quiet 4/4" in out and "detectors built from the config file" in out
     assert main(["-c", str(tmp_path / "config.yaml"), "selfcheck", "--json"]) == 0
     assert '"passed": true' in capsys.readouterr().out

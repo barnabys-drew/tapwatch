@@ -34,6 +34,7 @@ from typing import ClassVar
 from .detectors import Detector, Warmup, is_internal, prune_reported, still_reported
 from .hostctx import (
     ADDRS,
+    BPF,
     CMD_DESTRUCTIVE,
     CMD_SUSPICIOUS,
     CMD_UNUSUAL,
@@ -72,11 +73,12 @@ TEMP_DIRS = ("/appdata/local/temp/", "c:/windows/temp/")
 SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable by every account, never an install
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
-         "host_destructive", "host_recon", "host_extension")
+         "host_destructive", "host_recon", "host_extension", "host_linux_connect")
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
-                   "wmi_persistence": "WMI event subscription"}
+                   "wmi_persistence": "WMI event subscription", "authorized_keys": "SSH authorized key",
+                   "systemd_units": "systemd unit"}
 SCRIPT_EXT = (".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".bat", ".cmd", ".hta", ".sh", ".py", ".pl", ".rb")
 EXEC_EXT = SCRIPT_EXT + (".exe", ".com", ".dll", ".msc", ".scr", ".cpl", ".lnk")
 POSIX_SHELLS = {"sh", "bash", "zsh", "dash", "python", "python3", "perl", "node", "ruby", "nohup"}
@@ -141,7 +143,9 @@ def outside(remote: str, port) -> bool:
         addr = ipaddress.ip_address(remote)
     except ValueError:
         return False
-    return not (addr.is_loopback or is_internal(remote)) and str(port) != "53"
+    if getattr(addr, "ipv4_mapped", None):  # ::ffff:192.168.x.x is the LAN (3,276 such eBPF rows, 2026-10-18)
+        addr = addr.ipv4_mapped
+    return not (addr.is_loopback or is_internal(str(addr))) and str(port) != "53"
 
 
 @dataclass
@@ -647,6 +651,11 @@ class NewPersistence(HostDetector):
     def feed(self, rec: dict) -> list[Case]:
         now = float(rec.get("ts") or 0)
         out = super().feed(rec) if rec.get("_type") == OSQUERY else []
+        if rec.get("name") in self.QUERIES and str(rec.get("counter", "")) == "0" and rec.get("action") == "added":
+            # osquery's first run of a query (new config, or its database reset) lists what already exists: an
+            # inventory whatever its size. Measured: all three dumps (36, 108, 224 rows) and the 18-row extension
+            # listing had counter 0; a machine with one or two SSH keys would otherwise alert on them (review of #148).
+            self._batch(rec["name"], float(rec.get("ts") or 0))["first_run"] = True
         return out + self.settle(now)
 
     def _batch(self, query: str, rec_ts: float) -> dict:
@@ -671,6 +680,8 @@ class NewPersistence(HostDetector):
             return " ".join(str(c.get(k) or "") for k in ("program", "program_arguments")).strip()
         if query == "wmi_persistence":
             return " ".join(str(c.get(k) or "") for k in ("action", "args")).strip()
+        if query == "authorized_keys":
+            return str(c.get("key_tail") or "")
         return str(c.get("path") or "")   # services, startup items
 
     @staticmethod
@@ -678,6 +689,8 @@ class NewPersistence(HostDetector):
         if query == "crontab":  # the file's path names the user (/var/spool/cron/crontabs/<user>): never stored
             p = str(c.get("path") or "")
             return "a user's crontab" if "/etc/" not in p else _basename(p) or "crontab"   # /etc/cron.d/<file>, /etc/crontab
+        if query == "authorized_keys":  # the key file's path names the user: the algorithm only
+            return f"authorized key ({c.get('algorithm') or 'unknown type'})"
         return str(c.get("label") if query == "launchd_run_at_load" else c.get("name") or "")
 
     def key(self, query: str, c: dict) -> tuple:
@@ -695,7 +708,7 @@ class NewPersistence(HostDetector):
             query, b = bkey[0], self.pending.pop(bkey)
             gone = {self.key(query, c) for c in b["removed"]}
             new = [c for c in b["added"] if self.key(query, c) not in gone]
-            inventory = len(new) >= DUMP_MIN and not b["removed"]
+            inventory = b.get("first_run") or (len(new) >= DUMP_MIN and not b["removed"])
             for c in new:
                 k = self.key(query, c)
                 seen = k in self.known
@@ -722,6 +735,19 @@ class NewPersistence(HostDetector):
                      "shell": prog in WIN_SHELLS or prog in WIN_LOLBINS, "signals": [], "url": "http" in target.lower(),
                      "registry": False}
             return self.emit(ts, "New WMI event subscription on the PC", facts, 4, prog or "wmi",
+                             (self.state.host, query, _entry_key(entry)))
+        if query in ("authorized_keys", "systemd_units"):
+            # Linux persistence with no program to read: a new SSH key someone can log in with (T1098.004) is an
+            # alert; a new systemd unit (T1543.002) is a digest item, since installing a service is also what
+            # package installs and the owner's own `systemctl --user` services do (tapwatch's included, learned in
+            # warm-up). Measured 2026-10-18 on the WSL box: 0 authorized keys, no system units outside the package
+            # directories besides snap mounts (excluded in the query), 24 user unit files incl. timers and
+            # enablement links (all learned: the first run after deploy lists them at once, an inventory).
+            key = query == "authorized_keys"
+            facts = {"kind": PERSIST_QUERIES[query], "entry": entry[:120], "program": entry[:80] if not key else "sshd",
+                     "folder": "profile" if "/home/" in target or "/root/" in target else "installed",
+                     "script": False, "shell": False, "signals": [], "url": False, "registry": False}
+            return self.emit(ts, f"New {PERSIST_QUERIES[query]} on the PC", facts, 4 if key else 3, facts["program"],
                              (self.state.host, query, _entry_key(entry)))
         tokens = _target_tokens(target)
         if not tokens:
@@ -887,6 +913,46 @@ class BrowserExtension(NewPersistence):
         return self.emit(ts, "New browser extension with broad access", facts, severity, name[:80] or "extension",
                          (self.state.host, self.target_of(query, c)))
 
+
+POSIX_REMOTE_SHELLS = {"bash", "sh", "dash", "zsh", "ksh", "ash", "nc", "ncat", "netcat", "nc.openbsd", "nc.traditional",
+                       "socat", "telnet"}
+
+
+class LinuxSuspiciousConnect(HostDetector):
+    """R27. On Linux or WSL: a program running from a temporary folder or from memory (memfd, a file that never
+    touched the disk) connects out, or a shell or netcat holds an outgoing connection itself: the shapes of a
+    dropped second stage and of a reverse shell (`bash -i >& /dev/tcp/…`, `nc -e`, `socat exec:`), T1059.004.
+
+    Reads the agent's eBPF `bpf_connections` rows, which catch even a one-second connection. Measured 2026-10-16/18
+    over 30.7 h of the WSL box's log: 49,975 outgoing connections, none from /tmp, /dev/shm, /var/tmp, /run/user or
+    memfd; shells ran 78,967 times and held a connection 0 times (curl, git, python, node and the agent do the
+    talking). A binary deleted while running is not counted: java, lua and python did that during upgrades. Any
+    match is an alert, suppressible per program. Likely false positives: `go run` binaries under /tmp/go-build*,
+    AppImages mounted under /tmp/.mount_*, installers or test copies run from /tmp. Blind spot: 26,447 of the
+    49,975 rows carry no path (the process was gone when osquery looked it up), so the rule sees the other half.
+    Repeats are folded by the store's one-hour dedupe on the program; no weekly memory (severity 4).
+    """
+
+    name = "host_linux_connect"
+    QUERIES: ClassVar[tuple[str, ...]] = (BPF,)
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if not outside(c.get("remote_address", ""), c.get("remote_port")):
+            return []
+        path = str(c.get("path") or "")
+        prog = path.rsplit("/", 1)[-1] or "unknown"
+        memory = "memfd:" in path
+        temp = path.startswith(SUSPICIOUS_DIRS)
+        shell = prog in POSIX_REMOTE_SHELLS
+        if not (memory or temp or shell):
+            return []
+        what = "memory" if memory else "temp" if temp else "shell"
+        facts = {"program": prog[:80], "how": what, "parent": str(c.get("parent_name") or "")[:80],
+                 "port": _port(c.get("remote_port"))}
+        title = ("A shell or netcat held an internet connection" if shell and not (memory or temp)
+                 else "Program from a temporary folder or memory connected to the internet")
+        return self.emit(ts, title, facts, 4, prog[:80])
+
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
@@ -905,4 +971,5 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     rules.append(DiscoveryBurst(state, **d.get(DiscoveryBurst.name, {})))
     rules.append(BrowserExtension(state, warmup=warmup or Warmup(cfg.get("warmup_seconds", 86400)),
                                   **d.get(BrowserExtension.name, {})))
+    rules.append(LinuxSuspiciousConnect(state, **d.get(LinuxSuspiciousConnect.name, {})))
     return rules

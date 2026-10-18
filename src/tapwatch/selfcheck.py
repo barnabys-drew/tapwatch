@@ -110,6 +110,13 @@ def _extension():
                         version="1.0", permissions="storage, debugger"), tick(T0 + 130)]
 
 
+def bpf_conn(ts, path, parent="bash", remote=DST, port=443):
+    """One Linux/WSL eBPF connection row from the agent."""
+    return {"_type": "osquery", "_log": "/var/log/osquery", "name": "bpf_connections", "unixTime": int(ts), "ts": int(ts),
+            "action": "added", "columns": {"time": str(int(ts)), "pid": "4242", "parent": "4000", "path": path,
+                                           "remote_address": remote, "remote_port": str(port), "parent_name": parent}}
+
+
 def tick(ts):
     return {"_type": "tick", "ts": ts}
 
@@ -225,6 +232,9 @@ SCENARIOS: list[Scenario] = [
              _new_task(r"wscript.exe C:\Users\<user>\Downloads\up.vbs"), "host_persist", Route.ALERT),
     Scenario("R25 three discovery tools from a program in Temp", _recon(), "host_recon", Route.ALERT),
     Scenario("R26 new browser extension with the debugger permission", _extension(), "host_extension", Route.ALERT),
+    Scenario("R27 Linux program in /tmp connects out", [bpf_conn(T0, "/tmp/.cache/kworker")], "host_linux_connect", Route.ALERT),
+    Scenario("R27 reverse shell: bash holds a connection", [bpf_conn(T0, "/usr/bin/bash", "python3", port=4444)],
+             "host_linux_connect", Route.ALERT),
     Scenario("R22 the Zeek conn feed stops for 21 minutes", [conn(T0)] + [tick(T0 + 60 * i) for i in range(1, 22)],
              "feed_silence", Route.ALERT, config={"detectors": {"feed_silence": {"enabled": True}}}),
     Scenario("quiet: a 15-minute UDP voice call split into minute records (#63)", _video_call(), "beaconing", None),

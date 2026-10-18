@@ -858,6 +858,30 @@ the same `HostDetector` base and `EndpointState`.
 an alert whatever they run (T1546.003). Measured 2026-10-18: the only subscription on the main PC is Windows' own
 SCM event-log filter, whose consumer is the built-in log kind, so 0 rows.
 
+### R27 Linux program from a temporary folder or memory, or a shell, connects out (`host_linux_connect`) — **built**
+- **Threat:** a dropped second stage run from `/tmp`, `/dev/shm`, `/var/tmp` or `/run/user`, a payload run from
+  memory (memfd), and a reverse shell (`bash -i >& /dev/tcp/…`, `nc -e`, `socat exec:`) (T1059.004, T1105).
+- **Data:** the agent's eBPF `bpf_connections` rows (every outgoing connection, however short; Linux and WSL).
+- **Logic:** `hostrules.LinuxSuspiciousConnect`. An outside connection by a program whose path is in one of those
+  folders or a memfd, or by a shell or netcat (`bash`, `sh`, `dash`, `zsh`, `ksh`, `nc`, `ncat`, `socat`,
+  `telnet`) → severity 4, suppressible per program. A binary deleted while running is not counted.
+- **Baseline:** measured 2026-10-16/18, 30.7 h of the WSL box: 49,975 outgoing connections, none from those folders
+  or memory; shells started 78,967 times and held a connection 0 times; java, lua and python connected while
+  deleted (package upgrades), hence no "deleted" clause.
+- **Route:** ALERT, code-only. **Safe test:** `cp /usr/bin/curl /tmp/c && /tmp/c -s https://example.com >/dev/null;
+  rm /tmp/c` → one alert. **Blind spots:** an interpreter (python, perl) holding the shell's socket; a payload
+  under the home folder; the 26,447 of 49,975 eBPF rows with no path (the process had exited when osquery looked
+  it up), so the measured zero covers the 47% that carry one. **FPs:** `go run` binaries under /tmp/go-build*,
+  AppImages under /tmp/.mount_*, installers or test copies run from /tmp (suppress per program).
+
+**R23 on Linux also reads** new SSH authorized keys (`authorized_keys`: the key type and its last 16 characters,
+never the file path; an alert, T1098.004) and new systemd units (`systemd_units`: units outside the package
+directories, snap mounts excluded, and every user unit file; a digest item, T1543.002). Measured 2026-10-18 on the
+WSL box: 0 keys; 24 user unit files (13 files and 11 enablement links), which the first run after deploy lists at
+once and R23 learns as an inventory. Any batch osquery marks as a query's first run (`counter` 0) is an inventory
+whatever its size, so a machine with one or two existing keys does not alert on them. The same key added to a
+second account is not seen again (the key identity has no account).
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
@@ -926,6 +950,7 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R24 Backups, logs, protection or accounts changed (built) | osquery + Sysmon | alert | code-only; must_alert for backups and logs |
 | — | R25 Burst of discovery commands (built) | osquery + Sysmon | alert (shell: digest) | code-only |
 | — | R26 New browser extension with sensitive access (built) | osquery differential | digest / alert | code-only |
+| — | R27 Linux temp, memory or shell connection (built) | osquery eBPF | alert | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 
