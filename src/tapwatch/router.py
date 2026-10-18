@@ -37,7 +37,8 @@ CODE_ONLY = {"new_domain",
              # R17-R21, the endpoint rules (hostrules.NAMES): what ran on the PC is a fact the agent saw, and
              # "is this program normal?" is the same question as "is this domain normal?", never asked.
              "host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
-             "host_destructive", "host_recon", "host_extension", "host_linux_connect"}
+             "host_destructive", "host_recon", "host_extension", "host_linux_connect",
+             "host_linux_cmd"}
 
 
 def wants_ai(case: Case) -> bool:

@@ -58,7 +58,7 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
 
 ## Highlights
 
-- **32 case types from 30 detectors** tuned for homes (table below). Each is plain Python with
+- **33 case types from 31 detectors** tuned for homes (table below). Each is plain Python with
   tests and a written spec. Learned baselines survive restarts and follow the *device* (DHCP
   hostname, then MAC, then IP), so a laptop keeps its history when it moves between addresses.
 - **Sites named by kind.** First contacts, odd TLS sessions and upload spikes carry the kind of
@@ -80,7 +80,7 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
 - **Agent-aware host context.** For traffic from the tapwatch machine (matched by its DHCP name,
   not just its address), osquery names the program, and Claude Code session markers, the exec
   parent chain and transcripts show whether the owner asked for it. Process proof outranks
-  transcript context, and ten host rules read the agent's own rows for shapes the wire can't
+  transcript context, and eleven host rules read the agent's own rows for shapes the wire can't
   show.
 - **It watches itself.** Every feed it depends on (Zeek's logs, each endpoint agent's frequent
   queries) has a measured longest-allowed silence; a feed that stops is a case within minutes, not a
@@ -135,7 +135,7 @@ a remote-control tool found on a work laptop, which the labels call benign and t
 about; two of its items are a phone's iCloud backup and a work laptop's EDR upload. The earlier run
 (2026-10-13) and what changed are in [eval/RESULTS.md](eval/RESULTS.md). The sample is small, so
 treat it as a sanity check, not a benchmark. The scripted self-check (`tapwatch selfcheck`) stands at
-24/24 attack shapes detected and 4/4 false-positive shapes quiet, and runs on every push to `dev`.
+25/25 attack shapes detected and 4/4 false-positive shapes quiet, and runs on every push to `dev`.
 
 ## What it catches
 
@@ -159,7 +159,7 @@ treat it as a sanity check, not a benchmark. The scripted self-check (`tapwatch 
 | `new_domain` | first contact with a rarely used domain (code-routed; log-only, kept out of the queue by default) |
 | `scan` | one host probing many hosts or ports; a Wi-Fi client the router just moved between access points or dropped (its syslog) is held to the digest |
 | `udm_ips`, `udm_admin` | the router's own IPS verdicts, and admin logins (new source or repeated failures **always alert**), from its syslog; the feed is parsed against lines a real UniFi gateway sends |
-| `host_encoded_cmd`, `host_app_shell`, `host_temp_exec`, `host_lolbin`, `host_bad_sig`, `host_persist`, `host_destructive`, `host_recon`, `host_extension`, `host_linux_connect` | on a PC with the [osquery agent](agents/README.md): an encoded or download-and-run command, a document app or browser starting a shell, a program in a temp folder, a built-in Windows tool, or a badly signed program connecting out, or a new task, service, startup item, cron job or WMI subscription that runs a script or a shell, a command that removes backups or logs, turns off Defender or adds an account, a burst of discovery commands, a new browser extension with sensitive access, and on Linux a temp-folder, in-memory or shell connection and new SSH keys or systemd units (download-and-run command combinations and the four downloader tools, certutil, bitsadmin, mshta and regsvr32, **always alert**) |
+| `host_encoded_cmd`, `host_app_shell`, `host_temp_exec`, `host_lolbin`, `host_bad_sig`, `host_persist`, `host_destructive`, `host_recon`, `host_extension`, `host_linux_connect`, `host_linux_cmd` | on a PC with the [osquery agent](agents/README.md): an encoded or download-and-run command, a document app or browser starting a shell, a program in a temp folder, a built-in Windows tool, or a badly signed program connecting out, or a new task, service, startup item, cron job or WMI subscription that runs a script or a shell, a command that removes backups or logs, turns off Defender or adds an account, a burst of discovery commands, a new browser extension with sensitive access, and on Linux a temp-folder, in-memory or shell connection, a download-and-run, reverse-shell or history-clearing command, and new SSH keys or systemd units (download-and-run command combinations and the four downloader tools, certutil, bitsadmin, mshta and regsvr32, **always alert**) |
 | `ioc_match`, `ids_alert` | your threat lists (**always alert**), and Suricata alerts if you run it |
 
 Design notes and rule specs (Sigma and SQL) are in [docs/detections/](docs/detections/DESIGN.md).
@@ -221,7 +221,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 
 Optional extras: [router syslog](docs/setup/router-syslog.md) adds the router's own IPS verdicts
 and admin logins, and the [endpoint agents](agents/README.md) (osquery) name the program behind a
-connection and feed the ten host rules.
+connection and feed the eleven host rules.
 
 ## What leaves the network
 
@@ -292,8 +292,8 @@ adds Semgrep and Trivy on PRs into `main`.
 
 **v0.1.1**, running on a real home network, so expect rough edges. The Linux paths (a bare
 container following this README, and the Compose stack) were installed from scratch and run on
-2026-10-15. The router syslog feed is verified against a live UniFi gateway, the ten endpoint
-rules (R17–R21, R23–R27) are in, and host context's attribution of a one-second `curl` to the agent that
+2026-10-15. The router syslog feed is verified against a live UniFi gateway, the eleven endpoint
+rules (R17–R21, R23–R28) are in, and host context's attribution of a one-second `curl` to the agent that
 ran it was verified live on 2026-10-16. Site categories (UT1 lists, optional model) landed the
 same day. On 2026-10-17 the host-context verdicts were verified live on test shapes: the owner's
 prompt naming a destination corroborates the agent's connection, and a tampered binary's connection
