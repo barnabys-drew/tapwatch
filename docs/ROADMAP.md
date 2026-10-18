@@ -91,7 +91,7 @@ the Windows path installs on a clean machine from the docs alone, and the README
 |---|---|---|
 | [#15](https://github.com/barnabys-drew/tapwatch/issues/15) | Windows endpoints: command lines, connections and DNS lookups from Sysmon | **next** |
 | [#4](https://github.com/barnabys-drew/tapwatch/issues/4) | Long-running test of host context on an installed osquery agent | **in progress**, started 2026-10-13 |
-| [#6](https://github.com/barnabys-drew/tapwatch/issues/6) | Clean-machine test of the Windows (WSL + Npcap) path | planned |
+| [#6](https://github.com/barnabys-drew/tapwatch/issues/6) | Clean-machine test of the Windows (WSL + Npcap) path | **started** 2026-10-18 on a fresh Windows 11 VM: the prerequisites were rewritten from what it hit (WSL features and error 0x80370114, Docker and python3-venv steps, the one-port case); the install itself is still to run |
 | [#7](https://github.com/barnabys-drew/tapwatch/issues/7) | Check the UniFi admin-login mapping against real events | **built** 2026-10-16 ([#88](https://github.com/barnabys-drew/tapwatch/pull/88)): verified against a real admin-access line |
 | [#8](https://github.com/barnabys-drew/tapwatch/issues/8) | Router port-forward and UPnP events enrich internet-exposure cases | **partial** 2026-10-16 ([#88](https://github.com/barnabys-drew/tapwatch/pull/88)): the feed now parses the gateway's real firewall lines; port-forward and UPnP change events still need samples |
 | [#10](https://github.com/barnabys-drew/tapwatch/issues/10) | Measure Jev with `audience: home` wording vs `office` | **done** |
