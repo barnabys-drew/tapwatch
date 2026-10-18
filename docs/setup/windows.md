@@ -5,22 +5,44 @@ machines, so Npcap (on Windows) captures the mirror port and streams it into Zee
 
 ## Prerequisites (once)
 
-1. **WSL 2 with systemd**, mirrored networking. In `%UserProfile%\.wslconfig`:
-   ```ini
-   [wsl2]
-   networkingMode=mirrored
+Checked on a clean Windows 11 install (2026-10-18). Commands marked **admin** need PowerShell opened with
+"Run as administrator"; without it Windows answers "error 740".
+
+1. **WSL with Ubuntu.** In an **admin** PowerShell:
+   ```powershell
+   dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+   dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+   Restart-Computer
    ```
-   and in the distro's `/etc/wsl.conf`:
-   ```ini
-   [boot]
-   systemd=true
+   After the restart, in a normal PowerShell: `wsl --install -d Ubuntu`, and pick a Linux user name and
+   password when it asks. (`wsl --install` alone can stop with error `0x80370114`, "a required feature is not
+   installed", until those two features are on and the PC has restarted.)
+2. **Mirrored networking and systemd.** In a normal PowerShell:
+   ```powershell
+   Set-Content "$env:USERPROFILE\.wslconfig" "[wsl2]`nnetworkingMode=mirrored"
    ```
-   Then `wsl --shutdown` from Windows and reopen.
-2. **Docker** inside WSL (Docker Engine, or Docker Desktop with WSL integration).
-3. **Wireshark with Npcap** on Windows (https://www.wireshark.org). Tick "Install Npcap". This
+   In Ubuntu, check `cat /etc/wsl.conf`. Current Ubuntu images already contain `systemd=true`; if yours
+   does not:
+   ```bash
+   printf '[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf
+   ```
+   Then `wsl --shutdown` from Windows and reopen Ubuntu. `systemctl is-system-running` should say `running`
+   or `degraded`, and `ip -4 addr` should show the same address Windows has (mirrored), not a 172.x one.
+3. **Python, git and Docker inside Ubuntu:**
+   ```bash
+   sudo apt update && sudo apt install -y git python3-venv
+   curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh   # Docker Engine
+   sudo usermod -aG docker $USER                                                 # then close and reopen Ubuntu
+   ```
+   Docker Desktop with WSL integration works too, instead of Docker Engine. (tapwatch's own R28 rule flags
+   `curl … | sh`, which is why the script is saved first and then run.)
+4. **Wireshark with Npcap** on Windows (https://www.wireshark.org). Tick "Install Npcap". This
    provides `dumpcap.exe`.
-4. A **second Ethernet port** on the PC, plugged into the switch's mirror port
+5. A **second Ethernet port** on the PC, plugged into the switch's mirror port
    ([mirror-port.md](mirror-port.md)). Note its name in Windows (Settings → Network → Ethernet, e.g. "Ethernet 2").
+   To try tapwatch first on a PC with one network port (or in a virtual machine), give `--capture-iface` that
+   port's name instead: tapwatch then sees only this PC's own traffic, which is enough to check the install
+   end to end, not to watch the house.
 
 ## Install (inside WSL)
 
