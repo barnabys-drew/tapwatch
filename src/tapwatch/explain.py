@@ -47,7 +47,8 @@ def _destination(facts: dict, indicators: list[str]) -> str:
 
 
 def groups(store: Store, since: float) -> list[dict]:
-    rows = store.db.execute("SELECT * FROM cases WHERE last_ts >= ? AND must_alert = 0 ORDER BY id", (since,)).fetchall()
+    rows = store.db.execute("SELECT * FROM cases WHERE last_ts >= ? AND must_alert = 0 AND facts LIKE '%host_assessment%'"
+                            " ORDER BY id", (since,)).fetchall()  # most cases carry no host context: skip their JSON
     out: dict[tuple, dict] = defaultdict(lambda: {"cases": [], "assessments": defaultdict(int), "signals": set()})
     for r in rows:
         facts = json.loads(r["facts"])
@@ -74,20 +75,28 @@ def groups(store: Store, since: float) -> list[dict]:
     return sorted(result, key=lambda g: (-g["explained"], -g["cases"]))
 
 
-def reason(g: dict) -> str:
+def program_name(path: str) -> str:
+    """A program's file name: what the case desk shows and stores (a Windows or home path names the user)."""
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def reason(g: dict, name_only: bool = False) -> str:
     days = max(1, round((g["last"] - g["first"]) / 86400))
     why = "; ".join(g["signals"][:2])
-    return (f"Explained by {g['program']}" + (f" (started by {g['parent']})" if g["parent"] else "")
+    program = program_name(g["program"]) if name_only else g["program"]
+    return (f"Explained by {program}" + (f" (started by {g['parent']})" if g["parent"] else "")
             + f" talking to {g['destination']}: {g['cases']} cases over {days} day(s), all assessed likely "
               f"benign on the PC ({why}).")
 
 
 def apply(store: Store, g: dict, days: float = 30, now: float | None = None,
-          actor: str = ACTOR) -> tuple[int, list[int]]:
+          actor: str = ACTOR, name_only: bool = False) -> tuple[int, list[int]]:
     """Create the suppression and close the group's open cases. Returns (rule id, closed case ids). `actor` is
-    who applied it, for the audit trail (the CLI, or the case desk's user)."""
+    who applied it, for the audit trail (the CLI, or the case desk's user). `name_only`: the rule reason, the
+    closing notes and the audit line name the program, not its path (the case desk shows all three; review of
+    #145 found the path, with the user's folder, on both pages after Apply)."""
     now = time.time() if now is None else now
-    text = reason(g)
+    text = reason(g, name_only)
     rule = store.add_suppression(g["latest_id"], "device_program", text, actor, expires_ts=now + days * 86400)
     closed = []
     for cid in g["open"]:

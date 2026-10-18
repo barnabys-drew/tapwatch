@@ -793,6 +793,9 @@ def test_apply_from_the_desk_creates_the_rule_and_closes_the_cases(server, tmp_p
     assert rule["scope"] == "device_program" and rule["expires_ts"]
     assert any(a["actor"].startswith("ui ") and a["action"] == "suppression added" for a in s.audit_trail())
     assert all(s.get(i)["status"] == "closed" and s.get(i)["disposition"] == "benign_expected" for i in ids)
+    for page in ("/suppressions", f"/case/{ids[0]}"):                             # the path never reaches the desk
+        _, text = request(app, "GET", page, cookie=sid)
+        assert "AppData" not in text and "agent.exe" in text, page
     r, text = request(app, "POST", action, {"csrf": csrf}, cookie=sid)           # twice: the suggestion is gone
     assert r.status == 409 and "gone" in text
     r, _ = request(app, "POST", action, {"csrf": "wrong"}, cookie=sid)
@@ -815,4 +818,19 @@ def test_the_digest_mentions_pending_suggestions(tmp_path):
     p = Pipeline([], Assets(), store, client=None, notifier=Note(), base_url="https://desk.example")
     assert p.send_digest() == 1
     title, items = sent[0]
-    assert "1 suggestion(s)" in title and items[0]["facts"]["Open"] == "https://desk.example/suppressions#explained"
+    assert title == "tapwatch daily digest: 1 suggestion(s)"
+    assert items[0]["facts"]["Open"] == "https://desk.example/suppressions#explained"
+
+
+def test_apply_needs_a_login(server):
+    """An unauthenticated POST to Apply, even with a valid CSRF token for a pre-login session, applies nothing."""
+    app, db = server(token="abcde-fghij-klmno-pqrst")
+    explained_store(db)
+    r, text = request(app, "GET", "/login")
+    sid = re.search(rf"{ui.COOKIE}=([^;]+)", r.getheader("Set-Cookie")).group(1)
+    csrf = re.search(r'name="csrf" value="([^"]+)"', text).group(1)
+    from tapwatch import explain
+    key = explain.group_key(explain.suggestions(Store(db))[0])
+    r, _ = request(app, "POST", f"/explain/{key}/apply", {"csrf": csrf}, cookie=sid)
+    assert r.status == 303 and r.getheader("Location") == "/login"
+    assert Store(db).suppressions() == []

@@ -459,6 +459,8 @@ def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str
     verdict = json.loads(r["verdict"]) if r["verdict"] else None
 
     def fact_value(k, v) -> str:
+        if k == "host_program_path" and isinstance(v, str):  # the path names the user: the file name only
+            return e(v.replace("\\", "/").rsplit("/", 1)[-1])
         if k == "correlated" and isinstance(v, list):  # pipeline.correlate: the other side of the story, as links
             return " · ".join(f'<a href="/case/{int(p["id"])}">#{int(p["id"])}</a> {e(p.get("detector", ""))} '
                               f'({e(str(p.get("route", "")))}, {abs(int(p.get("minutes", 0)))} min)'
@@ -560,7 +562,8 @@ def _suppress_form(r, facts: dict, indicators: list, csrf: str) -> str:
     this = f"this device ({dev}, {r['host']})" if dev != r["host"] else f"this device ({r['host']})"
     choices = []
     if facts.get("host_program_path"):  # host context tied every connection to one program
-        choices.append(("device_program", f"{r['detector']} + {this} + program {facts['host_program_path']}"))
+        name = str(facts["host_program_path"]).replace("\\", "/").rsplit("/", 1)[-1]  # the path names the user
+        choices.append(("device_program", f"{r['detector']} + {this} + program {name}"))
     if ind:
         choices.append(("device_indicator", f"{r['detector']} + {this} + {ind}"))
         if dom and dom != ind:  # a named host: offer its whole domain too (zone-02 after zone-01)
@@ -664,11 +667,11 @@ def render_explained(store: Store, csrf: str) -> str:
         return ""
     rows = []
     for g in sugg:
-        program = g["program"].replace("\\", "/").rsplit("/", 1)[-1]   # the name only: the path holds the user's name
+        program = explain.program_name(g["program"])   # the name only: the path holds the user's name
         rows.append(f'<tr><td class="mono">{e(g["detector"])}</td><td class="mono">{e(g["host"])}</td>'
                     f'<td class="mono">{e(program)}</td><td class="mono">{e(g["destination"])}</td>'
                     f'<td class="num"><b>{g["cases"]}</b> <span class="faint">({len(g["open"])} open)</span></td>'
-                    f'<td>{e(explain.reason(g).replace(g["program"], program))}</td>'
+                    f'<td>{e(explain.reason(g, name_only=True))}</td>'
                     f'<td><form method="post" action="/explain/{explain.group_key(g)}/apply">{csrf_field(csrf)}'
                     f'<button>Apply</button></form></td></tr>')
     return ('<h2 id="explained">Explained by host context</h2><p class="sub">Cases that keep firing for one program '
@@ -1091,7 +1094,7 @@ class Handler(BaseHTTPRequestHandler):
                 g = next((g for g in explain.suggestions(store) if explain.group_key(g) == m.group(1)), None)
                 if g is None:  # applied already, or no longer all likely benign: nothing to do
                     return self._error(409, "That suggestion is gone: it was applied, or a case in it changed.", sid)
-                explain.apply(store, g, actor=actor)
+                explain.apply(store, g, actor=actor, name_only=True)
                 return self._send(303, location="/suppressions")
             if m := SUPPRESSION_DELETE.match(path):
                 store.delete_suppression(int(m.group(1)), actor)

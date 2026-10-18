@@ -113,7 +113,8 @@ def describe_rule(rule) -> str:
     elif rule["scope"] == "device_domain":
         what = f"{rule['host']}, any host under {rule['indicator']}"
     elif rule["scope"] == "device_program":
-        what = f"{rule['host']}, program {rule['indicator']}"
+        name = str(rule["indicator"]).replace("\\", "/").rsplit("/", 1)[-1]  # the path names the user: the name only
+        what = f"{rule['host']}, program {name}"
     else:
         what = f"{rule['host']}, {rule['indicator']}"
     return f"#{rule['id']} {rule['detector']} ({what})"

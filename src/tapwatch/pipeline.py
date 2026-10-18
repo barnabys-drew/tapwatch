@@ -266,7 +266,8 @@ class Pipeline:
                      "Why": row["reason"],
                      "Seen": f"{row['hits']} time(s)", "Case": case_link(self.base_url, row["id"])}
             items.append({"heading": row["title"], "facts": facts, "untrusted": json.loads(row["indicators"])})
-        self.notifier.send(f"tapwatch daily digest: {len(rows)} item(s) to review"
-                           + (f", {len(sugg)} suggestion(s)" if sugg else ""), items)
+        # A digest of suggestions alone repeats daily while they wait (the digest clock): a reminder, on purpose.
+        parts = ([f"{len(rows)} item(s) to review"] if rows else []) + ([f"{len(sugg)} suggestion(s)"] if sugg else [])
+        self.notifier.send("tapwatch daily digest: " + ", ".join(parts), items)
         self.store.mark_digested([r["id"] for r in rows[:40]])
         return len(items)
