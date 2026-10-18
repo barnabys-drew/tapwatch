@@ -796,7 +796,7 @@ def test_the_agent_keeps_the_linux_command_line_only_when_a_signal_fires():
     import re as _re
     from pathlib import Path
     raw = Path(__file__).resolve().parents[1].joinpath("agents", "config", "osquery.conf").read_text()
-    q = json.loads(_re.sub(r"^\s*//.*$", "", raw, flags=_re.M), strict=False)["schedule"]["bpf_process_events"]["query"]
+    q = json.loads(_re.sub(r"^\s*//.*$", "", raw, flags=_re.MULTILINE), strict=False)["schedule"]["bpf_process_events"]["query"]
     flags = ("dlrun", "revshell", "b64exec", "histclear", "tmpexec")
     assert "CASE WHEN " + " OR ".join(f"lcmd_{f}" for f in flags) + " THEN cmdline END AS cmdline" in q
     assert all(f") IS NOT NULL) AS lcmd_{f}" in q for f in flags)
