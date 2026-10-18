@@ -825,6 +825,63 @@ the same `HostDetector` base and `EndpointState`.
   (`DisableAntiSpyware` via `reg add`, which R24 does not read), WMI from a compiled binary (no command line),
   and log clearing by deleting the `.evtx` files; Sysmon 10 (LSASS access) is a separate rule.
 
+### R25 Burst of discovery commands (`host_recon`) — **built**
+- **Threat:** the first minutes on a foothold: who am I, what is this machine, what network and domain is it on
+  (T1033, T1082, T1016, T1087).
+- **Data:** `sysmon_events` event 1, program and parent names only.
+- **Logic:** `hostrules.DiscoveryBurst`. One parent starts ≥ 3 different discovery tools within 5 minutes, ≥ 2 of
+  them strong (`whoami`, `systeminfo`, `nltest`, `net`, `quser`, `query`, `klist`, `cmdkey`, `dsquery`, `arp`,
+  `wmic`); the weak ones (`ipconfig`, `netstat`, `nslookup`, `route`, `hostname`, `tasklist`, `getmac`) count
+  towards three but never make it alone. A shell as the parent (someone typing) → severity 3; anything else
+  → 4. One case per burst.
+- **Baseline:** measured 2026-10-16/18, 51.5 h, 17,577 starts: 37 discovery starts, all weak (ipconfig 27 from
+  tailscaled, tasklist 10 from wslhost); no parent ever reached three tools in five minutes.
+- **FPs:** an IT script or the owner diagnosing a domain problem (a digest item from a shell).
+- **Route:** ALERT, DIGEST from a shell. Code-only. **Safe test:** `whoami`, `systeminfo` and `nltest
+  /domain_trusts` typed in PowerShell within five minutes → one digest item (a shell parent); the alert shape
+  needs a non-shell parent, which the selfcheck covers.
+
+### R26 New browser extension with sensitive access (`host_extension`) — **built**
+- **Threat:** a malicious or bought-out extension stealing cookies and sessions with nothing on disk (T1176).
+- **Data:** the agent's daily `chrome_extensions` differential rows (every Chromium browser, every OS).
+- **Logic:** `hostrules.BrowserExtension`, R23's batching, inventory and warm-up learning keyed on the
+  extension's identifier (an update is a change). Debugger or proxy permission → severity 4; cookies, history,
+  web requests, native messaging, management, clipboard or capture → 3; otherwise nothing. osquery's
+  `permissions` column has API permissions, not Manifest V3 host permissions, so "every site" only counts where
+  an extension lists `<all_urls>` there.
+- **Baseline:** measured 2026-10-18: 1 added and 2 removed rows in 51.5 h; of 7 installed extensions, 4 ask for a
+  digest-level API (two password managers, an ad blocker, a mouse vendor's), none for the debugger or proxy.
+- **Route:** DIGEST, ALERT for the debugger or proxy. Code-only. **Safe test:** load an unpacked test extension
+  whose manifest asks for `debugger`; the case arrives after the next daily run.
+
+**R23 also reads WMI event subscriptions** (`wmi_persistence`: command-line and script consumers, hourly, Windows),
+an alert whatever they run (T1546.003). Measured 2026-10-18: the only subscription on the main PC is Windows' own
+SCM event-log filter, whose consumer is the built-in log kind, so 0 rows.
+
+### R27 Linux program from a temporary folder or memory, or a shell, connects out (`host_linux_connect`) — **built**
+- **Threat:** a dropped second stage run from `/tmp`, `/dev/shm`, `/var/tmp` or `/run/user`, a payload run from
+  memory (memfd), and a reverse shell (`bash -i >& /dev/tcp/…`, `nc -e`, `socat exec:`) (T1059.004, T1105).
+- **Data:** the agent's eBPF `bpf_connections` rows (every outgoing connection, however short; Linux and WSL).
+- **Logic:** `hostrules.LinuxSuspiciousConnect`. An outside connection by a program whose path is in one of those
+  folders or a memfd, or by a shell or netcat (`bash`, `sh`, `dash`, `zsh`, `ksh`, `nc`, `ncat`, `socat`,
+  `telnet`) → severity 4, suppressible per program. A binary deleted while running is not counted.
+- **Baseline:** measured 2026-10-16/18, 30.7 h of the WSL box: 49,975 outgoing connections, none from those folders
+  or memory; shells started 78,967 times and held a connection 0 times; java, lua and python connected while
+  deleted (package upgrades), hence no "deleted" clause.
+- **Route:** ALERT, code-only. **Safe test:** `cp /usr/bin/curl /tmp/c && /tmp/c -s https://example.com >/dev/null;
+  rm /tmp/c` → one alert. **Blind spots:** an interpreter (python, perl) holding the shell's socket; a payload
+  under the home folder; the 26,447 of 49,975 eBPF rows with no path (the process had exited when osquery looked
+  it up), so the measured zero covers the 47% that carry one. **FPs:** `go run` binaries under /tmp/go-build*,
+  AppImages under /tmp/.mount_*, installers or test copies run from /tmp (suppress per program).
+
+**R23 on Linux also reads** new SSH authorized keys (`authorized_keys`: the key type and its last 16 characters,
+never the file path; an alert, T1098.004) and new systemd units (`systemd_units`: units outside the package
+directories, snap mounts excluded, and every user unit file; a digest item, T1543.002). Measured 2026-10-18 on the
+WSL box: 0 keys; 24 user unit files (13 files and 11 enablement links), which the first run after deploy lists at
+once and R23 learns as an inventory. Any batch osquery marks as a query's first run (`counter` 0) is an inventory
+whatever its size, so a machine with one or two existing keys does not alert on them. The same key added to a
+second account is not seen again (the key identity has no account).
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
@@ -891,6 +948,9 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R21 Bad code signature connects out (built) | osquery snapshot | alert | code-only |
 | — | R23 New persistence entry (built) | osquery differential (tasks, services, startup, cron, launchd) | digest / alert | code-only |
 | — | R24 Backups, logs, protection or accounts changed (built) | osquery + Sysmon | alert | code-only; must_alert for backups and logs |
+| — | R25 Burst of discovery commands (built) | osquery + Sysmon | alert (shell: digest) | code-only |
+| — | R26 New browser extension with sensitive access (built) | osquery differential | digest / alert | code-only |
+| — | R27 Linux temp, memory or shell connection (built) | osquery eBPF | alert | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 
