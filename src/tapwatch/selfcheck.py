@@ -117,6 +117,13 @@ def bpf_conn(ts, path, parent="bash", remote=DST, port=443):
                                            "remote_address": remote, "remote_port": str(port), "parent_name": parent}}
 
 
+def bpf_exec(ts, path, **flags):
+    """One Linux/WSL eBPF exec row with the agent's command-line signals (R28)."""
+    return {"_type": "osquery", "_log": "/var/log/osquery", "name": "bpf_process_events", "unixTime": int(ts),
+            "ts": int(ts), "action": "added", "columns": {"time": str(int(ts)), "pid": "5000", "parent": "4000",
+                                                         "path": path, **{f"lcmd_{k}": "1" for k in flags}}}
+
+
 def tick(ts):
     return {"_type": "tick", "ts": ts}
 
@@ -235,6 +242,7 @@ SCENARIOS: list[Scenario] = [
     Scenario("R27 Linux program in /tmp connects out", [bpf_conn(T0, "/tmp/.cache/kworker")], "host_linux_connect", Route.ALERT),
     Scenario("R27 reverse shell: bash holds a connection", [bpf_conn(T0, "/usr/bin/bash", "python3", port=4444)],
              "host_linux_connect", Route.ALERT),
+    Scenario("R28 Linux download piped into a shell", [bpf_exec(T0, "/usr/bin/bash", dlrun=1)], "host_linux_cmd", Route.ALERT),
     Scenario("R22 the Zeek conn feed stops for 21 minutes", [conn(T0)] + [tick(T0 + 60 * i) for i in range(1, 22)],
              "feed_silence", Route.ALERT, config={"detectors": {"feed_silence": {"enabled": True}}}),
     Scenario("quiet: a 15-minute UDP voice call split into minute records (#63)", _video_call(), "beaconing", None),

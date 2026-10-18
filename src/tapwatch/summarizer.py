@@ -305,6 +305,11 @@ def _endpoint(c: Case) -> str:
         return (f"On the PC itself, the program {prog} held a connection to the internet{port} while its code signature "
                 f"was {f.get('signature', 'bad')}: {SIGNATURE_WORDS.get(f.get('signature'), 'it could not be verified')}."
                 f"{signer}{started_by}{folder}")
+    if c.detector == "host_linux_cmd":
+        return (f"On the PC itself (Linux), {prog} was started with a command line that means "
+                + " and ".join(f.get("signals") or ["something suspicious"]) + ". The agent read the command line on "
+                "the PC and sent only that; attackers use these to fetch and run code, call home, or hide; a developer "
+                "sometimes does too, which is why it can be suppressed.")
     if c.detector == "host_linux_connect":
         how = {"memory": "running from memory (a file that never touched the disk)",
                "temp": "running from a temporary folder", "shell": "a shell or netcat"}.get(f.get("how"), "a program")

@@ -38,6 +38,7 @@ from .hostctx import (
     CMD_DESTRUCTIVE,
     CMD_SUSPICIOUS,
     CMD_UNUSUAL,
+    PROCS,
     SIGS,
     SUSPICIOUS_CMD,
     SUSPICIOUS_DIRS,
@@ -73,7 +74,7 @@ TEMP_DIRS = ("/appdata/local/temp/", "c:/windows/temp/")
 SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable by every account, never an install
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
-         "host_destructive", "host_recon", "host_extension", "host_linux_connect")
+         "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd")
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
@@ -960,6 +961,55 @@ class LinuxSuspiciousConnect(HostDetector):
                  else "Program from a temporary folder or memory connected to the internet")
         return self.emit(ts, title, facts, 4, prog[:80])
 
+
+LINUX_CMD = {"dlrun": "a download piped into a shell", "revshell": "a reverse shell", "b64exec": "base64 decoded into a shell",
+             "histclear": "shell history switched off or cleared", "tmpexec": "a file in a temporary folder made executable"}
+
+
+class LinuxCommand(HostDetector):
+    """R28. On Linux or WSL, a program started with a command line that downloads and runs (`curl … | sh`), opens a
+    reverse shell (`/dev/tcp/`, `nc -e`, `socat exec:`, `bash -i >&`, a Python or Perl socket one-liner), runs
+    decoded base64, switches shell history off, or makes a file in /tmp, /dev/shm or /var/tmp executable (T1059.004,
+    T1105, T1027, T1070.003).
+
+    The agent's eBPF exec query computes these yes/no signals on the PC (lcmd_*) and keeps the command line in its
+    own log only when one fires: the log is readable by every local account (mode 0644), as on Windows. The text
+    never gets here. Each pattern was checked against matching lines and against harmless neighbours (`curl -o`,
+    `nc -zv`, `nc -l`, `base64 -d file`, `chmod 644 /tmp/…`, `grep -e`, `docker exec`). No baseline exists: command
+    lines were never collected before 2026-10-18, so the first day of flags is the measurement. A reverse shell is
+    severity 4 like the rest (a developer testing with netcat can suppress it), the temp-folder chmod is a digest
+    item. `sudo bash -c "curl … | sh"` shows the same line on two starts: the same signal within a minute is one
+    case, as for R24 (two users' commands in that minute merge too: a single-owner box).
+
+    Blind spot: a pipeline typed in an interactive shell is never one exec's command line (each program gets its
+    own argv, with no `|`), and `history -c` or `unset HISTFILE` typed there are shell builtins that exec nothing.
+    What it sees is `bash -c "…"` and `sh -c "…"` strings, which is how scripts, cron and coding agents run commands.
+    """
+
+    name = "host_linux_cmd"
+    QUERIES: ClassVar[tuple[str, ...]] = (PROCS,)
+    CHAIN = 60
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7):
+        super().__init__(state, reported_days)
+        self.chain: dict[tuple, float] = {}
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        hits = [k for k in LINUX_CMD if str(c.get(f"lcmd_{k}", "0")) == "1"]
+        if not hits:
+            return []
+        key = (self.state.host, tuple(hits))
+        if ts - self.chain.get(key, -1e18) < self.CHAIN:
+            return []
+        self.chain[key] = ts
+        if len(self.chain) > 200:
+            self.chain = {k: t for k, t in self.chain.items() if ts - t < self.CHAIN}
+        prog = str(c.get("path") or "").rsplit("/", 1)[-1] or "unknown"
+        severity = 3 if hits == ["tmpexec"] else 4
+        facts = {"program": prog[:80], "signals": [LINUX_CMD[k] for k in hits]}
+        return self.emit(ts, "Suspicious command on the PC (Linux)", facts, severity, prog[:80],
+                         (self.state.host, prog, tuple(hits)))
+
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
@@ -979,4 +1029,5 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     rules.append(BrowserExtension(state, warmup=warmup or Warmup(cfg.get("warmup_seconds", 86400)),
                                   **d.get(BrowserExtension.name, {})))
     rules.append(LinuxSuspiciousConnect(state, **d.get(LinuxSuspiciousConnect.name, {})))
+    rules.append(LinuxCommand(state, **d.get(LinuxCommand.name, {})))
     return rules
