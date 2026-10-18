@@ -254,6 +254,11 @@ def test_a_paired_case_on_the_same_device_is_floored_but_a_suppression_still_win
     low = case(facts={**case().facts, "correlated": pair, "correlated_best": "digest"}, base_severity=1)
     assert route(low, None)[0] is Route.LOG                            # a logged case next to a digest item stays logged
     assert route(digest, None, suppression="#3 beaconing (port 443)")[0] is Route.LOG   # the owner's word stands
+    capped = case(facts={**digest.facts, "host_max_route": "digest"}, base_severity=3)
+    assert route(capped, None)[0] is Route.DIGEST                      # a ceiling code proved is not raised by a pairing
+    owners = case(facts={**digest.facts, "host_who": "agent_unconfirmed", "host_attended": True, "host_agent_session": True,
+                         "host_jev_who": "owner_using_agent", "host_jev_conf": 0.9}, base_severity=3)
+    assert route(owners, None)[0] is Route.DIGEST                      # probably the owner's agent work: held, not lifted
     assert route(case(must_alert=True, facts={**case().facts, "correlated_best": "digest"}), None)[0] is Route.ALERT
 
 

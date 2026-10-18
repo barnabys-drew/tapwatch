@@ -165,10 +165,12 @@ class EndpointState:
     def __init__(self, host: str = "", gateways: list[str] | None = None):
         self.configured = host
         self._host = host
-        # the router's networks (network.gateways): the LAN address is the one on a router's /24. Measured
-        # 2026-10-17: the WSL agent in mirrored mode also lists 10.255.255.254, which sorted ahead of 192.168.x
-        # and gave three host cases a host no identity knew (#792-#794)
+        # the router's networks (network.gateways, documented as one router per /24): the LAN address is the one
+        # on a router's /24; a /16 or /23 LAN falls back to the old order. Measured 2026-10-17: the WSL agent in
+        # mirrored mode also lists 10.255.255.254, which sorted ahead of 192.168.x and gave three host cases a host
+        # no identity knew (#792-#794)
         self.lan_nets = {".".join(g.split(".")[:3]) for g in (gateways or ()) if g.count(".") == 3}
+        self._routed = False   # once an address on a router's net was seen, a snapshot without one keeps it
         self.starts: dict[str, Start] = {}
         self.latest = 0.0
         # Signatures arrive every 5 minutes per program path (process_signatures), connections every minute
@@ -189,8 +191,8 @@ class EndpointState:
         lan = sorted(a for a in v4 if a.startswith(LAN_PREFIXES))
         routed = [a for a in lan if ".".join(a.split(".")[:3]) in self.lan_nets]
         if routed:
-            self._host = routed[0]
-        elif lan:
+            self._host, self._routed = routed[0], True
+        elif lan and not self._routed:
             self._host = lan[0]
         elif v4 and not self._host:
             self._host = min(v4)   # better than nothing, replaced by the first LAN address seen

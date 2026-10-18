@@ -310,7 +310,10 @@ def test_pc_address_follows_the_agents_snapshots_and_prefers_the_lan():
     EncodedCommand(routed).feed(addrs(T0, "10.255.255.254", "192.168.50.77", "172.17.0.1"))
     assert routed.host == "192.168.50.77"
     EncodedCommand(routed).feed(addrs(T0 + 300, "10.255.255.254", "172.17.0.1"))
-    assert routed.host == "10.255.255.254"                                                  # nothing on the router's net: as before
+    assert routed.host == "192.168.50.77"                                                   # a routed address, once seen, sticks
+    fallback = EndpointState("", gateways=["192.168.50.1"])
+    EncodedCommand(fallback).feed(addrs(T0, "10.0.0.5", "172.17.0.1"))
+    assert fallback.host == "10.0.0.5"                                                      # never on the router's net: the old order
 
 
 def test_wsl_nat_snapshot_never_moves_the_host_off_the_lan():

@@ -65,16 +65,20 @@ def route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
     best = case.facts.get("correlated_best")
     if best in ("alert", "digest") and not case.must_alert and not suppression and not learning:
         # A host case and a network case on the same device within five minutes are one story (pipeline.correlate).
-        # Applied last, after the code caps: next to an alert the other side is at least a digest item, and two
-        # digest-or-louder sides are an alert. A suppression still wins (the owner said that side is expected),
-        # and so does the learning period. Measured 2026-10-17: an encoded command (alert) followed 12 s later by
-        # a first contact with a new domain that was logged as popular and shared; this lifts it into the digest,
-        # where the pair reads as one story.
+        # Applied last: next to an alert the other side is at least a digest item (past a `log` cap: a popular,
+        # shared domain next to an encoded command is worth the digest), and two digest-or-louder sides are an
+        # alert, unless code put a digest ceiling on this case (`host_max_route`/`max_route: digest`, a program
+        # the PC checks found clean) or read it as the owner's agent work (owner_likely): on the dev PC the
+        # agent spawning a shell and then connecting is the normal day (2-11 digest-or-louder network cases),
+        # and a ceiling code proved must not be raised by a pairing. A suppression and the learning period win.
+        # Measured 2026-10-17 on the live history: the three alert pairs change nothing, and no logged case had
+        # an unsuppressed alert partner, so the floor is for the next real pair, not a re-route of the past.
         pair = (case.facts.get("correlated") or [{}])[0]
         with_whom = f"#{pair.get('id')} ({pair.get('detector')}, {abs(pair.get('minutes', 0))} min apart)"
+        capped = "digest" in (case.facts.get("max_route"), case.facts.get("host_max_route"))
         if r is Route.LOG and best == "alert":
             return Route.DIGEST, f"paired with an alert on the same device: {with_whom}"
-        if r is Route.DIGEST:
+        if r is Route.DIGEST and not capped and not owner_likely(case):
             return Route.ALERT, f"paired with another case on the same device: {with_whom}"
     return r, reason
 

@@ -106,12 +106,13 @@ class Pipeline:
                 log.warning("AI triage failed, using rules only: %s", e)
         r, reason = route(case, verdict, self.thresholds, suppression, self.learning_label(case.ts))
         case_id = self.store.add(case, state, verdict, r, reason)
-        for other in partners:  # the earlier case learns about this one too, with a note on its page
+        for other in partners:  # the other case learns about this one too, with a note on its page
             minutes = round((case.ts - other["first_ts"]) / 60)
+            when = "in the same minute" if not minutes else f"{abs(minutes)} min {'later' if minutes > 0 else 'earlier'}"
             self.store.link_cases(other["id"], case_id,
                                   {"id": case_id, "detector": case.detector, "title": case.title, "route": r.value,
                                    "minutes": minutes},
-                                  f"paired with #{case_id} ({case.detector}, {abs(minutes)} min later on the same device)")
+                                  f"paired with #{case_id} ({case.detector}, {when} on the same device)")
         if suppression and r is not Route.ALERT:
             # The owner already said this is expected: the case is kept for the stats and the audit
             # trail, but arrives closed rather than as another "new" item to triage by hand.
@@ -183,10 +184,11 @@ class Pipeline:
         network cases or two host cases (those pair through host context and dedupe already). Measured 2026-10-17
         on the live case history, the 06:00 replay flood excluded: the pairs that were one story sat 0.0, 0.2,
         2.5, 3.7 and 4.4 minutes apart (a temp-folder curl and its new domain, a tampered binary and its new
-        domain, a LOLBin and a new domain, an encoded command and the new domain it reached), and the nearest
+        domain, a LOLBin and a new domain, a tls_odd item and the encoded command after it), and the nearest
         unrelated cases 6.2 and 11 minutes away, so the window is five minutes. The facts carry up to three
-        partners, newest first; `correlated_best` is the loudest partner's route, which the router turns into a
-        floor (router.route). A monitor case (R22) pairs with nothing."""
+        partners, loudest first then newest, so the first is the one that sets `correlated_best`, which the
+        router turns into a floor (router.route). A monitor case (R22) pairs with nothing, nor does a case the
+        owner suppressed."""
         if not self.store or case.facts.get("source") == "monitor":
             return []
         mine = case.facts.get("source") == "endpoint"
@@ -195,13 +197,17 @@ class Pipeline:
             facts = json.loads(r["facts"] or "{}")
             if facts.get("source") == "monitor" or (facts.get("source") == "endpoint") == mine:
                 continue
+            if str(r["reason"] or "").startswith("suppressed:"):
+                continue  # the owner said that side is expected: it is not half of a story (review of #139: #786)
             partners.append(r)
         if not partners:
             return []
+        partners.sort(key=lambda r: (RANK[Route(r["route"])], r["id"]), reverse=True)  # loudest first, then newest
+        partners = partners[:3]
         case.facts["correlated"] = [{"id": r["id"], "detector": r["detector"], "title": r["title"], "route": r["route"],
-                                     "minutes": round((r["first_ts"] - case.ts) / 60)} for r in partners[:3]]
-        case.facts["correlated_best"] = max((r["route"] for r in partners), key=lambda v: RANK[Route(v)])
-        return partners[:3]
+                                     "minutes": round((r["first_ts"] - case.ts) / 60)} for r in partners]
+        case.facts["correlated_best"] = partners[0]["route"]
+        return partners
 
     def add_host_context(self, case: Case) -> None:
         """For a case on the tapwatch PC: which program, and was it the owner's coding agent (hostctx.py)."""

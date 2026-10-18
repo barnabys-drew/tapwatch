@@ -784,11 +784,14 @@ the same `HostDetector` base and `EndpointState`.
   digest item; two digest-or-louder sides make an alert. A suppression still wins, and so does the learning
   period; must-alert cases are untouched.
 - **Measured** 2026-10-17 on the live case history, the 06:00 replay flood excluded: the pairs that were one
-  story sat 0.0, 0.2, 2.5, 3.7 and 4.4 minutes apart (a temp-folder curl and its new domain, #403/#405; a
-  tampered binary and its new domain, #429/#430; a LOLBin and a new domain, #775/#776; an encoded command and
-  the new domain it reached, #786/#788), and the nearest unrelated cases 6.2 and 11 minutes away: a five-minute
-  window. With the floor, #788 (a first contact logged as popular and shared) would have reached the digest
-  next to its encoded command; the three alert pairs change nothing.
+  story sat 0.0, 2.5, 3.7 and 4.4 minutes apart (a temp-folder curl and its new domain, #403/#405; a tampered
+  binary and its new domain, #429/#430; a LOLBin and a new domain, #775/#776; a tls_odd item and the encoded
+  command after it, #785/#786), and the nearest unrelated cases 6.2 and 11 minutes away: a five-minute window.
+  The floor re-routes none of them: the three alert pairs are alerts already, and #786 was suppressed, which
+  is why a suppressed case is not a partner at all. The floor is for the next real pair.
+- **Not lifted:** a case code capped at digest (`host_max_route`, `max_route`: the PC's checks found the
+  program clean) or read as the owner's agent work (`owner_likely`) stays at digest next to a digest partner;
+  on the dev PC the agent spawning a shell and then connecting is the normal day.
 - **FPs:** a dev PC raises a logged new-domain case every few minutes, so a host digest item will often find
   one; the pair then reads together in the digest, which is the point. Nothing is lifted above digest unless
   both sides were already digest or louder.
