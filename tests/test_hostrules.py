@@ -16,6 +16,7 @@ from tapwatch.hostrules import (
     DiscoveryBurst,
     EncodedCommand,
     EndpointState,
+    LinuxSuspiciousConnect,
     LolbinConnects,
     NewPersistence,
     TempFolderConnects,
@@ -709,3 +710,35 @@ def test_a_new_wmi_consumer_is_an_alert_whatever_it_runs():
     script = persist(T0, "wmi_persistence", kind="script", name="Beacon", action="VBScript", args="")
     (s,) = settle(NewPersistence(st()), script)
     assert s.base_severity == 4 and s.facts["script"] and s.facts["program"] == "vbscript" and s.facts["folder"] == "unknown"
+
+
+# ------------------------------------------------------------ R27 Linux temp, memory or shell connections; Linux persistence
+
+def lconn(t, path, parent="bash", remote=DST, port=443):
+    return {"_type": "osquery", "name": "bpf_connections", "unixTime": int(t), "ts": int(t), "action": "added",
+            "columns": {"time": str(int(t)), "pid": "4242", "parent": "4000", "path": path, "remote_address": remote,
+                        "remote_port": str(port), "protocol": "6", "parent_name": parent}}
+
+
+def test_linux_temp_memory_and_shell_connections_alert():
+    det = LinuxSuspiciousConnect(st())
+    (tmp,) = run(det, lconn(T0, "/tmp/.x/agent"))
+    assert (tmp.base_severity, tmp.facts["how"], tmp.indicators) == (4, "temp", ["agent"]) and tmp.detector == "host_linux_connect"
+    (mem,) = run(det, lconn(T0, "/memfd:payload (deleted)"))
+    assert mem.facts["how"] == "memory"
+    (sh,) = run(det, lconn(T0, "/usr/bin/bash", parent="python3", port=4444))
+    assert sh.facts["how"] == "shell" and sh.title.startswith("A shell or netcat")
+    no_paths(tmp)
+    assert run(LinuxSuspiciousConnect(st()), lconn(T0, "/usr/bin/curl"), lconn(T0, "/tmp/x", remote="192.168.50.1")) == []
+
+
+def test_linux_persistence_keys_alert_and_units_are_digest_items():
+    key = persist(T0, "authorized_keys", algorithm="ssh-ed25519", key_tail="AAAAC3NzaC1lZDI1")
+    (k,) = settle(NewPersistence(st()), key)
+    assert (k.base_severity, k.facts["entry"], k.facts["kind"]) == (4, "authorized key (ssh-ed25519)", "SSH authorized key")
+    unit = persist(T0, "systemd_units", name="sync.service", path="/home/u/.config/systemd/user/sync.service")
+    (u,) = settle(NewPersistence(st()), unit)
+    assert (u.base_severity, u.facts["entry"], u.facts["folder"]) == (3, "sync.service", "profile")
+    assert "/home/" not in json.dumps(u.facts) and "/home/" not in json.dumps(k.facts)
+    units = [persist(T0, "systemd_units", name=f"u{i}.service", path=f"/home/u/.config/systemd/user/u{i}.service") for i in range(24)]
+    assert settle(NewPersistence(st()), *units) == []                              # the first run after deploy: an inventory

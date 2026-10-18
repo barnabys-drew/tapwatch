@@ -305,6 +305,13 @@ def _endpoint(c: Case) -> str:
         return (f"On the PC itself, the program {prog} held a connection to the internet{port} while its code signature "
                 f"was {f.get('signature', 'bad')}: {SIGNATURE_WORDS.get(f.get('signature'), 'it could not be verified')}."
                 f"{signer}{started_by}{folder}")
+    if c.detector == "host_linux_connect":
+        how = {"memory": "running from memory (a file that never touched the disk)",
+               "temp": "running from a temporary folder", "shell": "a shell or netcat"}.get(f.get("how"), "a program")
+        parent = f" It was started by {_program(f['parent'])}." if f.get("parent") else ""
+        return (f"On the PC itself (Linux), {prog}, {how}, connected to the internet{port}.{parent} A dropped second "
+                "stage runs from a temporary folder or memory, and a reverse shell is a shell holding the connection "
+                "itself; on this machine neither had happened before.")
     if c.detector == "host_recon":
         tools = ", ".join(_program(p) for p in f.get("programs", []))
         who = ("a shell (someone typing, or a script)" if f.get("parent_class") == "shell" else "a program that is not a shell")
