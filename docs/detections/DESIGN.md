@@ -825,6 +825,39 @@ the same `HostDetector` base and `EndpointState`.
   (`DisableAntiSpyware` via `reg add`, which R24 does not read), WMI from a compiled binary (no command line),
   and log clearing by deleting the `.evtx` files; Sysmon 10 (LSASS access) is a separate rule.
 
+### R25 Burst of discovery commands (`host_recon`) — **built**
+- **Threat:** the first minutes on a foothold: who am I, what is this machine, what network and domain is it on
+  (T1033, T1082, T1016, T1087).
+- **Data:** `sysmon_events` event 1, program and parent names only.
+- **Logic:** `hostrules.DiscoveryBurst`. One parent starts ≥ 3 different discovery tools within 5 minutes, ≥ 2 of
+  them strong (`whoami`, `systeminfo`, `nltest`, `net`, `quser`, `query`, `klist`, `cmdkey`, `dsquery`, `arp`,
+  `wmic`); the weak ones (`ipconfig`, `netstat`, `nslookup`, `route`, `hostname`, `tasklist`, `getmac`) count
+  towards three but never make it alone. A shell as the parent (someone typing) → severity 3; anything else
+  → 4. One case per burst.
+- **Baseline:** measured 2026-10-16/18, 51.5 h, 17,577 starts: 37 discovery starts, all weak (ipconfig 27 from
+  tailscaled, tasklist 10 from wslhost); no parent ever reached three tools in five minutes.
+- **FPs:** an IT script or the owner diagnosing a domain problem (a digest item from a shell).
+- **Route:** ALERT, DIGEST from a shell. Code-only. **Safe test:** `whoami`, `systeminfo` and `nltest
+  /domain_trusts` typed in PowerShell within five minutes → one digest item (a shell parent); the alert shape
+  needs a non-shell parent, which the selfcheck covers.
+
+### R26 New browser extension with sensitive access (`host_extension`) — **built**
+- **Threat:** a malicious or bought-out extension stealing cookies and sessions with nothing on disk (T1176).
+- **Data:** the agent's daily `chrome_extensions` differential rows (every Chromium browser, every OS).
+- **Logic:** `hostrules.BrowserExtension`, R23's batching, inventory and warm-up learning keyed on the
+  extension's identifier (an update is a change). Debugger or proxy permission → severity 4; cookies, history,
+  web requests, native messaging, management, clipboard or capture → 3; otherwise nothing. osquery's
+  `permissions` column has API permissions, not Manifest V3 host permissions, so "every site" only counts where
+  an extension lists `<all_urls>` there.
+- **Baseline:** measured 2026-10-18: 1 added and 2 removed rows in 51.5 h; of 7 installed extensions, 4 ask for a
+  digest-level API (two password managers, an ad blocker, a mouse vendor's), none for the debugger or proxy.
+- **Route:** DIGEST, ALERT for the debugger or proxy. Code-only. **Safe test:** load an unpacked test extension
+  whose manifest asks for `debugger`; the case arrives after the next daily run.
+
+**R23 also reads WMI event subscriptions** (`wmi_persistence`: command-line and script consumers, hourly, Windows),
+an alert whatever they run (T1546.003). Measured 2026-10-18: the only subscription on the main PC is Windows' own
+SCM event-log filter, whose consumer is the built-in log kind, so 0 rows.
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
@@ -891,6 +924,8 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R21 Bad code signature connects out (built) | osquery snapshot | alert | code-only |
 | — | R23 New persistence entry (built) | osquery differential (tasks, services, startup, cron, launchd) | digest / alert | code-only |
 | — | R24 Backups, logs, protection or accounts changed (built) | osquery + Sysmon | alert | code-only; must_alert for backups and logs |
+| — | R25 Burst of discovery commands (built) | osquery + Sysmon | alert (shell: digest) | code-only |
+| — | R26 New browser extension with sensitive access (built) | osquery differential | digest / alert | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 

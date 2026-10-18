@@ -305,6 +305,21 @@ def _endpoint(c: Case) -> str:
         return (f"On the PC itself, the program {prog} held a connection to the internet{port} while its code signature "
                 f"was {f.get('signature', 'bad')}: {SIGNATURE_WORDS.get(f.get('signature'), 'it could not be verified')}."
                 f"{signer}{started_by}{folder}")
+    if c.detector == "host_recon":
+        tools = ", ".join(_program(p) for p in f.get("programs", []))
+        who = ("a shell (someone typing, or a script)" if f.get("parent_class") == "shell" else "a program that is not a shell")
+        return (f"On the PC itself, {_program(f.get('parent', ''))}, {who}, started {f.get('count', 0)} different "
+                f"discovery tools within five minutes: {tools}. An intruder's first minutes on a machine look like "
+                "this (who am I, what is this machine, what network is it on); a person troubleshooting uses fewer of them.")
+    if c.detector == "host_extension":
+        what = []
+        if f.get("all_sites"):
+            what.append("read and change every site you visit")
+        if f.get("apis"):
+            what.append("use " + ", ".join(f["apis"]))
+        return (f"On the PC itself, a new browser extension, {_program(f.get('extension', ''))}, was installed that can "
+                + " and ".join(what) + ". Extensions like this can take cookies and sessions without anything on "
+                "disk; ad blockers and password managers ask for the same access, so check it was yours.")
     if c.detector == "host_destructive":
         what = " and ".join(f.get("harm") or ["a destructive command"])
         return (f"On the PC itself, {prog} ran a command that means {what}.{started_by}{cmdline}{folder} Ransomware "

@@ -72,10 +72,11 @@ TEMP_DIRS = ("/appdata/local/temp/", "c:/windows/temp/")
 SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable by every account, never an install
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
-         "host_destructive")
+         "host_destructive", "host_recon", "host_extension")
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
-                   "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent"}
+                   "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
+                   "wmi_persistence": "WMI event subscription"}
 SCRIPT_EXT = (".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".bat", ".cmd", ".hta", ".sh", ".py", ".pl", ".rb")
 EXEC_EXT = SCRIPT_EXT + (".exe", ".com", ".dll", ".msc", ".scr", ".cpl", ".lnk")
 POSIX_SHELLS = {"sh", "bash", "zsh", "dash", "python", "python3", "perl", "node", "ruby", "nohup"}
@@ -656,7 +657,7 @@ class NewPersistence(HostDetector):
         return []
 
     def removed(self, query: str, rows: list[dict], ts: float) -> list[Case]:
-        if query in PERSIST_QUERIES:
+        if query in self.QUERIES:
             self._batch(query, ts)["removed"].extend(rows)
         return []
 
@@ -668,6 +669,8 @@ class NewPersistence(HostDetector):
             return str(c.get("command") or "")
         if query == "launchd_run_at_load":
             return " ".join(str(c.get(k) or "") for k in ("program", "program_arguments")).strip()
+        if query == "wmi_persistence":
+            return " ".join(str(c.get(k) or "") for k in ("action", "args")).strip()
         return str(c.get("path") or "")   # services, startup items
 
     @staticmethod
@@ -706,6 +709,20 @@ class NewPersistence(HostDetector):
 
     def judge(self, query: str, c: dict, ts: float) -> list[Case]:
         target, entry = self.target_of(query, c), self.entry_of(query, c)
+        if query == "wmi_persistence":
+            # A WMI command-line or script consumer runs code when an event fires, survives reboots and leaves no
+            # file in a startup place (T1546.003). Measured 2026-10-18 on the main PC: the only subscription is
+            # Windows' own SCM event-log filter, whose consumer is the built-in log kind, so 0 of these. Any new one
+            # is an alert, whatever it runs.
+            first = (_target_tokens(target) or [""])[0]
+            prog = _basename(first).lower() or str(c.get("action") or "script").lower()
+            script = c.get("kind") == "script"
+            facts = {"kind": PERSIST_QUERIES[query], "entry": entry[:120], "program": prog,
+                     "folder": "unknown" if script or not first else win_folder_class(first), "script": script,
+                     "shell": prog in WIN_SHELLS or prog in WIN_LOLBINS, "signals": [], "url": "http" in target.lower(),
+                     "registry": False}
+            return self.emit(ts, "New WMI event subscription on the PC", facts, 4, prog or "wmi",
+                             (self.state.host, query, _entry_key(entry)))
         tokens = _target_tokens(target)
         if not tokens:
             return []   # a task with no action (Windows' SoftLanding tasks), or a bare registry value
@@ -758,6 +775,118 @@ def _port(v) -> int | None:
         return None
 
 
+
+DISCOVERY_STRONG = {"whoami.exe", "systeminfo.exe", "nltest.exe", "net.exe", "net1.exe", "quser.exe", "query.exe",
+                    "klist.exe", "cmdkey.exe", "dsquery.exe", "arp.exe", "wmic.exe"}
+DISCOVERY_WEAK = {"ipconfig.exe", "netstat.exe", "nslookup.exe", "route.exe", "hostname.exe", "tasklist.exe",
+                  "getmac.exe"}
+RECON_WINDOW = 300
+INTERACTIVE_PARENTS = {"explorer.exe", "windowsterminal.exe", "openconsole.exe", "conhost.exe", "code.exe",
+                       "wezterm-gui.exe", "alacritty.exe"}   # what starts a shell a person types in
+
+
+class DiscoveryBurst(HostDetector):
+    """R25. One program starts three or more different discovery tools within five minutes, at least two of them
+    the ones an intruder runs and a home user rarely does (whoami, systeminfo, nltest, net, quser, klist, arp…):
+    the first minutes on a new foothold (T1033, T1082, T1016, T1087).
+
+    Measured 2026-10-16/18 over 51.5 h of the main PC's log, 17,577 process starts: 37 discovery starts, all weak
+    (ipconfig 27 from tailscaled, tasklist 10 from wslhost), and no parent ever started three different ones in
+    five minutes. The owner troubleshooting a network (ipconfig, nslookup, netstat in a terminal) uses the weak
+    tools, so they count towards the three but never make it alone. A shell as the parent (someone typing) is a
+    digest item; anything else (a script host, an Office app, an unknown program running them) alerts.
+    """
+
+    name = "host_recon"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON,)
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7):
+        super().__init__(state, reported_days)
+        self.recent: dict[str, list[tuple[float, str]]] = {}   # parent -> (time, discovery program) in the window
+        self.fired: dict[str, float] = {}
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if str(c.get("eventid")) != "1":
+            return []
+        prog = _basename(c.get("path") or "").lower()
+        if prog not in DISCOVERY_STRONG and prog not in DISCOVERY_WEAK:
+            return []
+        parent = _basename(c.get("parent_path") or "") or "unknown"
+        seen = [(t, p) for t, p in self.recent.get(parent.lower(), []) if ts - t <= RECON_WINDOW] + [(ts, prog)]
+        self.recent[parent.lower()] = seen[-30:]
+        if len(self.recent) > 500:
+            self.recent = {k: v for k, v in self.recent.items() if v and ts - v[-1][0] <= RECON_WINDOW}
+            self.fired = {k: t for k, t in self.fired.items() if ts - t <= RECON_WINDOW}
+        tools = sorted({p for _, p in seen})
+        if len(tools) < 3 or len(set(tools) & DISCOVERY_STRONG) < 2:
+            return []
+        if ts - self.fired.get(parent.lower(), -1e18) < RECON_WINDOW:
+            return []   # the same burst keeps going: one case
+        self.fired[parent.lower()] = ts
+        pclass = parent_class(parent)
+        # A shell parent is someone typing only if that shell was started by Explorer or a terminal: an implant
+        # runs `cmd /c whoami` too (review of #147). The shell's own start is known when it began within the last
+        # ten minutes (EndpointState); a long-open terminal is not, and keeps the digest.
+        shell_start = self.state.start_of(c.get("parent_guid") or "", ts)
+        interactive = shell_start is None or shell_start.parent.lower() in INTERACTIVE_PARENTS
+        severity = 3 if pclass == "shell" and interactive else 4
+        facts = {"programs": tools[:8], "parent": parent, "parent_class": pclass, "count": len(tools)}
+        if shell_start is not None:
+            facts["parent_started_by"] = shell_start.parent
+        return self.emit(ts, "Burst of discovery commands on the PC", facts, severity, parent,
+                         (self.state.host, parent.lower()))
+
+
+BROAD_HOSTS = ("<all_urls>", "*://*/*", "http://*/*", "https://*/*")
+SENSITIVE_APIS = {"debugger", "nativemessaging", "proxy", "cookies", "webrequest", "webrequestblocking", "management",
+                  "history", "clipboardread", "desktopcapture"}
+
+
+class BrowserExtension(NewPersistence):
+    """R26. A browser extension installed after warm-up that asks for the debugger or proxy control (alert: they
+    reach past the browser, to every page's memory or all of its traffic) or for cookies, history, web requests,
+    native programs or other extensions (digest): cookie and session theft without malware on disk (T1176).
+
+    The agent's `chrome_extensions` query runs daily in differential mode on every OS (Chrome, Edge, Brave and the
+    other Chromium browsers). Same batching, inventory and warm-up learning as R23: an update is a removed+added pair
+    with the same identifier and is a change, not a new extension. Measured 2026-10-18: 1 added and 2 removed rows
+    in 51.5 h; of the 7 installed extensions, 4 ask for a digest-level API (both password managers, an ad blocker,
+    a mouse vendor's) and none for an alert-level one. osquery's `permissions` column carries API permissions but
+    not Manifest V3 host permissions, so "every site" counts only where an extension lists it there (MV2).
+    """
+
+    name = "host_extension"
+    QUERIES: ClassVar[tuple[str, ...]] = ("chrome_extensions",)
+    DANGEROUS: ClassVar[set[str]] = {"debugger", "proxy"}
+
+    @staticmethod
+    def target_of(query: str, c: dict) -> str:
+        return str(c.get("identifier") or "")
+
+    @staticmethod
+    def entry_of(query: str, c: dict) -> str:
+        return str(c.get("name") or "")
+
+    def key(self, query: str, c: dict) -> tuple:
+        """The identifier alone: an update that renames or relocalises the extension is the same extension. The
+        4-tuple shape matches R23's saved state."""
+        return (self.state.host, query, "", self.target_of(query, c))
+
+    def judge(self, query: str, c: dict, ts: float) -> list[Case]:
+        # optional_permissions are granted at runtime on request: an extension can ask for the debugger later
+        raw = f'{c.get("permissions") or ""},{c.get("optional_permissions") or ""}'
+        perms = {p.strip().lower() for p in re.split(r"[,\s]+", raw) if p.strip()}
+        broad = any(h.lower() in perms for h in BROAD_HOSTS)
+        apis = sorted(perms & SENSITIVE_APIS)
+        if not broad and not apis:
+            return []   # a narrow extension (one site, a theme, a new-tab page)
+        severity = 4 if set(apis) & self.DANGEROUS else 3
+        name = self.entry_of(query, c)
+        facts = {"extension": name[:80], "identifier": self.target_of(query, c)[:40], "all_sites": broad,
+                 "apis": apis}
+        return self.emit(ts, "New browser extension with broad access", facts, severity, name[:80] or "extension",
+                         (self.state.host, self.target_of(query, c)))
+
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
@@ -773,4 +902,7 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     rules.append(NewPersistence(state, warmup=warmup or Warmup(cfg.get("warmup_seconds", 86400)),
                                 **d.get(NewPersistence.name, {})))
     rules.append(DestructiveCommand(state, **d.get(DestructiveCommand.name, {})))
+    rules.append(DiscoveryBurst(state, **d.get(DiscoveryBurst.name, {})))
+    rules.append(BrowserExtension(state, warmup=warmup or Warmup(cfg.get("warmup_seconds", 86400)),
+                                  **d.get(BrowserExtension.name, {})))
     return rules

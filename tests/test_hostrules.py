@@ -11,7 +11,9 @@ from tapwatch.hostrules import (
     NAMES,
     AppSpawnsShell,
     BadSignatureConnects,
+    BrowserExtension,
     DestructiveCommand,
+    DiscoveryBurst,
     EncodedCommand,
     EndpointState,
     LolbinConnects,
@@ -643,3 +645,67 @@ def test_the_rule_and_its_signals_are_wired_in():
     from tapwatch.router import CODE_ONLY
     assert "host_destructive" in NAMES and "host_destructive" in CODE_ONLY
     assert flags_of({"cmd_shadow": "1", "cmd_recovery": "1", "cmd_admin": "1", "cmd_url": "1"}) == ("shadow", "recovery", "admin", "url")
+
+
+# ------------------------------------------------------------ R25 discovery burst, R26 browser extension, WMI in R23
+
+WHOAMI, SYSINFO, NLTEST, IPCONFIG = (rf"C:\Windows\System32\{p}" for p in ("whoami.exe", "systeminfo.exe", "nltest.exe", "ipconfig.exe"))
+ODD = r"C:\Users\<user>\AppData\Local\Temp\updater.exe"
+
+
+def test_three_discovery_tools_from_one_program_alert_and_a_shell_is_a_digest_item():
+    (c,) = run(DiscoveryBurst(st()), start(T0, WHOAMI, ODD), start(T0 + 20, SYSINFO, ODD), start(T0 + 40, IPCONFIG, ODD))
+    assert c.base_severity == 4 and c.detector == "host_recon" and c.facts["programs"] == ["ipconfig.exe", "systeminfo.exe", "whoami.exe"]
+    assert c.indicators == ["updater.exe"]
+    no_paths(c)
+    (typed,) = run(DiscoveryBurst(st()), start(T0, WHOAMI, CMD), start(T0 + 20, NLTEST, CMD), start(T0 + 40, SYSINFO, CMD))
+    assert typed.base_severity == 3 and typed.facts["parent_class"] == "shell"
+    # `cmd /c whoami` from an implant: the shell's own start shows a non-interactive parent, so it alerts
+    det = DiscoveryBurst(st())
+    burst = [start(T0, CMD, ODD, guid="{shell}")] + [
+        dict(start(T0 + 5 + i, p, CMD, guid=f"{{c{i}}}"), columns={**start(T0 + 5 + i, p, CMD, guid=f"{{c{i}}}")["columns"], "parent_guid": "{shell}"})
+        for i, p in enumerate((WHOAMI, NLTEST, SYSINFO))]
+    (implant,) = run(det, *burst)
+    assert implant.base_severity == 4 and implant.facts["parent_started_by"] == "updater.exe"
+    det = DiscoveryBurst(st())
+    burst[0] = start(T0, CMD, r"C:\Windows\explorer.exe", guid="{shell}")
+    assert run(det, *burst)[0].base_severity == 3                                    # a shell Explorer started: typing
+
+
+def test_weak_tools_spread_out_or_alone_raise_nothing_and_a_burst_is_one_case():
+    weak = [start(T0 + i, rf"C:\Windows\System32\{p}", CMD) for i, p in enumerate(("ipconfig.exe", "netstat.exe", "nslookup.exe", "whoami.exe"))]
+    assert run(DiscoveryBurst(st()), *weak) == []                                    # one strong tool: troubleshooting
+    assert run(DiscoveryBurst(st()), start(T0, WHOAMI, ODD), start(T0 + 400, SYSINFO, ODD), start(T0 + 800, IPCONFIG, ODD)) == []
+    burst = [start(T0 + i * 5, rf"C:\Windows\System32\{p}", ODD) for i, p in enumerate(("whoami.exe", "systeminfo.exe", "nltest.exe", "net.exe", "arp.exe"))]
+    assert len(run(DiscoveryBurst(st()), *burst)) == 1
+
+
+def ext(t, name, ident, perms, change="added"):
+    return {"_type": "osquery", "name": "chrome_extensions", "unixTime": int(t), "ts": int(t), "action": change,
+            "columns": {"username": "u", "name": name, "identifier": ident, "version": "1.0", "permissions": perms}}
+
+
+def test_new_extensions_by_what_they_can_reach():
+    det = BrowserExtension(st())
+    rows = [ext(T0, "Shady helper", "a" * 32, "storage, debugger, tabs"), ext(T0, "Coupon finder", "b" * 32, "cookies, storage"),
+            ext(T0, "Dark theme", "c" * 32, "storage")]
+    a, b = settle(det, *rows)
+    assert (a.base_severity, a.facts["apis"], a.detector) == (4, ["debugger"], "host_extension")
+    assert (b.base_severity, b.facts["apis"]) == (3, ["cookies"])
+    upd = [ext(T0 + 86400, "Coupon finder", "b" * 32, "cookies, storage", "removed"), ext(T0 + 86400, "Coupons", "b" * 32, "cookies, storage")]
+    assert settle(det, *upd) == []                                                  # an update (even renamed) is a change
+    opt = ext(T0 + 86400, "Helper", "d" * 32, "storage")
+    opt["columns"]["optional_permissions"] = "debugger"
+    assert settle(det, opt)[0].base_severity == 4                                   # asked for at runtime still counts
+    dump = [ext(T0 + 2 * 86400, f"E{i}", str(i) * 32, "cookies") for i in range(DUMP_MIN)]
+    assert settle(det, *dump) == []                                                 # the first run lists everything
+
+
+def test_a_new_wmi_consumer_is_an_alert_whatever_it_runs():
+    row = persist(T0, "wmi_persistence", kind="cli", name="Updater", action=r"C:\Windows\System32\cmd.exe",
+                  args="/c powershell -enc AAAA")
+    (c,) = settle(NewPersistence(st()), row)
+    assert c.base_severity == 4 and c.facts["kind"] == "WMI event subscription" and c.facts["program"] == "cmd.exe"
+    script = persist(T0, "wmi_persistence", kind="script", name="Beacon", action="VBScript", args="")
+    (s,) = settle(NewPersistence(st()), script)
+    assert s.base_severity == 4 and s.facts["script"] and s.facts["program"] == "vbscript" and s.facts["folder"] == "unknown"
