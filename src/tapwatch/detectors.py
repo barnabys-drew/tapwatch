@@ -767,6 +767,13 @@ class PortScan(Detector):
     RESET: ClassVar[set[str]] = {"RSTO", "RSTR"}  # answered when both sides sent data; a probe otherwise
     # DNS, DHCP, NTP, NetBIOS, SSDP, WS-Discovery, mDNS, LLMNR, UniFi discovery
     DISCOVERY_UDP: ClassVar[set[int]] = {53, 67, 68, 123, 137, 138, 1900, 3702, 5353, 5355, 10001}
+    # Discovery answered from the protocol's own port to the asker's random one. Measured 2026-10-18, 12 cases
+    # (#768-#770 and nine more): the UDM's controller sweeps for its devices on udp/10001 every two hours, and each
+    # UniFi device (three cameras, an access point) answers from 10001 to the controller's ephemeral port, 684-820
+    # bytes each; Zeek logs every answer as a fresh, unanswered UDP connection from the device, ~12,100 distinct
+    # "ports" on the gateway per device in two days. Only the source port is matched, so a real UDP sweep of the
+    # gateway from any other port still counts.
+    DISCOVERY_REPLY_UDP: ClassVar[set[int]] = {10001}
     # The router's CEF event names for a Wi-Fi client changing state (syslogin.py keeps `name` as sent).
     WIFI_EVENTS: ClassVar[dict[str, str]] = {"WiFi Client Roamed": "roamed", "WiFi Client Disconnected": "disconnected"}
     WIFI_WINDOW: ClassVar[float] = 180     # s: the failure window plus two minutes either side of the trigger
@@ -787,7 +794,7 @@ class PortScan(Detector):
             return []
         src, dst, ts = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec["ts"]
         proto, port = rec.get("proto") or "tcp", rec.get("id.resp_p")
-        if not is_internal(src) or (proto == "udp" and port in self.DISCOVERY_UDP):
+        if not is_internal(src) or (proto == "udp" and (port in self.DISCOVERY_UDP or rec.get("id.orig_p") in self.DISCOVERY_REPLY_UDP)):
             return []  # discovery traffic is left out of both sides of failed_pct
         state = rec.get("conn_state")
         if state in self.ANSWERED or (state in self.RESET and int(rec.get("orig_bytes") or 0) > 0

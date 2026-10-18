@@ -751,3 +751,10 @@ def test_ipv4_mapped_lan_addresses_are_not_outside():
     from tapwatch.hostrules import outside
     assert not outside("::ffff:192.168.50.1", 443) and not outside("::ffff:127.0.0.1", 443)
     assert outside("::ffff:203.0.113.5", 443)
+
+
+def test_transient_systemd_scopes_are_not_startup_items():
+    """#811: the capture container's docker-<id>.scope, listed by osquery's startup_items on Linux."""
+    scope = persist(T0, "startup_items", name="docker-19b6954697.scope", path="docker-19b6954697.scope", args="",
+                    source="systemd", status="active", username="root")
+    assert settle(NewPersistence(st()), scope) == []
