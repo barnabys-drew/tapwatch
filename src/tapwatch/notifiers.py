@@ -21,6 +21,10 @@ from .summarizer import clean_untrusted
 # would become a live link. Escape Markdown in anything from the network.
 _MD = re.compile(r"([\\`*_{}\[\]()#+\-.!|>~])")
 
+# Discord's Cloudflare front answers 403 to urllib's default "Python-urllib/3.x"
+# agent (measured: same request, any other agent gets through), so name ourselves.
+USER_AGENT = "tapwatch (+https://github.com/barnabys-drew/tapwatch)"
+
 
 def md_escape(s: str) -> str:
     return _MD.sub(r"\\\1", clean_untrusted(s))
@@ -50,7 +54,7 @@ def post_teams(webhook_url: str, payload: dict, timeout: float = 10) -> None:
     if urllib.parse.urlsplit(webhook_url).scheme not in ("http", "https"):
         raise ValueError("Teams webhook URL must be http(s)")
     req = urllib.request.Request(webhook_url, data=json.dumps(payload).encode(), method="POST",
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- scheme checked above
         if resp.status >= 300:
             raise RuntimeError(f"Teams webhook returned HTTP {resp.status}")
@@ -90,7 +94,7 @@ def as_push_text(title: str, items: list[dict], limit: int = 3500) -> str:
 def _post(url: str, data: bytes, headers: dict, timeout: float = 10) -> None:
     if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
         raise ValueError("notification URLs must be http(s)")
-    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    req = urllib.request.Request(url, data=data, method="POST", headers={"User-Agent": USER_AGENT, **headers})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- scheme checked above
         if resp.status >= 300:
             raise RuntimeError(f"HTTP {resp.status}")
