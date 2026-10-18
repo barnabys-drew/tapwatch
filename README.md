@@ -213,7 +213,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch syslog` | receive the router's CEF syslog into `udm.log` |
 | `tapwatch service install` | install systemd user services (alerter, case desk, watchdog; `--capture-iface` adds capture, `--syslog` the router syslog listener) |
 | `tapwatch who 42 --zeek-dir DIR` | ask the PC (osquery and agent transcripts) who made case 42's traffic |
-| `tapwatch explain [--apply]` | find repeat cases host context explains, and suggest or apply suppressions |
+| `tapwatch explain [--apply]` | find repeat cases host context explains, and suggest or apply suppressions (the case desk's suppressions page lists the same suggestions with an Apply button) |
 | `tapwatch replay` / `tapwatch eval` | push finished logs through the pipeline, or score rules-only vs Jev on labelled traffic |
 | `tapwatch selfcheck` | detection rate on 18 scripted attack and false-positive shapes, rules only; exit 1 on a regression |
 | `tapwatch benchmark` | week-by-week noise rate, Jev agreement and host-context accuracy from the case desk, as Markdown |

@@ -249,15 +249,25 @@ class Pipeline:
         return current
 
     def send_digest(self) -> int:
+        from . import explain
         rows = self.store.pending_digest()
-        if not rows or not self.notifier:
+        sugg = explain.suggestions(self.store)
+        if not (rows or sugg) or not self.notifier:
             return 0
         items = []
+        if sugg:  # #12: what host context explained, waiting for one press on the case desk
+            items.append({"heading": f"{len(sugg)} suppression suggestion(s) from host context",
+                          "facts": {"What": "repeated cases the PC checked and found benign, one program each",
+                                    "Open": (self.base_url.rstrip("/") + "/suppressions#explained") if self.base_url
+                                    else "tapwatch explain"},
+                          "untrusted": []})
         for row in rows[:40]:  # keep the card readable; the rest go in the next digest
             facts = {"Device": f"{self.assets.name(row['host'], json.loads(row['facts']))} ({row['host']})",
                      "Why": row["reason"],
                      "Seen": f"{row['hits']} time(s)", "Case": case_link(self.base_url, row["id"])}
             items.append({"heading": row["title"], "facts": facts, "untrusted": json.loads(row["indicators"])})
-        self.notifier.send(f"tapwatch daily digest: {len(rows)} item(s) to review", items)
+        # A digest of suggestions alone repeats daily while they wait (the digest clock): a reminder, on purpose.
+        parts = ([f"{len(rows)} item(s) to review"] if rows else []) + ([f"{len(sugg)} suggestion(s)"] if sugg else [])
+        self.notifier.send("tapwatch daily digest: " + ", ".join(parts), items)
         self.store.mark_digested([r["id"] for r in rows[:40]])
         return len(items)
