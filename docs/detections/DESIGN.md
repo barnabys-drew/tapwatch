@@ -882,6 +882,25 @@ once and R23 learns as an inventory. Any batch osquery marks as a query's first 
 whatever its size, so a machine with one or two existing keys does not alert on them. The same key added to a
 second account is not seen again (the key identity has no account).
 
+### R28 Suspicious command on Linux (`host_linux_cmd`) — **built**, baseline pending
+- **Threat:** download-and-run (`curl … | sh`), reverse shells (`/dev/tcp/`, `nc -e`, `socat exec:`,
+  `bash -i >&`, Python or Perl socket one-liners), base64 decoded into a shell, shell history switched off or
+  cleared, a file in /tmp, /dev/shm or /var/tmp made executable (T1059.004, T1105, T1027, T1070.003).
+- **Data:** the agent's `bpf_process_events` query computes `lcmd_dlrun`, `lcmd_revshell`, `lcmd_b64exec`,
+  `lcmd_histclear`, `lcmd_tmpexec` from the command line on the PC and keeps the line itself only when one fires
+  (the results log is mode 0644, readable by every local account); a test holds the two clauses to the same five
+  patterns. The rule never reads the command line.
+- **Logic:** `hostrules.LinuxCommand`. Any signal → severity 4, suppressible per program; the temp-folder chmod
+  alone → 3. The same signals within a minute are one case (`sudo bash -c "…"` starts two processes with one line).
+- **Baseline:** none yet. Command lines were never collected before 2026-10-18; the first day of flags after the
+  agent's config is updated is the measurement, and a pattern that fires on the owner's normal work is demoted.
+  Each pattern was checked against matches and harmless neighbours (`curl -o`, `nc -zv`, `nc -l`, `base64 -d
+  file`, `chmod 644 /tmp/…`, `grep -e`, `docker exec`), and the shipped SQL was run in osquery.
+- **FPs (expected):** installers the owner or a coding agent runs with `curl … | sh` on request; netcat tests.
+- **Route:** ALERT (chmod alone: DIGEST). Code-only. **Safe test:** `bash -c 'echo curl https://example.com |
+  true'` does not match (no pipe into a shell); `bash -c 'curl -s https://example.com | head -c0 | sh'` runs an
+  empty script → one alert.
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
@@ -951,6 +970,7 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R25 Burst of discovery commands (built) | osquery + Sysmon | alert (shell: digest) | code-only |
 | — | R26 New browser extension with sensitive access (built) | osquery differential | digest / alert | code-only |
 | — | R27 Linux temp, memory or shell connection (built) | osquery eBPF | alert | code-only |
+| — | R28 Suspicious command on Linux (built) | osquery eBPF exec + command-line signals | alert (temp chmod: digest) | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 

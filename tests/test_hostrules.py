@@ -16,6 +16,7 @@ from tapwatch.hostrules import (
     DiscoveryBurst,
     EncodedCommand,
     EndpointState,
+    LinuxCommand,
     LinuxSuspiciousConnect,
     LolbinConnects,
     NewPersistence,
@@ -762,3 +763,41 @@ def test_transient_systemd_scopes_are_not_startup_items():
                         source=r"HKEY_USERS\S-1-5-21-1-2-3-1001\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
                         status="enabled", username="u")
     assert len(settle(NewPersistence(st()), disguised)) == 1                      # a Run key named like a scope still counts
+
+
+# ------------------------------------------------------------ R28 Linux command-line signals
+
+def lexec(t, path, **flags):
+    cols = {"time": str(int(t)), "pid": "5000", "parent": "4000", "path": path, **{f"lcmd_{k}": "1" for k in flags},
+            "cmdline": "never read by the rule"}
+    return {"_type": "osquery", "name": "bpf_process_events", "unixTime": int(t), "ts": int(t), "action": "added", "columns": cols}
+
+
+def test_linux_command_signals_alert_and_a_temp_chmod_is_a_digest_item():
+    (dl,) = run(LinuxCommand(st()), lexec(T0, "/usr/bin/bash", dlrun=1))
+    assert (dl.base_severity, dl.detector, dl.facts["signals"]) == (4, "host_linux_cmd", ["a download piped into a shell"])
+    assert "cmdline" not in dl.facts and "never read" not in str(dl.facts) and dl.indicators == ["bash"]
+    no_paths(dl)
+    (rs,) = run(LinuxCommand(st()), lexec(T0, "/usr/bin/python3.12", revshell=1))
+    assert rs.base_severity == 4 and rs.facts["signals"] == ["a reverse shell"]
+    (tmp,) = run(LinuxCommand(st()), lexec(T0, "/usr/bin/chmod", tmpexec=1))
+    assert tmp.base_severity == 3
+    assert run(LinuxCommand(st()), lexec(T0, "/usr/bin/git")) == []
+
+
+def test_sudo_and_the_shell_it_runs_are_one_case():
+    det = LinuxCommand(st())
+    assert len(run(det, lexec(T0, "/usr/bin/sudo", dlrun=1), lexec(T0 + 0.1, "/usr/bin/bash", dlrun=1))) == 1
+    assert len(run(det, lexec(T0 + 120, "/usr/bin/bash", dlrun=1))) == 1                # two minutes on: a new command
+
+
+def test_the_agent_keeps_the_linux_command_line_only_for_the_r28_patterns():
+    import re as _re
+    from pathlib import Path
+    raw = Path(__file__).resolve().parents[1].joinpath("agents", "config", "osquery.conf").read_text()
+    q = json.loads(_re.sub(r"^\s*//.*$", "", raw, flags=_re.MULTILINE), strict=False)["schedule"]["bpf_process_events"]["query"]
+    keep = q[q.index("CASE WHEN"):q.index(" END AS cmdline")]
+    for flag in ("dlrun", "revshell", "b64exec", "histclear", "tmpexec"):
+        i = q.index(f" AS lcmd_{flag}")
+        pattern = _re.findall(r"'((?:[^']|'')*)', 0\) IS NOT NULL\)$", q[:i])[-1]
+        assert f"'{pattern}', 0) IS NOT NULL)" in keep, flag
