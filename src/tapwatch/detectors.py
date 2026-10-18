@@ -1491,7 +1491,7 @@ class InternetExposure(Detector):
     """
 
     name = "exposure"
-    PERSIST: ClassVar[tuple[str, ...]] = ("known", "last_mapping")
+    PERSIST: ClassVar[tuple[str, ...]] = ("known", "last_mapping", "forwards", "upnp_since", "router_log")
     MAPPING_PORTS: ClassVar[set[int]] = {5351, 1900}  # NAT-PMP/PCP, SSDP (UPnP discovery)
 
     def __init__(self, warmup: Warmup, stun_window: float = 600, mapping_window: float = 86400,
@@ -1507,8 +1507,18 @@ class InternetExposure(Detector):
         self.recent_peer: dict[tuple, float] = {}  # (LAN host, remote) -> last outbound contact
         self.last_stun: dict[str, float] = {}     # host -> last outbound STUN (games, calls)
         self.last_mapping: dict[str, float] = {}  # host -> last port-mapping request to the router
+        # The router's own record of port forwards (#8): entry name -> what it forwards, when and from where it was
+        # last changed. Built from its CEF audit events (`Config Created/Modified/Removed`, section "Port
+        # forwarding"), which name the admin, the access method and the source address. Modified events carry only
+        # the changed fields, so they merge into the entry; Removed blanks every field, so it drops the entry.
+        self.forwards: dict[str, dict] = {}
+        self.upnp_since: float | None = None  # when the router's UPnP was switched on, None while off or unknown
+        self.router_log = False  # an audit event has arrived: "no forward on record" means something
 
     def feed(self, rec: dict) -> list[Case]:
+        if rec["_type"] == "udm":
+            self._router_config(rec)
+            return []
         if rec["_type"] != "conn":
             return []
         src, dst, ts = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec["ts"]
@@ -1542,16 +1552,69 @@ class InternetExposure(Detector):
         if self.warmup.learning(ts):
             return []
         mapped = ts - self.last_mapping.get(dst, -1e18) < self.mapping_window
-        return [Case(self.name, dst, ts, "Device reachable from the internet",
-                     {"proto": proto, "port": port, "service": rec.get("service") or "unknown",
-                      "after_mapping_request": mapped, "dedupe": f"{proto}/{port}"},
-                     must_alert=True, base_severity=5)]
+        facts = {"proto": proto, "port": port, "service": rec.get("service") or "unknown",
+                 "after_mapping_request": mapped, "dedupe": f"{proto}/{port}"}
+        fwd = self.forward_to(dst, port, proto)
+        if fwd:  # the router was told to open this: by whom (method and source, never the admin's name) and when
+            facts["router_forward"] = {"minutes_before": max(0, round((ts - fwd["ts"]) / 60)), "how": fwd.get("how", ""),
+                                       "from": fwd.get("from", ""), "change": fwd.get("change", "")}
+        if self.upnp_since is not None:
+            facts["router_upnp_on"] = True
+        facts["router_log"] = self.router_log
+        return [Case(self.name, dst, ts, "Device reachable from the internet", facts, must_alert=True, base_severity=5)]
+
+    def forward_to(self, host: str, port, proto: str) -> dict | None:
+        """The router's port forward that sends traffic to `host`:`port` (the inside port, as the mirror sees it)."""
+        for f in self.forwards.values():
+            if f.get("fwd") == host and str(f.get("fwd_port") or f.get("dst_port")) == str(port) \
+                    and (f.get("proto") in ("", "tcp_udp", None) or f.get("proto") == proto):
+                return f
+        return None
+
+    def _router_config(self, rec: dict) -> None:
+        """Keep the router's port forwards and UPnP state from its audit events. Measured 2026-10-18 on a UDM Pro
+        (UniFi Network 10.6.106): `UNIFIsettingsSection` "Port forwarding" with the entry's name and
+        `UNIFIsettingsChanges` as "key: value; …" (fwd, fwd_port, dst_port, proto on create; only the changed key on
+        modify; every key blank on remove), and UPnP as "Internet" changes carrying upnp_enabled true/false."""
+        name, section = str(rec.get("name") or ""), str(rec.get("UNIFIsettingsSection") or "")
+        if not name.startswith("Config "):
+            return
+        self.router_log = True
+        changes = _settings_changes(rec.get("UNIFIsettingsChanges"))
+        if section == "Internet" and "upnp_enabled" in changes:
+            on = changes["upnp_enabled"] == "true"
+            self.upnp_since = (self.upnp_since or rec["ts"]) if on else None
+            return
+        if section != "Port forwarding":
+            return
+        entry = str(rec.get("UNIFIsettingsEntry") or "").strip()
+        if not entry:
+            return
+        if name == "Config Removed":
+            self.forwards.pop(entry, None)
+            return
+        f = self.forwards.setdefault(entry, {})
+        f.update({k: v for k, v in changes.items() if k in ("fwd", "fwd_port", "dst_port", "proto") and v})
+        f.update({"ts": rec["ts"], "how": str(rec.get("UNIFIaccessMethod") or ""), "from": str(rec.get("src") or ""),
+                  "change": "created" if name == "Config Created" else "changed"})
+        if len(self.forwards) > 500:  # a home has a handful; a flood of fake entries must not grow memory
+            self.forwards = dict(sorted(self.forwards.items(), key=lambda kv: kv[1].get("ts", 0))[-500:])
 
     def _remember(self, host: str, remote: str, ts: float) -> None:
         self.recent_peer[(host, remote)] = ts
         if len(self.recent_peer) > 50_000:  # keep memory flat on a busy day
             cutoff = ts - self.reply_window
             self.recent_peer = {k: v for k, v in self.recent_peer.items() if v >= cutoff}
+
+
+def _settings_changes(text) -> dict[str, str]:
+    """UniFi's `UNIFIsettingsChanges` ("key: value; key: value") as a dict; a key with no value maps to ""."""
+    out = {}
+    for part in str(text or "").split(";"):
+        k, sep, v = part.partition(":")
+        if sep and k.strip():
+            out[k.strip()] = v.strip()
+    return out
 
 
 class ManagementAccess(Detector):

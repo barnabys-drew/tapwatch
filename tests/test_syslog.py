@@ -200,3 +200,15 @@ def test_router_admin_new_place_and_failure_burst():
     fails = [udm(ts=T0 + 900 + i, name="Admin login failed", suser="admin", src="198.51.100.4") for i in range(5)]
     out = [c for f in fails for c in det.feed(f)]
     assert len(out) == 1 and out[0].facts["count"] == 5 and out[0].must_alert
+
+
+def test_a_port_forward_audit_line_keeps_its_settings_fields():
+    """Sanitized from a UDM Pro (UniFi Network 10.6.106), 2026-10-18, #8."""
+    line = ("<14>Oct 18 12:13:35 UDM-Pro CEF:0|Ubiquiti|UniFi Network|10.6.106|545|Config Created|5|UNIFIcategory=Audit "
+            "UNIFIhost=UDM Pro UNIFIsettingsChanges=destination_ip: any; log: true; name:  tapwatch-test; pfwd_interface: wan; "
+            "fwd: 192.168.50.10; fwd_port: 54321; src_limiting_enabled: false; proto: tcp_udp; dst_port: 54321 "
+            "UNIFIsettingsEntry=tapwatch-test UNIFIsettingsSection=Port forwarding UNIFIaccessMethod=web "
+            "UNIFIadmin=Admin User src=192.168.50.10 msg=Admin User created  tapwatch-test Port forwarding. Source IP: 192.168.50.10")
+    kind, rec = syslogin.parse_line(line)
+    assert kind == "cef" and rec["name"] == "Config Created" and rec["UNIFIsettingsSection"] == "Port forwarding"
+    assert rec["UNIFIsettingsEntry"] == "tapwatch-test" and rec["UNIFIsettingsChanges"].endswith("dst_port: 54321")

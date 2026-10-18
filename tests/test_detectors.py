@@ -1546,3 +1546,43 @@ def test_base_domain_follows_the_public_suffix_list_icann_rules(tmp_path):
     cut = tmp_path / "truncated.dat"
     cut.write_text(PSL_SAMPLE.split("// ===END ICANN")[0])                       # a download cut short
     assert set_public_suffixes(str(cut)) == 0 and base_domain("a.b.kawasaki.jp") == "kawasaki.jp"
+
+
+def udm_config(ts, name, section, entry, changes, how="web", src="192.168.50.10"):
+    """A UniFi CEF audit event as syslogin writes it to udm.log (sanitized from a UDM Pro, 2026-10-18)."""
+    return {"_type": "udm", "ts": ts, "kind": "cef", "name": name, "UNIFIcategory": "Audit", "UNIFIsettingsSection": section,
+            "UNIFIsettingsEntry": entry, "UNIFIsettingsChanges": changes, "UNIFIaccessMethod": how,
+            "UNIFIadmin": "Admin User", "src": src}
+
+
+def forwarded_in(ts, dst="192.168.50.10", port=54322):
+    r = conn(ts, src="198.51.100.9", dst=dst, port=port)
+    r.update({"history": "ShADadf", "resp_bytes": 900})
+    return r
+
+
+def test_exposure_cases_say_whether_the_router_was_told_to_open_the_port():
+    """#8: the router's audit events (create, modify, remove a port forward; UPnP on and off), as a UDM Pro sent them."""
+    det = InternetExposure(Warmup(0), startup=0)
+    run(det, [udm_config(T0, "Config Created", "Port forwarding", "tapwatch-test",
+                         "destination_ip: any; log: true; name:  tapwatch-test; pfwd_interface: wan; fwd: 192.168.50.10; "
+                         "fwd_port: 54321; src_limiting_enabled: false; proto: tcp_udp; dst_port: 54321"),
+              udm_config(T0 + 600, "Config Modified", "Port forwarding", "tapwatch-test", "fwd_port: 54322")])
+    (c,) = run(det, [forwarded_in(T0 + 900)])
+    assert c.must_alert and c.facts["router_forward"] == {"minutes_before": 5, "how": "web", "from": "192.168.50.10",
+                                                          "change": "changed"}
+    assert "Admin User" not in str(c.facts)                                   # never the admin's name
+    from tapwatch.summarizer import Assets, summarize
+    assert "port forward for exactly this, changed 5 minutes earlier by an administrator through the web interface" in summarize(c, Assets())
+    run(det, [udm_config(T0 + 1000, "Config Removed", "Port forwarding", "tapwatch-test", "enabled: ; fwd: ; fwd_port: ")])
+    (gone,) = run(det, [forwarded_in(T0 + 1100, port=54321)])
+    assert "router_forward" not in gone.facts and gone.facts["router_log"]
+    assert "nobody told the router to open this" in summarize(gone, Assets())
+    run(det, [udm_config(T0 + 1200, "Config Modified", "Internet", "usg", "upnp_wan_interface: WAN; upnp_enabled: true")])
+    (up,) = run(det, [forwarded_in(T0 + 1300, port=40000)])
+    assert up.facts["router_upnp_on"] and "UPnP switched on" in summarize(up, Assets())
+    run(det, [udm_config(T0 + 1400, "Config Modified", "Internet", "usg", "upnp_nat_pmp_enabled: false; upnp_enabled: false")])
+    (off,) = run(det, [forwarded_in(T0 + 1500, port=40001)])
+    assert "router_upnp_on" not in off.facts
+    (nolog,) = run(InternetExposure(Warmup(0), startup=0), [forwarded_in(T0, port=40002)])
+    assert nolog.facts["router_log"] is False and "nobody told" not in summarize(nolog, Assets())   # no feed, no claim

@@ -191,7 +191,12 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   listener that the internet can reach. This is the classic home compromise path.
 - **Data:** Zeek `conn`: external `id.orig_h` → internal `id.resp_h`, `conn_state` in
   `SF,S1,S2,S3,RSTO,RSTR`, `resp_bytes>0`. Zeek `conn` udp/5351 and SSDP/`http` POSTs to the UDM
-  show mapping *requests*. UDM syslog shows port-forward and UPnP-mapping *changes* (code reads the event type).
+  show mapping *requests*. UDM syslog shows port-forward and UPnP *changes*: verified 2026-10-18 on a UDM Pro
+  (UniFi Network 10.6.106), CEF `Config Created` / `Config Modified` / `Config Removed` with
+  `UNIFIsettingsSection` "Port forwarding" (entry name; `UNIFIsettingsChanges` "fwd: …; fwd_port: …; proto: …",
+  only the changed keys on modify, all blank on remove) and "Internet" with `upnp_enabled: true|false`. The
+  case carries `router_forward` (how many minutes before, the access method, the source address; never the
+  admin's name) or `router_upnp_on`, and says "nobody told the router" only when the feed is live.
 - **Logic:** `rules/R01-internet-exposed-service.sql`. First time an (internal host, port)
   accepts an established inbound connection from the internet. Joined with any mapping
   request from that host in the previous 24 h.

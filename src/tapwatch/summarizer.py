@@ -160,6 +160,16 @@ def _observed(c: Case, words: dict) -> str:
         return " ".join(parts)
     if c.detector == "exposure":
         why = " Shortly before, this device asked the router to open a port for it." if f["after_mapping_request"] else ""
+        fwd = f.get("router_forward") or {}
+        if fwd:
+            how = f" through the {fwd['how']} interface" if fwd.get("how") else ""
+            who = f" from {fwd['from']}" if fwd.get("from") else ""
+            why += (f" The router has a port forward for exactly this, {fwd.get('change', 'set')} "
+                    f"{fwd.get('minutes_before', 0)} minutes earlier by an administrator{how}{who}.")
+        elif f.get("router_upnp_on"):
+            why += " The router has UPnP switched on, so a device can open ports for itself without anyone being asked."
+        elif f.get("router_log"):
+            why += " The router's log shows no port forward for it and UPnP off: nobody told the router to open this."
         return (f"A computer on the internet connected to this device on {f['proto'].upper()} port {f['port']} "
                 f"({f['service']}) and the device answered, so it is reachable from outside.{why}")
     if c.detector == "mgmt_access" and f.get("sweep"):
