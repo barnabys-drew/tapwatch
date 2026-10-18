@@ -28,7 +28,8 @@ systemctl --user list-unit-files tapwatch-syslog.service 2>/dev/null | grep -q '
 # compose: `<project>-zeek-1`). Neither: conn.log freshness below is the capture check (macOS, native Zeek).
 capture_unit=no
 systemctl --user list-unit-files tapwatch-capture.service 2>/dev/null | grep -q '^tapwatch-capture\.service' && capture_unit=yes
-capture_container=${TAPWATCH_CAPTURE_CONTAINER:-}
+# Probed once at startup, like the syslog unit: restart the watchdog after adding `--capture-iface`.
+capture_container=${TAPWATCH_CAPTURE_CONTAINER:-$(sed -n 's/^TAPWATCH_CAPTURE_CONTAINER=//p' .env 2>/dev/null | tr -d '"' | tail -1)}
 
 heartbeat() {  # heartbeat <problems>: empty = healthy
   [ -n "$hb" ] || return 0

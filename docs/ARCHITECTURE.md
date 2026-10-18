@@ -411,7 +411,8 @@ and a spare NIC for the mirror. The endpoint agents ([agents/](../agents/README.
 (and Sysmon on Windows). They're optional, and only needed for host context.
 
 The watchdog ships as a systemd unit. It checks the capture where it can name it: the `tapwatch-capture` unit on
-the Npcap/WSL path, or the container in `TAPWATCH_CAPTURE_CONTAINER` (compose: `<project>-zeek-1`); elsewhere a
+the Npcap/WSL path, or the container named by `TAPWATCH_CAPTURE_CONTAINER` in the environment or `.env` (compose:
+`<project>-zeek-1`, for a watchdog run by hand or from your own unit; compose itself has none); elsewhere a
 fresh `conn.log` is the capture check. R22 (`feed_silence`) watches every feed from inside the alerter as well.
 
 ## Testing and evaluation
