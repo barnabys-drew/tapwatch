@@ -979,7 +979,11 @@ class LinuxCommand(HostDetector):
     lines were never collected before 2026-10-18, so the first day of flags is the measurement. A reverse shell is
     severity 4 like the rest (a developer testing with netcat can suppress it), the temp-folder chmod is a digest
     item. `sudo bash -c "curl … | sh"` shows the same line on two starts: the same signal within a minute is one
-    case, as for R24.
+    case, as for R24 (two users' commands in that minute merge too: a single-owner box).
+
+    Blind spot: a pipeline typed in an interactive shell is never one exec's command line (each program gets its
+    own argv, with no `|`), and `history -c` or `unset HISTFILE` typed there are shell builtins that exec nothing.
+    What it sees is `bash -c "…"` and `sh -c "…"` strings, which is how scripts, cron and coding agents run commands.
     """
 
     name = "host_linux_cmd"

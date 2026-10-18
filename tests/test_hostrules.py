@@ -791,13 +791,12 @@ def test_sudo_and_the_shell_it_runs_are_one_case():
     assert len(run(det, lexec(T0 + 120, "/usr/bin/bash", dlrun=1))) == 1                # two minutes on: a new command
 
 
-def test_the_agent_keeps_the_linux_command_line_only_for_the_r28_patterns():
+def test_the_agent_keeps_the_linux_command_line_only_when_a_signal_fires():
+    """The flags are computed once in a subquery and the keep clause reads them, so the two cannot drift."""
     import re as _re
     from pathlib import Path
     raw = Path(__file__).resolve().parents[1].joinpath("agents", "config", "osquery.conf").read_text()
-    q = json.loads(_re.sub(r"^\s*//.*$", "", raw, flags=_re.MULTILINE), strict=False)["schedule"]["bpf_process_events"]["query"]
-    keep = q[q.index("CASE WHEN"):q.index(" END AS cmdline")]
-    for flag in ("dlrun", "revshell", "b64exec", "histclear", "tmpexec"):
-        i = q.index(f" AS lcmd_{flag}")
-        pattern = _re.findall(r"'((?:[^']|'')*)', 0\) IS NOT NULL\)$", q[:i])[-1]
-        assert f"'{pattern}', 0) IS NOT NULL)" in keep, flag
+    q = json.loads(_re.sub(r"^\s*//.*$", "", raw, flags=_re.M), strict=False)["schedule"]["bpf_process_events"]["query"]
+    flags = ("dlrun", "revshell", "b64exec", "histclear", "tmpexec")
+    assert "CASE WHEN " + " OR ".join(f"lcmd_{f}" for f in flags) + " THEN cmdline END AS cmdline" in q
+    assert all(f") IS NOT NULL) AS lcmd_{f}" in q for f in flags)

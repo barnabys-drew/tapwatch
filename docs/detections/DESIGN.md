@@ -897,9 +897,12 @@ second account is not seen again (the key identity has no account).
   Each pattern was checked against matches and harmless neighbours (`curl -o`, `nc -zv`, `nc -l`, `base64 -d
   file`, `chmod 644 /tmp/…`, `grep -e`, `docker exec`), and the shipped SQL was run in osquery.
 - **FPs (expected):** installers the owner or a coding agent runs with `curl … | sh` on request; netcat tests.
-- **Route:** ALERT (chmod alone: DIGEST). Code-only. **Safe test:** `bash -c 'echo curl https://example.com |
-  true'` does not match (no pipe into a shell); `bash -c 'curl -s https://example.com | head -c0 | sh'` runs an
-  empty script → one alert.
+- **Route:** ALERT (chmod alone: DIGEST). Code-only. **Safe test:** `bash -c 'curl -s https://example.com | sh -s
+  </dev/null'` (the page is HTML, `sh` reads nothing from stdin and exits) → one alert; `bash -c 'curl -s
+  https://example.com | head -c0'` → nothing.
+- **Blind spot:** a pipeline typed interactively is several execs, none with a `|` in its argv, and `history -c` /
+  `unset HISTFILE` typed there are builtins: R28 sees `bash -c "…"` / `sh -c "…"` strings (scripts, cron, coding
+  agents). The kept command line can hold a token and lands in a 0644 log, the same trade-off as Windows.
 
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
