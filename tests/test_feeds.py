@@ -30,6 +30,8 @@ def fake_fetch(url):
         return buf.getvalue()
     if url.endswith("oui.csv"):
         return b"Registry,Assignment,Organization Name,Organization Address\nMA-L,3C7C3F,Example Inc.,x\n"
+    if url.endswith("public_suffix_list.dat"):
+        return b"// ===BEGIN ICANN DOMAINS===\ncom\nco.uk\n// ===END ICANN DOMAINS===\n"
     if url.endswith(".gz"):
         return gzip.compress(b"1.0.0.0\t1.0.0.255\t13335\tUS\tEXAMPLE\n1.0.1.0\t1.0.3.255\t0\tNone\tNot routed\n")
     raise AssertionError(url)

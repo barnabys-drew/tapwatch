@@ -77,9 +77,65 @@ PUBLIC_SUFFIXES = frozenset({
     "co.th", "com.ph", "com.vn", "com.pk", "com.ua", "com.pl", "co.id", "com.co", "com.pe", "com.ve"})
 
 
+# The Public Suffix List's ICANN section (feeds.PSL_FILE, from `tapwatch update-feeds`), set by build(): rules,
+# wildcard rules (`*.ck` stored as "ck") and exceptions (`!www.ck`). Empty until loaded; then base_domain falls
+# back to the two-label table above. ICANN only, on purpose: the PRIVATE section splits platforms into their
+# tenants (`d1.cloudfront.net`, `x.github.io` each become a "domain"), which would take them off the popular list
+# (Tranco ranks `cloudfront.net`) and change every popularity cap; that is a separate decision.
+PSL_RULES: set[str] = set()
+PSL_WILDCARDS: set[str] = set()
+PSL_EXCEPTIONS: set[str] = set()
+
+
+def set_public_suffixes(path: str | None) -> int:
+    """Load the ICANN section of a Public Suffix List file; returns the number of rules (0: not loaded)."""
+    PSL_RULES.clear(), PSL_WILDCARDS.clear(), PSL_EXCEPTIONS.clear()
+    if not path or not Path(path).exists():
+        return 0
+    icann = False
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if "===BEGIN ICANN DOMAINS===" in line:
+            icann = True
+        elif "===END ICANN DOMAINS===" in line:
+            break
+        if not icann or not line or line.startswith("//"):
+            continue
+        rule = line.split()[0].lower()
+        try:
+            rule = ".".join(p.encode("idna").decode() if not p.isascii() else p for p in rule.split("."))
+        except UnicodeError:
+            continue
+        if rule.startswith("!"):
+            PSL_EXCEPTIONS.add(rule[1:])
+        elif rule.startswith("*."):
+            PSL_WILDCARDS.add(rule[2:])
+        else:
+            PSL_RULES.add(rule)
+    return len(PSL_RULES) + len(PSL_WILDCARDS) + len(PSL_EXCEPTIONS)
+
+
 def base_domain(name: str) -> str:
-    """Rough registered domain: the last two labels, or three under a two-label public suffix (bbc.co.uk)."""
+    """The registrable domain: one label under the public suffix (bbc.co.uk, example.com.au). With the Public
+    Suffix List loaded (ICANN rules), its longest matching rule decides; without it, the last two labels, or
+    three under a two-label suffix from the small table above."""
     parts = [p for p in name.lower().rstrip(".").split(".") if p]
+    if not parts:
+        return name.lower()
+    if parts[-1] == "arpa":
+        # Reverse lookups are not registrable domains. The PSL lists in-addr.arpa, which would split a house's
+        # reverse lookups into ~255 "domains" by first octet, each new to the first-seen rules: measured 2026-10-18,
+        # 2,196 of 6,196 real names, and the only ones the list changed. They stay one in-addr.arpa / ip6.arpa.
+        return ".".join(parts[-2:]) if len(parts) >= 2 else parts[0]
+    if PSL_RULES:
+        for i in range(len(parts)):   # longest suffix first
+            cand = ".".join(parts[i:])
+            if cand in PSL_EXCEPTIONS:
+                return cand   # an exception is itself registrable (`!www.ck`: www.ck)
+            parent = ".".join(parts[i + 1:])
+            if cand in PSL_RULES or (parent and parent in PSL_WILDCARDS):
+                return ".".join(parts[i - 1:]) if i > 0 else cand
+        return ".".join(parts[-2:]) if len(parts) >= 2 else parts[0]   # the default rule `*`: the last label
     if len(parts) >= 3 and ".".join(parts[-2:]) in PUBLIC_SUFFIXES:
         return ".".join(parts[-3:])
     return ".".join(parts[-2:]) if len(parts) >= 2 else name.lower()
@@ -2414,6 +2470,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     d = cfg.get("detectors", {})
     net = cfg.get("network", {})
     set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
+    set_public_suffixes(cfg.get("public_suffix_file"))  # registrable domains by the PSL when downloaded
     load_categories(cfg.get("categories_file"), cfg.get("learned_categories_file"))  # domain -> kind of site (categories.py), offline
     set_categorizer(ai_categorizer(cfg))  # opt-in `categories: {ai: true}` + key in the environment, else None: no network
     gateways = Gateways(set(net.get("gateways") or ()))  # learned from the logs when not configured

@@ -1501,3 +1501,45 @@ def test_unifi_discovery_answers_to_the_controller_are_not_a_scan():
     for r in recs:
         r["id.orig_p"], r["id.resp_h"] = 10001, "192.168.50.77"                    # `nmap -sU -g 10001` at another host
     assert len(run(PortScan(gateways=Gateways({gw})), recs)) == 1
+
+
+PSL_SAMPLE = """// test fixture in the Public Suffix List's format
+// ===BEGIN ICANN DOMAINS===
+com
+uk
+co.uk
+au
+com.au
+*.kawasaki.jp
+!city.kawasaki.jp
+jp
+ck
+*.ck
+!www.ck
+arpa
+in-addr.arpa
+// ===END ICANN DOMAINS===
+// ===BEGIN PRIVATE DOMAINS===
+github.io
+// ===END PRIVATE DOMAINS===
+"""
+
+
+def test_base_domain_follows_the_public_suffix_list_icann_rules(tmp_path):
+    """#17: with the list loaded the longest ICANN rule decides; wildcards and exceptions count; the PRIVATE
+    section is ignored (platform tenants stay one domain); reverse lookups stay one domain."""
+    from tapwatch.detectors import set_public_suffixes
+    p = tmp_path / "public_suffix_list.dat"
+    p.write_text(PSL_SAMPLE)
+    try:
+        assert set_public_suffixes(str(p)) == 13   # 9 rules, 2 wildcards, 2 exceptions
+        assert base_domain("www.bbc.co.uk") == "bbc.co.uk" and base_domain("a.b.example.com.au") == "example.com.au"
+        assert base_domain("a.b.kawasaki.jp") == "a.b.kawasaki.jp" and base_domain("x.city.kawasaki.jp") == "city.kawasaki.jp"
+        assert base_domain("a.www.ck") == "www.ck" and base_domain("x.b.ck") == "x.b.ck"
+        assert base_domain("foo.github.io") == "github.io"                      # PRIVATE section: not used
+        assert base_domain("4.3.2.1.in-addr.arpa") == "in-addr.arpa"           # reverse lookups stay one
+        assert base_domain("a.b.example.unlisted") == "example.unlisted"       # no rule: the default `*`
+        assert base_domain("co.uk") == "co.uk" and base_domain("localhost") == "localhost"
+    finally:
+        set_public_suffixes(None)
+    assert base_domain("www.bbc.co.uk") == "bbc.co.uk"                          # without it, the small table

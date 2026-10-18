@@ -6,6 +6,7 @@ and renamed into place, so a failed download never leaves a half-written list be
   top-100k.csv       Tranco popular domains (rank,domain), for "is this domain widely used"
   oui.csv            IEEE MAC vendor registry, for new-device vendor names (R05)
   ip2asn-v4.tsv.gz   iptoasn.com IP range -> network (ASN) and country, for IoT drift (R02)
+  public_suffix_list.dat  the Public Suffix List, for registrable domains (bbc.co.uk, not co.uk)
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ SOURCES = {
     "top-100k.csv": "https://tranco-list.eu/top-1m.csv.zip",
     "oui.csv": "https://standards-oui.ieee.org/oui/oui.csv",
     "ip2asn-v4.tsv.gz": "https://iptoasn.com/data/ip2asn-v4.tsv.gz",
+    "public_suffix_list.dat": "https://publicsuffix.org/list/public_suffix_list.dat",
 }
 TOP_N = 100_000
 
