@@ -753,3 +753,66 @@ def test_rules_made_from_the_old_port_indicator_still_match():
     assert store.match_suppression(frame).startswith("#1 beaconing")
     assert store.match_suppression(Case("beaconing", "192.168.50.19", T0, "t", {"port": 8883}, [])) is None
     assert store.match_suppression(Case("beaconing", "192.168.50.20", T0, "t", {"port": 1883}, [])) is None
+
+
+# ------------------------------------------------------------------ #12: explain suggestions on the case desk
+
+def explained_store(path):
+    """Three likely-benign cases for one program on one device, recent (the desk looks back 30 days)."""
+    import time as _t
+    s = Store(path)
+    now = _t.time()
+    ids = []
+    for i in range(3):
+        f = {"port": 443, "host_assessment": "likely_benign", "host_program_path": r"C:\Users\<user>\AppData\Local\Battle\agent.exe",
+             "host_signals": ["agent.exe is signed by a known publisher"], "host_parent": "explorer.exe", "dedupe": f"v{i}"}
+        c = Case("beaconing", "192.168.50.10", now - (2 - i) * 3600, "Regular repeating connection", f, ["version.battle.example"])
+        ids.append(s.add(c, "state", None, Route.DIGEST, "r"))
+    return s, ids
+
+
+def test_the_suppressions_page_lists_explained_groups_without_their_path(tmp_path):
+    store, _ = explained_store(str(tmp_path / "t.db"))
+    page = ui.render_suppressions(store, "tok")[1]
+    assert "Explained by host context" in page and "agent.exe" in page and "battle.example" in page
+    assert "AppData" not in page and "&lt;user&gt;" not in page                 # the program's name only, never its path
+    assert re.search(r'action="/explain/[0-9a-f]{16}/apply"', page)
+    assert "Explained by host context" not in ui.render_suppressions(Store(str(tmp_path / "empty.db")), "tok")[1]
+
+
+def test_apply_from_the_desk_creates_the_rule_and_closes_the_cases(server, tmp_path):
+    app, db = server()
+    _, ids = explained_store(db)
+    sid, csrf = session(app)
+    _, page = request(app, "GET", "/suppressions", cookie=sid)
+    action = re.search(r'action="(/explain/[0-9a-f]{16}/apply)"', page).group(1)
+    r, _ = request(app, "POST", action, {"csrf": csrf}, cookie=sid)
+    assert r.status == 303
+    s = Store(db)
+    (rule,) = s.suppressions()
+    assert rule["scope"] == "device_program" and rule["expires_ts"]
+    assert any(a["actor"].startswith("ui ") and a["action"] == "suppression added" for a in s.audit_trail())
+    assert all(s.get(i)["status"] == "closed" and s.get(i)["disposition"] == "benign_expected" for i in ids)
+    r, text = request(app, "POST", action, {"csrf": csrf}, cookie=sid)           # twice: the suggestion is gone
+    assert r.status == 409 and "gone" in text
+    r, _ = request(app, "POST", action, {"csrf": "wrong"}, cookie=sid)
+    assert r.status == 403
+    r, _ = request(app, "GET", action, cookie=sid)
+    assert len(Store(db).suppressions()) == 1                                    # GET never applies
+
+
+def test_the_digest_mentions_pending_suggestions(tmp_path):
+    from tapwatch.pipeline import Pipeline
+    store, _ = explained_store(str(tmp_path / "t.db"))
+    store.db.execute("UPDATE cases SET digested=1")
+    store.db.commit()
+    sent = []
+
+    class Note:
+        def send(self, title, items):
+            sent.append((title, items))
+
+    p = Pipeline([], Assets(), store, client=None, notifier=Note(), base_url="https://desk.example")
+    assert p.send_digest() == 1
+    title, items = sent[0]
+    assert "1 suggestion(s)" in title and items[0]["facts"]["Open"] == "https://desk.example/suppressions#explained"
