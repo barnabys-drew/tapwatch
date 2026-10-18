@@ -3,10 +3,12 @@ db_path: /data/tapwatch.db
 assets_file: /config/assets.yaml
 ioc_file: /config/iocs.txt          # optional: one IP or domain per line
 feeds_dir: /config/feeds             # `tapwatch update-feeds` downloads the public lists here (weekly is plenty)
-# The three lists below default to feeds_dir; set them only to use your own copies:
+# The lists below default to feeds_dir; set them only to use your own copies:
 # popular_domains_file: top-100k.csv  # Tranco popular domains (rank,domain)
 # oui_file: oui.csv                   # IEEE MAC vendor registry (new-device vendor names)
 # asn_file: ip2asn-v4.tsv.gz          # iptoasn.com IP -> network and country (IoT drift)
+# categories_file: categories.tsv     # UT1 site categories
+# public_suffix_file: public_suffix_list.dat   # Public Suffix List, ICANN rules (registrable domains)
 
 typesafe:
   enabled: true                      # false = rules only, nothing leaves the network

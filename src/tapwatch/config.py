@@ -18,7 +18,7 @@ from .summarizer import Assets
 from .triage import DEFAULT_MODEL, GATEWAY_MODEL, GATEWAY_URL, JevClient
 
 FEED_FILES = {"popular_domains_file": "top-100k.csv", "oui_file": "oui.csv", "asn_file": "ip2asn-v4.tsv.gz",
-              "categories_file": "categories.tsv"}
+              "categories_file": "categories.tsv", "public_suffix_file": "public_suffix_list.dat"}
 LEARNED_CATEGORIES = "categories.learned.tsv"  # the model's cached domain categories (categories.py): written, not downloaded
 
 

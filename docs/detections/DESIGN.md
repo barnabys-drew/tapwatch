@@ -376,8 +376,8 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   routing, and it is never the normalcy question ("is this domain normal?") that the triage model
   is measured to get wrong; that rule stands, and the triage model is not involved here at all.
 - **FPs:** small business and personal sites, work domains and SaaS tenants (allowlist the
-  work laptop's corporate suffixes in config, not in git), and fresh legit CDNs. Use the Public Suffix List
-  (`co.uk`) instead of last-two-labels.
+  work laptop's corporate suffixes in config, not in git), and fresh legit CDNs. Registrable domains come from
+  the Public Suffix List's ICANN rules (`co.uk`, `com.au`, wildcards and exceptions) since 2026-10-18 (#17).
 - **Route:** **code-only** (`router.CODE_ONLY`). NRD on a fixed-function device → ALERT; NRD on a
   computer → DIGEST; random-looking → DIGEST; else LOG.
 - **Jev:** **none, deliberately.** This is the measured weak spot. Jev's answer here is
