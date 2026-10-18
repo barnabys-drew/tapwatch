@@ -847,3 +847,5 @@ def test_queue_counts_follow_the_route_filter_and_say_what_is_hidden(tmp_path):
     assert "show 3 open log-only case(s)" in page and "route=all" in page
     every = ui.render_queue(store, Assets(), {"route": ["all"]}, "tok")[1]
     assert '<div class="v">4</div><div class="l">Open cases</div>' in every and "log-only" not in every
+    logs = ui.render_queue(store, Assets(), {"route": ["log"]}, "tok")[1]
+    assert '<div class="v">3</div><div class="l">Open cases</div>' in logs                # the parameterised branch
