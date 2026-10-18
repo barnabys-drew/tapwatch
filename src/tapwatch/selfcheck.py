@@ -100,6 +100,16 @@ def _task_inventory():
     return rows + [tick(T0 + 130)]
 
 
+def _recon():
+    tools = ("whoami.exe", "systeminfo.exe", "nltest.exe")
+    return [process_start(T0 + i * 20, rf"C:\Windows\System32\{p}", TEMP_EXE) for i, p in enumerate(tools)]
+
+
+def _extension():
+    return [persistence(T0, "chrome_extensions", username="u", name="tapwatch-selfcheck", identifier="a" * 32,
+                        version="1.0", permissions="storage, debugger"), tick(T0 + 130)]
+
+
 def tick(ts):
     return {"_type": "tick", "ts": ts}
 
@@ -213,6 +223,8 @@ SCENARIOS: list[Scenario] = [
              _new_task("powershell.exe -w hidden -enc " + "Q" * 40), "host_persist", Route.ALERT),
     Scenario("R23 new scheduled task runs a script from Downloads",
              _new_task(r"wscript.exe C:\Users\<user>\Downloads\up.vbs"), "host_persist", Route.ALERT),
+    Scenario("R25 three discovery tools from a program in Temp", _recon(), "host_recon", Route.ALERT),
+    Scenario("R26 new browser extension with the debugger permission", _extension(), "host_extension", Route.ALERT),
     Scenario("R22 the Zeek conn feed stops for 21 minutes", [conn(T0)] + [tick(T0 + 60 * i) for i in range(1, 22)],
              "feed_silence", Route.ALERT, config={"detectors": {"feed_silence": {"enabled": True}}}),
     Scenario("quiet: a 15-minute UDP voice call split into minute records (#63)", _video_call(), "beaconing", None),
