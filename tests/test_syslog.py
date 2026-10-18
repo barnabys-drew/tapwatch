@@ -212,3 +212,19 @@ def test_a_port_forward_audit_line_keeps_its_settings_fields():
     kind, rec = syslogin.parse_line(line)
     assert kind == "cef" and rec["name"] == "Config Created" and rec["UNIFIsettingsSection"] == "Port forwarding"
     assert rec["UNIFIsettingsEntry"] == "tapwatch-test" and rec["UNIFIsettingsChanges"].endswith("dst_port: 54321")
+
+
+def test_each_heard_period_writes_a_heartbeat_row(tmp_path):
+    rows = []
+
+    class W:
+        def write(self, rec, now):
+            rows.append(rec)
+
+    st = syslogin.Stats(every=600, writer=W())
+    st.add("system", 1000.0); st.add("cef", 1100.0)
+    st.flush(1600.0)
+    assert rows == [{"ts": 1600.0, "kind": "stats", "minutes": 10, "counts": {"system": 1, "cef": 1}}]
+    st.flush(2200.0)                                                             # nothing heard: no row, R22 sees silence
+    st.add("refused", 2300.0); st.flush(2900.0)                                  # only refused senders: no row either
+    assert len(rows) == 1
