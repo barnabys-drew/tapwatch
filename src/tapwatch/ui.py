@@ -458,7 +458,14 @@ def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str
     indicators = json.loads(r["indicators"])
     verdict = json.loads(r["verdict"]) if r["verdict"] else None
 
-    fact_rows = "".join(f'<dt>{e(k)}</dt><dd class="mono">{e(v)}</dd>' for k, v in facts.items())
+    def fact_value(k, v) -> str:
+        if k == "correlated" and isinstance(v, list):  # pipeline.correlate: the other side of the story, as links
+            return " · ".join(f'<a href="/case/{int(p["id"])}">#{int(p["id"])}</a> {e(p.get("detector", ""))} '
+                              f'({e(str(p.get("route", "")))}, {abs(int(p.get("minutes", 0)))} min)'
+                              for p in v if isinstance(p, dict) and str(p.get("id", "")).isdigit())
+        return e(v)
+
+    fact_rows = "".join(f'<dt>{e(k)}</dt><dd class="mono">{fact_value(k, v)}</dd>' for k, v in facts.items())
     untrusted = ("<ul>" + "".join(f'<li class="mono">{e(i)}</li>' for i in indicators) + "</ul>") if indicators \
         else '<span class="muted">none</span>'
     sev, sev_cls = severity(r)

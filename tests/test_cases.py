@@ -30,6 +30,68 @@ def make_case(store, detector="beaconing", host="192.168.50.10", indicators=None
     return store.add(case, "state text", verdict, route_, "test"), case
 
 
+class Scripted:
+    """A detector that raises the cases it was handed, one per record, for pipeline tests."""
+
+    name = "scripted"
+    PERSIST = ()
+
+    def __init__(self, cases):
+        self.cases = list(cases)
+
+    def feed(self, rec):
+        return [self.cases.pop(0)] if self.cases else []
+
+    def tick(self, ts):
+        return []
+
+    def flush(self):
+        return []
+
+
+def test_a_host_case_and_a_network_case_on_one_device_within_five_minutes_pair_up():
+    from tapwatch.pipeline import Pipeline
+    pc = "192.168.50.10"
+    host_case = Case("host_encoded_cmd", pc, T0, "Encoded or download-and-run command on the PC",
+                     {"source": "endpoint", "program": "powershell.exe", "device_mac": "aa:bb:cc:dd:ee:01"},
+                     ["powershell.exe"], base_severity=4)
+    beat = {"interval_s": 60, "count": 40, "span_s": 2400, "regularity": "very regular", "port": 443, "service": "ssl"}
+    net_case = Case("beaconing", pc, T0 + 12, "Regular repeating connection",
+                    {**beat, "max_route": "log", "device_mac": "aa:bb:cc:dd:ee:01"}, ["cdn.example"], base_severity=2)
+    far = Case("beaconing", pc, T0 + 900, "Regular repeating connection",
+               {**beat, "device_mac": "aa:bb:cc:dd:ee:01", "dedupe": "far"}, ["far.example"], base_severity=2)
+    other_device = Case("beaconing", "192.168.50.77", T0 + 20, "Regular repeating connection", dict(beat),
+                        ["elsewhere.example"], base_severity=2)
+    store = Store(":memory:")
+    p = Pipeline([Scripted([host_case, net_case, other_device, far])], Assets(), store, client=None, notifier=None)
+    out = [p.process({"_type": "conn", "ts": T0 + i})[0] for i in range(4)]
+    (h_id, _, _, h_route), (n_id, n, _, n_route), (_, o, _, _), (_, f, _, _) = out
+    assert h_route is Route.ALERT and n_route is Route.DIGEST          # logged on its own; lifted next to the alert
+    assert n.facts["correlated"][0]["id"] == h_id and n.facts["correlated_best"] == "alert"
+    assert "the PC's own agent raised another case in the same minute: Encoded" in store.get(n_id)["state"]
+    linked = json.loads(store.get(h_id)["facts"])["correlated"]            # the earlier case learns about the later one
+    assert linked == [{"id": n_id, "detector": "beaconing", "title": "Regular repeating connection",
+                       "route": "digest", "minutes": 0}]
+    assert any(f"paired with #{n_id}" in r["text"] for r in store.notes(h_id))
+    assert "correlated" not in o.facts and "correlated" not in f.facts    # another device; 15 minutes away
+    assert store.get(n_id)["reason"].startswith("paired with an alert on the same device")
+    # a partner the owner suppressed is not half of a story, and an earlier case keeps only its newest three links
+    sup_id, _ = make_case(store, detector="beaconing", host=pc, facts={**beat, "device_mac": "aa:bb:cc:dd:ee:01", "dedupe": "s"},
+                          route_=Route.LOG)
+    store.db.execute("UPDATE cases SET reason='suppressed: #1 beaconing', first_ts=?, last_ts=? WHERE id=?", (T0 + 40, T0 + 40, sup_id))
+    store.db.commit()
+    late = Case("host_lolbin", pc, T0 + 50, "Built-in Windows tool connected to the internet",
+                {"source": "endpoint", "program": "certutil.exe", "device_mac": "aa:bb:cc:dd:ee:01"}, ["certutil.exe"], base_severity=4)
+    p.detectors[0].cases.append(late)
+    (_, late_case, _, _) = p.process({"_type": "conn", "ts": T0 + 50})[0]
+    assert [e["id"] for e in late_case.facts["correlated"]] == [n_id]        # the suppressed one is left out
+    for i in range(4):
+        p.detectors[0].cases.append(Case("beaconing", pc, T0 + 60 + i, "Regular repeating connection",
+                                         {**beat, "device_mac": "aa:bb:cc:dd:ee:01", "dedupe": f"b{i}"}, [f"b{i}.example"], base_severity=2))
+        p.process({"_type": "conn", "ts": T0 + 60 + i})
+    assert len(json.loads(store.get(h_id)["facts"])["correlated"]) == 3
+
+
 # ------------------------------------------------------------------ migration
 
 def test_migration_adds_columns_to_an_old_database_and_keeps_rows(tmp_path):
