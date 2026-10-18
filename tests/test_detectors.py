@@ -1543,3 +1543,6 @@ def test_base_domain_follows_the_public_suffix_list_icann_rules(tmp_path):
     finally:
         set_public_suffixes(None)
     assert base_domain("www.bbc.co.uk") == "bbc.co.uk"                          # without it, the small table
+    cut = tmp_path / "truncated.dat"
+    cut.write_text(PSL_SAMPLE.split("// ===END ICANN")[0])                       # a download cut short
+    assert set_public_suffixes(str(cut)) == 0 and base_domain("a.b.kawasaki.jp") == "kawasaki.jp"

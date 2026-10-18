@@ -92,12 +92,13 @@ def set_public_suffixes(path: str | None) -> int:
     PSL_RULES.clear(), PSL_WILDCARDS.clear(), PSL_EXCEPTIONS.clear()
     if not path or not Path(path).exists():
         return 0
-    icann = False
+    icann = ended = False
     for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if "===BEGIN ICANN DOMAINS===" in line:
             icann = True
         elif "===END ICANN DOMAINS===" in line:
+            ended = True
             break
         if not icann or not line or line.startswith("//"):
             continue
@@ -112,6 +113,10 @@ def set_public_suffixes(path: str | None) -> int:
             PSL_WILDCARDS.add(rule[2:])
         else:
             PSL_RULES.add(rule)
+    if not ended:  # a truncated download would silently drop rules (co.uk): keep the built-in table instead
+        PSL_RULES.clear(), PSL_WILDCARDS.clear(), PSL_EXCEPTIONS.clear()
+        log.warning("public suffix list %s has no end of its ICANN section; using the built-in table", path)
+        return 0
     return len(PSL_RULES) + len(PSL_WILDCARDS) + len(PSL_EXCEPTIONS)
 
 

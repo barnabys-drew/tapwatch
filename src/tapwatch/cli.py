@@ -304,6 +304,9 @@ def cmd_mark(args, cfg) -> int:
 def cmd_ui(args, cfg) -> int:
     from . import ui
 
+    # The case desk groups domains for "Suppress similar" with base_domain too: the same list as the alerter's.
+    detectors.set_public_suffixes(cfg.get("public_suffix_file"))
+
     u = cfg.get("ui") or {}
     app = ui.App(cfg.get("db_path", "tapwatch.db"), config.assets(cfg),
                  zeek_dirs=args.zeek_dir or u.get("zeek_dirs") or [],
