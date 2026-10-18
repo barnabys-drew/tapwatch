@@ -381,7 +381,15 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
     total = db.execute(f"SELECT COUNT(*) FROM cases{sql_where}", args).fetchone()[0]
     rows = db.execute(f"SELECT * FROM cases{sql_where} ORDER BY {QUEUE_SORTS[f['sort']]} LIMIT {PAGE_SIZE}",
                       args).fetchall()
-    by_status = dict(db.execute("SELECT status, COUNT(*) FROM cases GROUP BY status").fetchall())
+    # The tiles and pills count with the same route filter as the list, so the numbers match what is shown: the
+    # default (alert + digest) hides log-only cases, and counting them made "11 open" sit over a 1-row list
+    # (2026-10-18). How many open cases that hides is said once, with a link that shows them.
+    route_sql = "route != 'log'" if f["route"] == "triage" else "route = ?" if f["route"] in ROUTES else "1"
+    route_args = [f["route"]] if f["route"] in ROUTES else []
+    by_status = dict(db.execute(f"SELECT status, COUNT(*) FROM cases WHERE {route_sql} GROUP BY status",
+                                route_args).fetchall())
+    hidden_log = db.execute("SELECT COUNT(*) FROM cases WHERE status != 'closed' AND route = 'log'").fetchone()[0] \
+        if f["route"] == "triage" else 0
     detectors = [r[0] for r in db.execute("SELECT DISTINCT detector FROM cases ORDER BY 1")]
     hosts = [r[0] for r in db.execute("SELECT DISTINCT host FROM cases ORDER BY 1")]
 
@@ -393,7 +401,8 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
     last_day = db.execute("SELECT COUNT(*) FROM cases WHERE first_ts >= ?", (since,)).fetchone()[0]
     sup_hits = db.execute("SELECT COALESCE(SUM(hits), 0) FROM suppressions").fetchone()[0]
     n_open = by_status.get("new", 0) + by_status.get("investigating", 0)
-    tiles = (tile(n_open, "Open cases", "blue", f"{by_status.get('closed', 0)} closed", link(status="open"))
+    open_hint = f"{by_status.get('closed', 0)} closed" + (f", {hidden_log} log-only not counted" if hidden_log else "")
+    tiles = (tile(n_open, "Open cases", "blue", open_hint, link(status="open"))
              + tile(open_alerts, "Open alerts", "red" if open_alerts else "green", "routed to alert",
                     link(status="open", route="alert"))
              + tile(by_status.get("new", 0), "New", "blue", "not looked at yet", link(status="new"))
@@ -442,7 +451,9 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
 <select name="disposition">{options(DISPOSITIONS, "false_positive")}</select>
 <input name="note" maxlength="{MAX_NOTE}" placeholder="note (optional)" size="30">
 <button>Close selected</button></div></form>""" if rows else '<div class="card empty">No cases match these filters.</div>')
-    return "Cases", (f'<h1>Cases</h1><p class="sub">Triage queue for everything tapwatch has raised · {e(shown)}</p>'
+    shown = e(shown) + (f' · <a href="{e(link(route="all"))}">show {hidden_log} open log-only case(s)</a>'
+                        if hidden_log else "")
+    return "Cases", (f'<h1>Cases</h1><p class="sub">Triage queue for everything tapwatch has raised · {shown}</p>'
                      f'<div class="tiles">{tiles}</div><div class="pills">{pills}</div>{filters}{table}')
 
 
