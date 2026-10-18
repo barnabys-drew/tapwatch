@@ -25,7 +25,7 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 
 | Area | State |
 |---|---|
-| Network detection | **Solid.** 22 network case types (plus 7 host ones), baselines that survive restarts, a scripted self-check at 19/19 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
+| Network detection | **Solid.** 22 network case types (plus 7 host ones), baselines that survive restarts, a scripted self-check at 20/20 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
 | Linux install | **Solid.** `docker compose up`, verified end to end on a live interface |
 | Windows install | **Works on one PC.** WSL + Npcap services; a clean-machine test is still to do |

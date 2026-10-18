@@ -87,7 +87,7 @@ def _observed(c: Case, words: dict) -> str:
     f = c.facts
     if c.detector == "beaconing":
         text = (f"It connected to the same outside server on port {f['port']} ({f['service']}) "
-                f"{_every(f['interval_s'])}, {f['regularity']} timing, {f['count']} times over {_duration(f['span_s'])}.")
+                f"{_every(f['interval_s'])}, {_regularity(f['regularity'])}, {f['count']} times over {_duration(f['span_s'])}.")
         if f.get("shared_by"):
             text += (f" {f['shared_by']} other device(s) in the house also use this service"
                      + (", which is widely used on the internet." if f.get("popular") else "."))
@@ -356,6 +356,14 @@ def _new_domains(f: dict) -> str:
 
 
 BY_ADDRESS = "The case has no name for this destination, so the match was by address; other services can share an address."
+
+
+def _regularity(word: str) -> str:
+    """'jittered' (detectors.jitter_regular) needs saying in full: random variation around a steady interval is
+    how C2 frameworks hide a heartbeat, not the same as a clock-steady poll."""
+    if word == "jittered":
+        return "timing that varies randomly around a steady interval (the way command-and-control tools add jitter)"
+    return f"{word} timing"
 
 
 def _on_the_pc(f: dict) -> str:

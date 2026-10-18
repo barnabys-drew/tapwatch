@@ -68,6 +68,53 @@ def test_beaconing_beat_window_survives_a_restart():
         assert len(run(fresh, [conn(T0 + i * 60) for i in range(15)])) == 1
 
 
+def test_beaconing_catches_jittered_c2_at_digest_but_not_with_jitter_off():
+    """#24: Cobalt Strike-style sleep jitter (a random 0-50% less than the interval) and a missed beat defeat
+    the CV test; the jitter tier catches them and caps them at digest."""
+    rng = random.Random(3)
+    ts, recs = T0, []
+    for i in range(20):
+        ts += 300 * rng.uniform(0.5, 1.0) * (2 if i == 9 else 1)
+        recs.append(conn(ts))
+    (c,) = run(Beaconing(), recs)
+    assert c.facts["regularity"] == "jittered" and c.facts["max_route"] == "digest"
+    assert 200 <= c.facts["interval_s"] <= 260          # the folded median beat, not the mean the missed beat inflates
+    assert run(Beaconing(jitter=False), recs) == []
+    from tapwatch.summarizer import Assets, summarize
+    assert "varies randomly around a steady interval" in summarize(c, Assets())
+    # a popular service with loose timing is the measured noise: logged
+    (p,) = run(Beaconing(popular={"example.com"}), [ssl(T0 - 1, "api.example.com")] + recs)
+    assert p.facts["max_route"] == "log"
+
+
+def test_a_jittered_case_never_uses_a_regular_cases_reporting_slots():
+    """Review of #143: jittered hits took the 7-day slot and the (host, port) fan-out budget, hiding 7 of 20
+    regular cases on two days of home traffic."""
+    rng = random.Random(5)
+    b, recs = Beaconing(fanout_per_day=3), []
+    for n, dst in enumerate(("203.0.113.11", "203.0.113.12", "203.0.113.13")):
+        ts = T0 + n
+        for i in range(20):
+            ts += 300 * rng.uniform(0.5, 1.0)
+            recs.append(conn(ts, dst=dst))
+    recs.sort(key=lambda r: r["ts"])
+    assert [c.facts["regularity"] for c in run(b, recs)] == ["jittered"] * 3
+    later = [conn(T0 + 9000 + i * 60, dst="203.0.113.14") for i in range(15)]
+    (reg,) = run(b, later)
+    assert reg.facts["regularity"] in ("regular", "very regular")
+
+
+def test_jitter_regular_returns_the_beat_and_guards_a_zero_median():
+    from tapwatch.detectors import jitter_regular
+    assert jitter_regular([0.0] * 11, 0) is None
+
+def test_jitter_regular_needs_the_band_and_few_folded_beats():
+    from tapwatch.detectors import jitter_regular
+    assert jitter_regular([300, 290, 310, 600, 305, 295, 300, 280, 320, 300, 310]) == 300  # one missed beat folds
+    assert jitter_regular([30, 30, 30, 300, 30, 300, 30, 300, 30, 300, 30]) is None         # two lengths: a keepalive mix
+    assert jitter_regular([3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]) is None                        # under the minimum interval
+
+
 def test_beaconing_ignores_human_browsing_jitter():
     rng = random.Random(1)
     ts, recs = T0, []
