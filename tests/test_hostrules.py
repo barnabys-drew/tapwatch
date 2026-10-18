@@ -11,6 +11,7 @@ from tapwatch.hostrules import (
     NAMES,
     AppSpawnsShell,
     BadSignatureConnects,
+    DestructiveCommand,
     EncodedCommand,
     EndpointState,
     LolbinConnects,
@@ -588,3 +589,36 @@ def test_a_corrupted_saved_known_set_is_discarded_at_restore():
                     program_arguments="", path="/Users/u/Library/LaunchAgents/com.example.helper.plist")
     (la,) = settle(NewPersistence(st()), agent)
     assert la.facts["kind"] == "launch agent" and la.facts["entry"] == "com.example.helper" and la.facts["folder"] == "profile"
+
+
+# ------------------------------------------------------------ R24 destructive or evasive command
+
+VSSADMIN = r"C:\Windows\System32\vssadmin.exe"
+
+
+def test_shadow_copies_or_logs_removed_is_must_alert_on_any_program():
+    (c,) = run(DestructiveCommand(st()), start(T0, VSSADMIN, CMD, cmd_shadow="1"))
+    assert c.must_alert and c.base_severity == 5 and c.detector == "host_destructive"
+    assert c.facts["harm"] == ["shadow copies, backups or recovery removed"] and c.facts["program"] == "vssadmin.exe"
+    assert c.facts["parent"] == "cmd.exe" and c.facts["parent_class"] == "shell" and c.indicators == ["vssadmin.exe"]
+    no_paths(c)
+    (logs,) = run(DestructiveCommand(st()), start(T0, PS, EXPLORER, cmd_logclear="1", cmd_hidden="1"))
+    assert logs.must_alert and logs.facts["harm"] == ["event logs cleared"] and logs.facts["unusual"] == ["a hidden window"]
+
+
+def test_defender_and_account_changes_alert_but_can_be_suppressed():
+    (d,) = run(DestructiveCommand(st()), start(T0, PS, EXPLORER, cmd_defender="1"))
+    assert (d.base_severity, d.must_alert) == (4, False) and d.facts["harm"] == ["Defender turned off or given an exclusion"]
+    (a,) = run(DestructiveCommand(st()), start(T0, CMD, EXPLORER, cmd_admin="1"))
+    assert (a.base_severity, a.must_alert) == (4, False) and a.title == "Protection or accounts changed on the PC"
+    (both,) = run(DestructiveCommand(st()), start(T0, PS, EXPLORER, cmd_defender="1", cmd_shadow="1"))
+    assert both.must_alert and len(both.facts["harm"]) == 2
+    assert run(DestructiveCommand(st()), start(T0, PS, EXPLORER, cmd_enc="1", cmd_dl="1")) == []   # R17's signals are R17's
+    assert run(DestructiveCommand(st()), start(T0, VSSADMIN, CMD)) == []                           # vssadmin list shadows: nothing
+
+
+def test_the_rule_and_its_signals_are_wired_in():
+    from tapwatch.hostrules import NAMES, flags_of
+    from tapwatch.router import CODE_ONLY
+    assert "host_destructive" in NAMES and "host_destructive" in CODE_ONLY
+    assert flags_of({"cmd_shadow": "1", "cmd_admin": "1", "cmd_url": "1"}) == ("shadow", "admin", "url")

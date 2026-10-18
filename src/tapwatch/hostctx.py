@@ -106,6 +106,9 @@ SYSMON = "sysmon_events"   # Windows: Sysmon process starts (1), connections (3)
 CMD_SUSPICIOUS = {"enc": "an encoded payload", "b64": "base64 decoding", "dl": "a download-and-run",
                   "iex": "Invoke-Expression"}
 CMD_UNUSUAL = {"hidden": "a hidden window", "bypass": "an execution-policy bypass"}
+# R24: what ransomware and an intruder covering tracks run, as the agent flags them (hostrules.DestructiveCommand)
+CMD_DESTRUCTIVE = {"shadow": "shadow copies, backups or recovery removed", "logclear": "event logs cleared",
+                   "defender": "Defender turned off or given an exclusion", "admin": "a local account or administrator added"}
 # The PC's own addresses (agents/config/osquery.conf `host_addresses`, a snapshot every 5 minutes). DHCP moves the
 # PC, so the configured IP is only a fallback for when no agent reports them.
 ADDRS = "host_addresses"
@@ -235,6 +238,8 @@ def _windows_signals(o: Owner, path: str, bad: list, good: list, unclear: list) 
         bad.append(f"{o.name}'s command line is encoded, hidden or downloads-and-runs")
     if sus := [CMD_SUSPICIOUS[f] for f in o.cmd_flags if f in CMD_SUSPICIOUS]:
         bad.append(f"{o.name}'s command line has " + " and ".join(sus))
+    if harm := [CMD_DESTRUCTIVE[f] for f in o.cmd_flags if f in CMD_DESTRUCTIVE]:
+        bad.append(f"{o.name}'s command line means " + " and ".join(harm))
     if o.signature in ("invalid", "distrusted", "untrusted"):
         bad.append(f"{o.name}'s code signature is {o.signature}")
     if name in WIN_SHELLS and o.parent.lower() in WIN_DOC_APPS:
@@ -392,7 +397,7 @@ class OwnerIndex:
         eid, guid, path = str(c.get("eventid", "")), c.get("guid") or "", c.get("path") or ""
         ts = _sysmon_ts(c.get("utc")) or fallback_ts
         if eid == "1":
-            flags = tuple(k for k in (*CMD_SUSPICIOUS, *CMD_UNUSUAL, "url") if str(c.get(f"cmd_{k}", "0")) == "1")
+            flags = tuple(k for k in (*CMD_SUSPICIOUS, *CMD_UNUSUAL, *CMD_DESTRUCTIVE, "url") if str(c.get(f"cmd_{k}", "0")) == "1")
             self.procs[guid] = (c.get("cmdline") or "", c.get("parent_path") or "", flags)
             return
         o = Owner(name=_basename(path) or "?", path=path, start=ts, end=ts, guid=guid)

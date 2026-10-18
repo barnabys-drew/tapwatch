@@ -5,8 +5,9 @@ The detectors here read the same osquery results log as a log source of its own 
 zeek.LOG_TYPES) and raise cases for living-off-the-land activity that never looks odd on the wire:
 an encoded or download-and-run command, a document app or browser starting a shell, a program in a
 temp folder connecting out, a built-in Windows tool connecting out, a program with a bad code
-signature connecting out, and a new persistence entry (a scheduled task, service, startup item, cron
-job or launch agent) that runs a script, a shell or something from a user-writable folder.
+signature connecting out, a new persistence entry (a scheduled task, service, startup item, cron
+job or launch agent) that runs a script, a shell or something from a user-writable folder, and a command
+that removes backups, recovery or logs, turns off Defender, or adds an account.
 
 The rows are Sysmon events the Windows agent's `sysmon_events` query reduced on the PC
 (agents/config/osquery.conf): process starts (event 1) with the parent and yes/no command-line
@@ -33,6 +34,7 @@ from typing import ClassVar
 from .detectors import Detector, Warmup, is_internal, prune_reported, still_reported
 from .hostctx import (
     ADDRS,
+    CMD_DESTRUCTIVE,
     CMD_SUSPICIOUS,
     CMD_UNUSUAL,
     SIGS,
@@ -69,7 +71,8 @@ DAY = 86400.0
 TEMP_DIRS = ("/appdata/local/temp/", "c:/windows/temp/")
 SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable by every account, never an install
 
-NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist")
+NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
+         "host_destructive")
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent"}
@@ -122,7 +125,7 @@ def parent_class(parent: str) -> str:
 
 def flags_of(c: dict) -> tuple[str, ...]:
     """The command-line signals osquery set on a Sysmon process-start row (cmd_enc=1 -> "enc")."""
-    return tuple(k for k in (*CMD_SUSPICIOUS, *CMD_UNUSUAL, "url") if str(c.get(f"cmd_{k}", "0")) == "1")
+    return tuple(k for k in (*CMD_SUSPICIOUS, *CMD_UNUSUAL, *CMD_DESTRUCTIVE, "url") if str(c.get(f"cmd_{k}", "0")) == "1")
 
 
 def signal_words(flags) -> tuple[list[str], list[str]]:
@@ -504,6 +507,42 @@ class BadSignatureConnects(HostDetector):
                          (self.state.host, prog, sig))
 
 
+class DestructiveCommand(HostDetector):
+    """R24. A command that removes the way back or covers tracks: shadow copies, backups or recovery deleted
+    (what ransomware runs before encrypting), event logs cleared, Defender turned off or given an exclusion, a
+    local account or administrator added. The agent flags them on the PC (cmd_shadow, cmd_logclear,
+    cmd_defender, cmd_admin); the text never gets here.
+
+    Any program, not only shells: `vssadmin delete shadows` is vssadmin's own command line, and the PowerShell
+    forms (Clear-EventLog, Set-MpPreference, Add-LocalGroupMember) are PowerShell's. Measured 2026-10-16/17 over
+    40 h of the main PC's log, 15,389 process starts: vssadmin, wbadmin, bcdedit, wevtutil, net, net1 and wmic
+    started 0 times; the 13 command lines the agent kept matched none of the patterns. Backups, recovery and
+    logs gone: severity 5, must_alert (no benign reading on a home PC; an administrator who does it on purpose
+    knows the alert is coming). Defender and accounts: severity 4, suppressible, because an installer or the
+    owner adding an exclusion or a user is a thing that happens once and can then be allowed per program.
+    """
+
+    name = "host_destructive"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON,)
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if str(c.get("eventid")) != "1":
+            return []
+        flags = flags_of(c)
+        harm = [f for f in flags if f in CMD_DESTRUCTIVE]
+        if not harm:
+            return []
+        path = c.get("path") or ""
+        prog = _basename(path).lower()
+        parent = _basename(c.get("parent_path") or "")
+        sus, unusual = signal_words(flags)
+        must = "shadow" in harm or "logclear" in harm
+        facts = {"program": prog, "parent": parent, "parent_class": parent_class(parent), "folder": folder_class(path),
+                 "harm": [CMD_DESTRUCTIVE[f] for f in harm], "signals": sus, "unusual": unusual, "url": "url" in flags}
+        return self.emit(ts, "Backups, logs or protection removed on the PC" if must else "Protection or accounts changed on the PC",
+                         facts, 5 if must else 4, prog, must_alert=must)
+
+
 def _target_tokens(target: str) -> list[str]:
     """The program and arguments of a persistence entry's command, quotes and environment variables resolved
     enough to classify: `"C:\\Program Files\\X\\x.exe" /q` -> ['C:\\Program Files\\X\\x.exe', '/q']."""
@@ -719,4 +758,5 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     rules = [cls(state, **d.get(cls.name, {})) for cls in classes]
     rules.append(NewPersistence(state, warmup=warmup or Warmup(cfg.get("warmup_seconds", 86400)),
                                 **d.get(NewPersistence.name, {})))
+    rules.append(DestructiveCommand(state, **d.get(DestructiveCommand.name, {})))
     return rules

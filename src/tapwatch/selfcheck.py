@@ -108,6 +108,9 @@ PS = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 WORD = r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
 TEMP_EXE = r"C:\Users\<user>\AppData\Local\Temp\7zS1\setup.exe"
 CERTUTIL = r"C:\Windows\System32\certutil.exe"
+VSSADMIN = r"C:\Windows\System32\vssadmin.exe"
+CMD_EXE = r"C:\Windows\System32\cmd.exe"
+EXPLORER_EXE = r"C:\Windows\explorer.exe"
 TAMPERED = r"C:\Users\<user>\AppData\Local\Temp\tapwatch-sig-test.exe"
 
 
@@ -186,6 +189,10 @@ SCENARIOS: list[Scenario] = [
              [ssl(T0, dst="198.51.100.7", port=4443, validation_status="self signed certificate")], "tls_odd"),
     Scenario("R17 encoded download-and-run from a document app",
              [process_start(T0, PS, WORD, cmd_enc="1", cmd_dl="1", cmd_url="1")], "host_encoded_cmd", Route.ALERT),
+    Scenario("R24 shadow copies deleted (vssadmin)", [process_start(T0, VSSADMIN, CMD_EXE, cmd_shadow="1")],
+             "host_destructive", Route.ALERT),
+    Scenario("R24 Defender exclusion added from PowerShell", [process_start(T0, PS, EXPLORER_EXE, cmd_defender="1")],
+             "host_destructive", Route.ALERT),
     Scenario("R19 program in a temp folder connects out", [process_connect(T0, TEMP_EXE)], "host_temp_exec"),
     Scenario("R20 certutil connects to the internet", [process_connect(T0, CERTUTIL)], "host_lolbin", Route.ALERT),
     Scenario("R21 tampered binary (untrusted signature) connects out",
