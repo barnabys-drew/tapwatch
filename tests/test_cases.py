@@ -834,3 +834,18 @@ def test_apply_needs_a_login(server):
     r, _ = request(app, "POST", f"/explain/{key}/apply", {"csrf": csrf}, cookie=sid)
     assert r.status == 303 and r.getheader("Location") == "/login"
     assert Store(db).suppressions() == []
+
+
+def test_queue_counts_follow_the_route_filter_and_say_what_is_hidden(tmp_path):
+    """2026-10-18: "11 open" over a one-row list, because the tiles counted log-only cases the list hides."""
+    store = Store(str(tmp_path / "t.db"))
+    make_case(store, facts={"port": 1, "dedupe": "a"}, route_=Route.DIGEST)
+    for i in range(3):
+        make_case(store, facts={"port": 10 + i, "dedupe": f"l{i}"}, route_=Route.LOG)
+    page = ui.render_queue(store, Assets(), {}, "tok")[1]
+    assert '<div class="v">1</div><div class="l">Open cases</div>' in page and "3 log-only not counted" in page
+    assert "show 3 open log-only case(s)" in page and "route=all" in page
+    every = ui.render_queue(store, Assets(), {"route": ["all"]}, "tok")[1]
+    assert '<div class="v">4</div><div class="l">Open cases</div>' in every and "log-only" not in every
+    logs = ui.render_queue(store, Assets(), {"route": ["log"]}, "tok")[1]
+    assert '<div class="v">3</div><div class="l">Open cases</div>' in logs                # the parameterised branch
