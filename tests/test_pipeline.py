@@ -527,6 +527,26 @@ def test_notification_urls_must_be_http(monkeypatch):
         notifiers._post("file:///etc/passwd", b"", {})
 
 
+def test_posts_name_a_user_agent(monkeypatch):
+    seen = {}
+
+    class Resp:
+        status = 204
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=10):
+        seen["ua"] = req.get_header("User-agent")
+        return Resp()
+    monkeypatch.setattr(notifiers.urllib.request, "urlopen", fake_urlopen)
+    notifiers.post_discord("https://discord.com/api/webhooks/1/x", "t", ITEM)
+    assert seen["ua"] == notifiers.USER_AGENT
+    notifiers.post_teams("https://teams.example/x", {})
+    assert seen["ua"] == notifiers.USER_AGENT
+    notifiers._post("https://hooks.example/x", b"", {"user-agent": "mine"})
+    assert seen["ua"] == "mine"
+
+
 def test_channels_come_from_env(monkeypatch):
     for k in ("TAPWATCH_TEAMS_URL", "TAPWATCH_DISCORD_URL", "TAPWATCH_WEBHOOK_URL", "TAPWATCH_NTFY_TOKEN"):
         monkeypatch.delenv(k, raising=False)
