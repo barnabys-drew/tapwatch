@@ -912,6 +912,22 @@ second account is not seen again (the key identity has no account).
   `unset HISTFILE` typed there are builtins: R28 sees `bash -c "…"` / `sh -c "…"` strings (scripts, cron, coding
   agents). The kept command line can hold a token and lands in a 0644 log, the same trade-off as Windows.
 
+### R29 A program reads lsass memory (`host_lsass`) — **built**, baseline pending
+- **Threat:** credential dumping from lsass.exe (mimikatz `sekurlsa`, `rundll32 comsvcs.dll, MiniDump`,
+  `procdump -ma lsass`), T1003.001.
+- **Data:** Sysmon event 10 (process access), now on in `agents/windows/sysmon.xml` for lsass.exe as the target,
+  with Windows' own openers left out there (svchost, wininit, csrss, services, wmiprvse, the Defender and MDE
+  engines); the agent's `sysmon_events` query carries `source_path`, `target_path` and `granted`.
+- **Logic:** `hostrules.LsassAccess`. An access mask with PROCESS_VM_READ (0x10) → severity 4, suppressible per
+  program (an EDR, a password manager); from a temp, Downloads or shared folder, or started by a document or mail
+  app → severity 5, must_alert. Query-only masks (0x1000, 0x1400: Task Manager, monitors) → nothing.
+- **Baseline:** none yet; event 10 was off before 2026-10-18. The first days after `Sysmon64 -c sysmon.xml` are the
+  measurement, and an opener that turns up on the owner's PC is either added to the Sysmon exclusions or
+  suppressed.
+- **Route:** ALERT, code-only. **Safe test:** in an admin PowerShell, `(Get-Process lsass).Modules | Select -First 1`
+  lists one module of lsass (it opens lsass with VM_READ and reads nothing secret) → one severity-4 case for
+  powershell.exe.
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
@@ -982,6 +998,7 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R26 New browser extension with sensitive access (built) | osquery differential | digest / alert | code-only |
 | — | R27 Linux temp, memory or shell connection (built) | osquery eBPF | alert | code-only |
 | — | R28 Suspicious command on Linux (built) | osquery eBPF exec + command-line signals | alert (temp chmod: digest) | code-only |
+| — | R29 A program reads lsass memory (built) | osquery + Sysmon event 10 | alert (must for temp/document) | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 

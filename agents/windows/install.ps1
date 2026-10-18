@@ -66,6 +66,12 @@ $conf = Join-Path $Root "osquery.conf"
 $db = Join-Path $Root "osquery.db"
 $logs = Join-Path $Root "log"
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
+# The results log may hold a command line with a token when a signal fires (R17), so only SYSTEM, Administrators and
+# the signed-in user (tapwatch reads the log from WSL as them) may read it, not every local account.
+$reader = (Get-CimInstance Win32_ComputerSystem).UserName
+if ($reader) {
+    icacls $logs /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "${reader}:(OI)(CI)RX" /T /C | Out-Null
+}
 Copy-Item (Join-Path $Repo "config\osquery.conf") $conf -Force
 
 if ($Mode -eq "fleet") {

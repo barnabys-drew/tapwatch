@@ -318,6 +318,10 @@ def _endpoint(c: Case) -> str:
         return (f"On the PC itself, the program {prog} held a connection to the internet{port} while its code signature "
                 f"was {f.get('signature', 'bad')}: {SIGNATURE_WORDS.get(f.get('signature'), 'it could not be verified')}."
                 f"{signer}{started_by}{folder}")
+    if c.detector == "host_lsass":
+        return (f"On the PC itself, {prog} opened lsass.exe, the Windows process that holds signed-in users' credentials, "
+                f"with the right to read its memory.{started_by}{folder} That is how password and token theft tools "
+                "work (mimikatz, a MiniDump of lsass); Windows' own components were already left out.")
     if c.detector == "host_linux_cmd":
         return (f"On the PC itself (Linux), {prog} was started with a command line that means "
                 + " and ".join(f.get("signals") or ["something suspicious"]) + ". The agent read the command line on "

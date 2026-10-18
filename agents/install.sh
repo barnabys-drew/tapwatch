@@ -69,6 +69,12 @@ write_flags() {
   $SUDO install -m 644 "$tmp" "$dir/osquery.flags"
   rm -f "$tmp"
   $SUDO mkdir -p "$logs" "$(dirname "$db")"
+  # Readable by the installing user (tapwatch runs as them), not every account: group-owned, setgid so new and
+  # rotated files keep the group, and the files already there tightened to match --logger_mode=0640.
+  local reader_group
+  reader_group=$(id -gn "${SUDO_USER:-$(id -un)}")
+  $SUDO chgrp "$reader_group" "$logs" && $SUDO chmod 2750 "$logs"
+  $SUDO find "$logs" -maxdepth 1 -type f -exec chgrp "$reader_group" {} + -exec chmod 640 {} + 2>/dev/null || true
 }
 
 install_macos() {

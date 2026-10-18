@@ -27,6 +27,10 @@ for admin rights once.
 queries ([config/osquery.conf](config/osquery.conf)) and writes the results to
 local logs, and you can ask it anything with `osqueryi`:
 
+The results log is readable only by root/SYSTEM, Administrators and the installing user (Linux: group-owned and
+setgid, mode 0640; Windows: an ACL), because it can hold a command line with a token when a signal fires.
+Re-running the installer applies this to an existing install.
+
 After pulling a new `config/osquery.conf` (a rule added a signal), re-run the installer or copy it over the
 installed one and restart osqueryd: the flags a rule reads are computed inside these queries, so until then
 the new rule has nothing to read.

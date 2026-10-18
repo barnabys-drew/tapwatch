@@ -19,6 +19,7 @@ from tapwatch.hostrules import (
     LinuxCommand,
     LinuxSuspiciousConnect,
     LolbinConnects,
+    LsassAccess,
     NewPersistence,
     TempFolderConnects,
     _entry_key,
@@ -800,3 +801,24 @@ def test_the_agent_keeps_the_linux_command_line_only_when_a_signal_fires():
     flags = ("dlrun", "revshell", "b64exec", "histclear", "tmpexec")
     assert "CASE WHEN " + " OR ".join(f"lcmd_{f}" for f in flags) + " THEN cmdline END AS cmdline" in q
     assert all(f") IS NOT NULL) AS lcmd_{f}" in q for f in flags)
+
+
+# ------------------------------------------------------------ R29 LSASS memory read
+
+def lsass(t, source, granted="0x1010", guid="{a1}"):
+    return sysmon(10, t, guid, source_path=source, target_path=r"C:\Windows\system32\lsass.exe", granted=granted)
+
+
+def test_reading_lsass_memory_alerts_and_from_temp_it_is_must_alert():
+    (c,) = run(LsassAccess(st()), lsass(T0, r"C:\Program Files\Vendor\agent.exe"))
+    assert (c.base_severity, c.must_alert, c.detector, c.facts["access"]) == (4, False, "host_lsass", "0x1010")
+    assert c.indicators == ["agent.exe"]
+    no_paths(c)
+    (bad,) = run(LsassAccess(st()), lsass(T0, TEMP_EXE, granted="0x1fffff"))
+    assert bad.must_alert and bad.base_severity == 5 and bad.facts["folder"] == "temp"
+
+
+def test_querying_lsass_or_another_target_raises_nothing():
+    assert run(LsassAccess(st()), lsass(T0, r"C:\Windows\System32\Taskmgr.exe", granted="0x1400")) == []
+    other = sysmon(10, T0, "{a2}", source_path=TEMP_EXE, target_path=r"C:\Windows\explorer.exe", granted="0x1fffff")
+    assert run(LsassAccess(st()), other) == []

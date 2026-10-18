@@ -74,7 +74,8 @@ TEMP_DIRS = ("/appdata/local/temp/", "c:/windows/temp/")
 SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable by every account, never an install
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
-         "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd")
+         "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd",
+         "host_lsass")
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
@@ -1010,6 +1011,42 @@ class LinuxCommand(HostDetector):
         return self.emit(ts, "Suspicious command on the PC (Linux)", facts, severity, prog[:80],
                          (self.state.host, prog, tuple(hits)))
 
+
+VM_READ = 0x10   # PROCESS_VM_READ: what reading lsass.exe's memory (credentials) needs
+
+
+class LsassAccess(HostDetector):
+    """R29. A program other than Windows' own opens lsass.exe with the right to read its memory: credential dumping
+    (mimikatz's sekurlsa, comsvcs.dll MiniDump, procdump -ma lsass, T1003.001).
+
+    Sysmon event 10 (process access) with lsass.exe as the target; sysmon.xml already drops svchost, wininit, csrss,
+    services, wmiprvse and the Defender engine, which open it all day. Only an access mask with PROCESS_VM_READ
+    (0x10) counts: querying lsass (0x1000, 0x1400) is what Task Manager and monitoring tools do. A program from a
+    temporary, Downloads or shared folder, or one a document or mail app started, is must_alert; anything else is
+    severity 4, suppressible per program (an EDR or a password manager may read it). No baseline yet: event 10 was
+    off before 2026-10-18, so the first days after the Sysmon config is reloaded are the measurement.
+    """
+
+    name = "host_lsass"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON,)
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if str(c.get("eventid")) != "10" or _basename(c.get("target_path") or "").lower() != "lsass.exe":
+            return []
+        try:
+            mask = int(str(c.get("granted") or "0"), 0)
+        except ValueError:
+            return []
+        if not mask & VM_READ:
+            return []
+        src = c.get("source_path") or ""
+        prog, folder = _basename(src).lower() or "unknown", folder_class(src)
+        started = _start_facts(self.state.start_of(c.get("guid") or "", ts))
+        must = folder in ("temp", "downloads", "shared") or started.get("parent_class") == "document"
+        facts = {"program": prog, "folder": folder, "access": hex(mask), **started}
+        return self.emit(ts, "A program read the memory of Windows' credential store (lsass)", facts, 5 if must else 4,
+                         prog, must_alert=must)
+
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
@@ -1030,4 +1067,5 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
                                   **d.get(BrowserExtension.name, {})))
     rules.append(LinuxSuspiciousConnect(state, **d.get(LinuxSuspiciousConnect.name, {})))
     rules.append(LinuxCommand(state, **d.get(LinuxCommand.name, {})))
+    rules.append(LsassAccess(state, **d.get(LsassAccess.name, {})))
     return rules
