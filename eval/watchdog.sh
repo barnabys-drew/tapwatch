@@ -23,6 +23,12 @@ case "$hb" in ""|https://*) ;; *) echo "TAPWATCH_HEARTBEAT_URL must be https; he
 # Probed once at startup: restart the watchdog after `service install --syslog`.
 syslog_unit=no
 systemctl --user list-unit-files tapwatch-syslog.service 2>/dev/null | grep -q '^tapwatch-syslog\.service' && syslog_unit=yes
+# The capture: check the tapwatch-capture unit where `service install --capture-iface` made one (the Windows/WSL
+# path, which runs the tapwatch-mirror container), or a container named in TAPWATCH_CAPTURE_CONTAINER (Docker
+# compose: `<project>-zeek-1`). Neither: conn.log freshness below is the capture check (macOS, native Zeek).
+capture_unit=no
+systemctl --user list-unit-files tapwatch-capture.service 2>/dev/null | grep -q '^tapwatch-capture\.service' && capture_unit=yes
+capture_container=${TAPWATCH_CAPTURE_CONTAINER:-}
 
 heartbeat() {  # heartbeat <problems>: empty = healthy
   [ -n "$hb" ] || return 0
@@ -35,8 +41,13 @@ heartbeat() {  # heartbeat <problems>: empty = healthy
 
 check() {
   local problems=()
-  docker ps --filter name=^tapwatch-mirror$ --filter status=running -q | grep -q . \
-    || problems+=("capture container tapwatch-mirror is not running")
+  if [ "$capture_unit" = yes ]; then
+    systemctl --user is-active --quiet tapwatch-capture 2>/dev/null \
+      || problems+=("capture (tapwatch-capture) is not running")
+  elif [ -n "$capture_container" ]; then
+    docker ps --filter "name=^${capture_container}\$" --filter status=running -q | grep -q . \
+      || problems+=("capture container $capture_container is not running")
+  fi
   if [ -f "$dir/conn.log" ]; then
     local age=$(( $(date +%s) - $(stat -c %Y "$dir/conn.log") ))
     [ "$age" -le "$stale" ] || problems+=("no new traffic logged for $((age / 60)) min")
@@ -54,7 +65,8 @@ check() {
 }
 
 if [ "$interval" = "--once" ]; then
-  ok="OK: capture running, logs fresh, alerter running"; [ "$syslog_unit" = yes ] && ok="$ok, syslog listener running"
+  ok="OK: logs fresh, alerter running"; { [ "$capture_unit" = yes ] || [ -n "$capture_container" ]; } && ok="OK: capture running, logs fresh, alerter running"
+  [ "$syslog_unit" = yes ] && ok="$ok, syslog listener running"
   out=$(check); [ -z "$out" ] && echo "$ok" || echo "$out"; exit 0
 fi
 

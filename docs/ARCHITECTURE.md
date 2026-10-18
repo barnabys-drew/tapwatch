@@ -133,7 +133,7 @@ a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwat
 | **Explain** | Finds groups of repeat cases that host context marked likely benign (same detector, device, program and destination). It suggests or applies expiring `device_program` suppressions. | `explain.py` |
 | **Setup wizard** | `tapwatch init` detects the gateway, this machine, the timezone and the capture path, then writes `config.yaml`, `assets.yaml` and `.env` (mode 600). It never overwrites without `--force`. | `wizard.py` |
 | **Services** | systemd *user* units: alerter, case desk, watchdog, plus capture and syslog when asked for. | `service.py` |
-| **Watchdog** | Every 5 minutes it checks that the capture container is up, `conn.log` is fresh, the alerter PID is alive and, where its unit is installed, the syslog listener is active. It notifies once on failure and once on recovery. | `eval/watchdog.sh` |
+| **Watchdog** | Every 5 minutes it checks that the capture is up (its unit or a named container), `conn.log` is fresh, the alerter PID is alive and, where its unit is installed, the syslog listener is active. It notifies once on failure and once on recovery. | `eval/watchdog.sh` |
 | **Eval harness** | Routes the same cases two ways, rules-only and with Jev, against labelled hosts, and reports what each surfaced, alerted on and cost. | `evaluate.py`, `eval/` |
 
 All Python lives in [`src/tapwatch/`](../src/tapwatch/). [`cli.py`](../src/tapwatch/cli.py) wires
@@ -410,8 +410,9 @@ Prerequisites: a managed switch that can mirror the router port ([setup/mirror-p
 and a spare NIC for the mirror. The endpoint agents ([agents/](../agents/README.md)) install osquery
 (and Sysmon on Windows). They're optional, and only needed for host context.
 
-The watchdog ships as a systemd unit. It checks the `tapwatch-mirror` capture container (the
-Npcap/WSL path), so on the compose path rely on Docker's restart policies instead.
+The watchdog ships as a systemd unit. It checks the capture where it can name it: the `tapwatch-capture` unit on
+the Npcap/WSL path, or the container in `TAPWATCH_CAPTURE_CONTAINER` (compose: `<project>-zeek-1`); elsewhere a
+fresh `conn.log` is the capture check. R22 (`feed_silence`) watches every feed from inside the alerter as well.
 
 ## Testing and evaluation
 
