@@ -67,12 +67,13 @@ loginctl enable-linger $USER            # keep the services running after you cl
 ```
 
 `init` asks where alerts should go (ntfy, Discord, email). To add or change a channel later, put it in
-`.env` (for example `TAPWATCH_DISCORD_URL=https://discord.com/api/webhooks/…`), then run
+`.env` (`TAPWATCH_NTFY_URL`, `TAPWATCH_DISCORD_URL`, `TAPWATCH_TEAMS_URL` or `TAPWATCH_WEBHOOK_URL`,
+for example `TAPWATCH_DISCORD_URL=https://discord.com/api/webhooks/…`), then run
 `.venv/bin/tapwatch test-alert` and `systemctl --user restart tapwatch-alerter`.
 
 **Testing in a virtual machine:** Hyper-V's "Type clipboard text" sends keystrokes, and it can drop
 characters such as `$` and quotes, so check a typed command before pressing Enter, or type
-`$USER` as your user name.
+your user name in place of `$USER`.
 
 `service install` starts five systemd user services: capture, alerter, case desk, watchdog
 (and syslog). Check them with `systemctl --user status 'tapwatch-*'`.
