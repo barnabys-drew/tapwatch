@@ -107,8 +107,9 @@ CMD_SUSPICIOUS = {"enc": "an encoded payload", "b64": "base64 decoding", "dl": "
                   "iex": "Invoke-Expression"}
 CMD_UNUSUAL = {"hidden": "a hidden window", "bypass": "an execution-policy bypass"}
 # R24: what ransomware and an intruder covering tracks run, as the agent flags them (hostrules.DestructiveCommand)
-CMD_DESTRUCTIVE = {"shadow": "shadow copies, backups or recovery removed", "logclear": "event logs cleared",
-                   "defender": "Defender turned off or given an exclusion", "admin": "a local account or administrator added"}
+CMD_DESTRUCTIVE = {"shadow": "shadow copies or backups removed", "recovery": "Windows recovery turned off",
+                   "logclear": "event logs cleared", "defender": "Defender turned off or given an exclusion",
+                   "admin": "a local account or administrator added"}
 # The PC's own addresses (agents/config/osquery.conf `host_addresses`, a snapshot every 5 minutes). DHCP moves the
 # PC, so the configured IP is only a fallback for when no agent reports them.
 ADDRS = "host_addresses"

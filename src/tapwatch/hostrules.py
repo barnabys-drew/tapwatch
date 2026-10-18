@@ -516,14 +516,22 @@ class DestructiveCommand(HostDetector):
     Any program, not only shells: `vssadmin delete shadows` is vssadmin's own command line, and the PowerShell
     forms (Clear-EventLog, Set-MpPreference, Add-LocalGroupMember) are PowerShell's. Measured 2026-10-16/17 over
     40 h of the main PC's log, 15,389 process starts: vssadmin, wbadmin, bcdedit, wevtutil, net, net1 and wmic
-    started 0 times; the 13 command lines the agent kept matched none of the patterns. Backups, recovery and
-    logs gone: severity 5, must_alert (no benign reading on a home PC; an administrator who does it on purpose
-    knows the alert is coming). Defender and accounts: severity 4, suppressible, because an installer or the
-    owner adding an exclusion or a user is a thing that happens once and can then be allowed per program.
+    started 0 times (mpcmdrun, Defender's own updater, 24 times, none with -RemoveDefinitions); the 13 command
+    lines the agent kept matched none of the patterns. Backups and logs gone: severity 5, must_alert (no benign
+    reading on a home PC; an administrator who does it on purpose knows the alert is coming). Recovery turned
+    off, Defender and accounts: severity 4, suppressible: `bcdedit recoveryenabled no` is a documented fix for
+    an Automatic Repair loop, and an installer or the owner adding an exclusion or a user happens once. A shell
+    chain (`cmd /c vssadmin ...`) carries the same line on both process starts, milliseconds apart: the same
+    harm within a minute is the same command and one case, named after the first program seen.
     """
 
     name = "host_destructive"
     QUERIES: ClassVar[tuple[str, ...]] = (SYSMON,)
+    CHAIN = 60   # seconds within which the same harm on the same PC is the same command (a shell and its child)
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7):
+        super().__init__(state, reported_days)
+        self.chain: dict[tuple, float] = {}
 
     def row(self, query: str, c: dict, ts: float) -> list[Case]:
         if str(c.get("eventid")) != "1":
@@ -532,6 +540,12 @@ class DestructiveCommand(HostDetector):
         harm = [f for f in flags if f in CMD_DESTRUCTIVE]
         if not harm:
             return []
+        chain_key = (self.state.host, tuple(sorted(harm)))
+        if ts - self.chain.get(chain_key, -1e18) < self.CHAIN:
+            return []
+        self.chain[chain_key] = ts
+        if len(self.chain) > 200:
+            self.chain = {k: t for k, t in self.chain.items() if ts - t < self.CHAIN}
         path = c.get("path") or ""
         prog = _basename(path).lower()
         parent = _basename(c.get("parent_path") or "")

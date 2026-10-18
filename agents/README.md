@@ -27,6 +27,10 @@ for admin rights once.
 queries ([config/osquery.conf](config/osquery.conf)) and writes the results to
 local logs, and you can ask it anything with `osqueryi`:
 
+After pulling a new `config/osquery.conf` (a rule added a signal), re-run the installer or copy it over the
+installed one and restart osqueryd: the flags a rule reads are computed inside these queries, so until then
+the new rule has nothing to read.
+
 | Scheduled query | Every | Why |
 |---|---|---|
 | `listening_ports` | 1 h | services reachable from the network |
