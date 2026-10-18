@@ -1513,7 +1513,7 @@ class InternetExposure(Detector):
         # the changed fields, so they merge into the entry; Removed blanks every field, so it drops the entry.
         self.forwards: dict[str, dict] = {}
         self.upnp_since: float | None = None  # when the router's UPnP was switched on, None while off or unknown
-        self.router_log = False  # an audit event has arrived: "no forward on record" means something
+        self.router_log: float | None = None  # when the first audit event arrived: forwards before it are unknown
 
     def feed(self, rec: dict) -> list[Case]:
         if rec["_type"] == "udm":
@@ -1560,13 +1560,16 @@ class InternetExposure(Detector):
                                        "from": fwd.get("from", ""), "change": fwd.get("change", "")}
         if self.upnp_since is not None:
             facts["router_upnp_on"] = True
-        facts["router_log"] = self.router_log
+        if self.router_log:
+            facts["router_log_since"] = round(self.router_log)
         return [Case(self.name, dst, ts, "Device reachable from the internet", facts, must_alert=True, base_severity=5)]
 
     def forward_to(self, host: str, port, proto: str) -> dict | None:
         """The router's port forward that sends traffic to `host`:`port` (the inside port, as the mirror sees it)."""
         for f in self.forwards.values():
-            if f.get("fwd") == host and str(f.get("fwd_port") or f.get("dst_port")) == str(port) \
+            if f.get("enabled") == "false" or f.get("fwd") != host:
+                continue   # a forward switched off in the UI opens nothing
+            if _port_in(port, f.get("fwd_port") or f.get("dst_port")) \
                     and (f.get("proto") in ("", "tcp_udp", None) or f.get("proto") == proto):
                 return f
         return None
@@ -1579,7 +1582,7 @@ class InternetExposure(Detector):
         name, section = str(rec.get("name") or ""), str(rec.get("UNIFIsettingsSection") or "")
         if not name.startswith("Config "):
             return
-        self.router_log = True
+        self.router_log = self.router_log or rec["ts"]
         changes = _settings_changes(rec.get("UNIFIsettingsChanges"))
         if section == "Internet" and "upnp_enabled" in changes:
             on = changes["upnp_enabled"] == "true"
@@ -1593,8 +1596,12 @@ class InternetExposure(Detector):
         if name == "Config Removed":
             self.forwards.pop(entry, None)
             return
+        new_name = changes.get("name", "").strip()
+        if new_name and new_name != entry and entry in self.forwards and new_name not in self.forwards:
+            self.forwards[new_name] = self.forwards.pop(entry)   # a rename: the forward moves with it
+            entry = new_name
         f = self.forwards.setdefault(entry, {})
-        f.update({k: v for k, v in changes.items() if k in ("fwd", "fwd_port", "dst_port", "proto") and v})
+        f.update({k: v for k, v in changes.items() if k in ("fwd", "fwd_port", "dst_port", "proto", "enabled") and v})
         f.update({"ts": rec["ts"], "how": str(rec.get("UNIFIaccessMethod") or ""), "from": str(rec.get("src") or ""),
                   "change": "created" if name == "Config Created" else "changed"})
         if len(self.forwards) > 500:  # a home has a handful; a flood of fake entries must not grow memory
@@ -1605,6 +1612,22 @@ class InternetExposure(Detector):
         if len(self.recent_peer) > 50_000:  # keep memory flat on a busy day
             cutoff = ts - self.reply_window
             self.recent_peer = {k: v for k, v in self.recent_peer.items() if v >= cutoff}
+
+
+def _port_in(port, spec) -> bool:
+    """Is `port` in a UniFi port field: "54321", "54321-54330" or "80,443"?"""
+    try:
+        p = int(port)
+    except (TypeError, ValueError):
+        return False
+    for part in str(spec or "").split(","):
+        lo, _, hi = part.strip().partition("-")
+        try:
+            if int(lo) <= p <= int(hi or lo):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _settings_changes(text) -> dict[str, str]:
@@ -2377,7 +2400,8 @@ class UdmAdmin(Detector):
         src, ts = rec.get("src") or "unknown", rec["ts"]
         how = rec.get("UNIFIaccessMethod") or rec.get("UNIFIauthMethod") or ""
         text = " ".join(str(rec.get(k) or "") for k in ("name", "msg", "outcome", "reason")).lower()
-        failed = any(w in text for w in ("fail", "invalid", "denied", "incorrect", "wrong"))
+        config = str(rec.get("name") or "").startswith("Config ")  # a settings change, not a sign-in (#162)
+        failed = not config and any(w in text for w in ("fail", "invalid", "denied", "incorrect", "wrong"))
         host = src if is_unicast_lan(src) else rec.get("sender", "")
         if failed:
             q = self.fails[src]
@@ -2396,7 +2420,7 @@ class UdmAdmin(Detector):
         self.known.add(key)
         if self.warmup.learning(ts):
             return []
-        return [Case(self.name, host, ts, "Router admin login from a new place",
+        return [Case(self.name, host, ts, "Router settings changed from a new place" if config else "Router admin login from a new place",
                      {"failed": False, "from_lan": is_internal(src), "method": how, "dedupe": f"{user}|{src}"},
                      [user], must_alert=True, base_severity=5)]
 

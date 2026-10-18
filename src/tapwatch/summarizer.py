@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 
 from .hostrules import FOLDER_WORDS
 from .models import Case
@@ -168,8 +169,10 @@ def _observed(c: Case, words: dict) -> str:
                     f"{fwd.get('minutes_before', 0)} minutes earlier by an administrator{how}{who}.")
         elif f.get("router_upnp_on"):
             why += " The router has UPnP switched on, so a device can open ports for itself without anyone being asked."
-        elif f.get("router_log"):
-            why += " The router's log shows no port forward for it and UPnP off: nobody told the router to open this."
+        elif f.get("router_log_since"):
+            since = datetime.fromtimestamp(f["router_log_since"], timezone.utc).strftime("%Y-%m-%d")
+            why += (f" Since the router's log began ({since}), no port forward for it was created or changed and UPnP was "
+                    "not switched on; one made before then would not show here.")
         return (f"A computer on the internet connected to this device on {f['proto'].upper()} port {f['port']} "
                 f"({f['service']}) and the device answered, so it is reachable from outside.{why}")
     if c.detector == "mgmt_access" and f.get("sweep"):

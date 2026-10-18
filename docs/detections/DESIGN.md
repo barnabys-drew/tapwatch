@@ -196,7 +196,8 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   `UNIFIsettingsSection` "Port forwarding" (entry name; `UNIFIsettingsChanges` "fwd: …; fwd_port: …; proto: …",
   only the changed keys on modify, all blank on remove) and "Internet" with `upnp_enabled: true|false`. The
   case carries `router_forward` (how many minutes before, the access method, the source address; never the
-  admin's name) or `router_upnp_on`, and says "nobody told the router" only when the feed is live.
+  admin's name) or `router_upnp_on`; with the feed live it says no forward was made "since the router's log
+  began <date>" (one made before then is unknown). Disabled forwards, ranges and lists are handled.
 - **Logic:** `rules/R01-internet-exposed-service.sql`. First time an (internal host, port)
   accepts an established inbound connection from the internet. Joined with any mapping
   request from that host in the previous 24 h.

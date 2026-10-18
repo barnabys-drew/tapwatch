@@ -19,6 +19,7 @@ from tapwatch.detectors import (
     SuricataAlert,
     SuspiciousDNS,
     TakeoverChannel,
+    UdmAdmin,
     Warmup,
     base_domain,
     build,
@@ -1576,8 +1577,8 @@ def test_exposure_cases_say_whether_the_router_was_told_to_open_the_port():
     assert "port forward for exactly this, changed 5 minutes earlier by an administrator through the web interface" in summarize(c, Assets())
     run(det, [udm_config(T0 + 1000, "Config Removed", "Port forwarding", "tapwatch-test", "enabled: ; fwd: ; fwd_port: ")])
     (gone,) = run(det, [forwarded_in(T0 + 1100, port=54321)])
-    assert "router_forward" not in gone.facts and gone.facts["router_log"]
-    assert "nobody told the router to open this" in summarize(gone, Assets())
+    assert "router_forward" not in gone.facts and gone.facts["router_log_since"] == round(T0)
+    assert "no port forward for it was created or changed" in summarize(gone, Assets())
     run(det, [udm_config(T0 + 1200, "Config Modified", "Internet", "usg", "upnp_wan_interface: WAN; upnp_enabled: true")])
     (up,) = run(det, [forwarded_in(T0 + 1300, port=40000)])
     assert up.facts["router_upnp_on"] and "UPnP switched on" in summarize(up, Assets())
@@ -1585,4 +1586,21 @@ def test_exposure_cases_say_whether_the_router_was_told_to_open_the_port():
     (off,) = run(det, [forwarded_in(T0 + 1500, port=40001)])
     assert "router_upnp_on" not in off.facts
     (nolog,) = run(InternetExposure(Warmup(0), startup=0), [forwarded_in(T0, port=40002)])
-    assert nolog.facts["router_log"] is False and "nobody told" not in summarize(nolog, Assets())   # no feed, no claim
+    assert "router_log_since" not in nolog.facts and "was created or changed" not in summarize(nolog, Assets())   # no feed, no claim
+    # a range, a list, a forward switched off, a rename
+    det = InternetExposure(Warmup(0), startup=0)
+    run(det, [udm_config(T0, "Config Created", "Port forwarding", "games", "fwd: 192.168.50.10; fwd_port: 27015-27030; proto: udp"),
+              udm_config(T0, "Config Created", "Port forwarding", "web", "fwd: 192.168.50.10; fwd_port: 80,443; proto: tcp"),
+              udm_config(T0, "Config Modified", "Port forwarding", "web", "enabled: false")])
+    assert det.forward_to("192.168.50.10", 27020, "udp") and not det.forward_to("192.168.50.10", 27020, "tcp")
+    assert det.forward_to("192.168.50.10", 443, "tcp") is None                          # switched off
+    run(det, [udm_config(T0 + 60, "Config Modified", "Port forwarding", "games", "name: steam")])
+    assert "steam" in det.forwards and "games" not in det.forwards
+
+
+def test_router_config_events_are_not_logins_for_the_admin_rule():
+    """#162 review: a settings change is not a sign-in, and 'failover' in its text is not a failed login."""
+    det = UdmAdmin(Warmup(0))
+    (c,) = run(det, [udm_config(T0, "Config Modified", "Internet", "usg", "failover: true", src="192.168.50.20")])
+    assert c.title == "Router settings changed from a new place" and not c.facts["failed"]
+    assert run(det, [udm_config(T0 + i, "Config Modified", "Internet", "usg", "wan failover failed", src="192.168.50.20") for i in range(6)]) == []
