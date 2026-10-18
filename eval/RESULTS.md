@@ -13,7 +13,7 @@ false-positive shapes whose detector must raise nothing (the split UDP voice cal
 WebRTC media of #417 against tls_odd, reset-after-data ad sessions of #363 against scan). It prints one line per
 shape and a detection rate, and exits 1 on a regression; `tests/test_selfcheck.py` runs the same corpus on an
 empty config in CI, so that number is comparable across machines, while the command's number reflects the box's
-own tuning. Added 2026-10-17 at 15/15 detected, 3/3 quiet; 17/17 and 4/4 since R23 the same day, 19/19 since R24, 20/20 with the jitter tier (5 obscure jittered digest items in two days of home traffic), 22/22 with R25 and R26, 24/24 with R27, 25/25 with R28.
+own tuning. Added 2026-10-17 at 15/15 detected, 3/3 quiet; 17/17 and 4/4 since R23 the same day, 19/19 since R24, 20/20 with the jitter tier (5 obscure jittered digest items in two days of home traffic), 22/22 with R25 and R26, 24/24 with R27, 25/25 with R28, 26/26 with R29.
 
 ## Summary
 
