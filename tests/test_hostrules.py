@@ -742,3 +742,12 @@ def test_linux_persistence_keys_alert_and_units_are_digest_items():
     assert "/home/" not in json.dumps(u.facts) and "/home/" not in json.dumps(k.facts)
     units = [persist(T0, "systemd_units", name=f"u{i}.service", path=f"/home/u/.config/systemd/user/u{i}.service") for i in range(24)]
     assert settle(NewPersistence(st()), *units) == []                              # the first run after deploy: an inventory
+    first = dict(key, counter=0)
+    assert settle(NewPersistence(st()), first) == []                               # osquery's first run, even one row
+    assert len(settle(NewPersistence(st()), dict(key, counter=7))) == 1             # a later run: a new key
+
+
+def test_ipv4_mapped_lan_addresses_are_not_outside():
+    from tapwatch.hostrules import outside
+    assert not outside("::ffff:192.168.50.1", 443) and not outside("::ffff:127.0.0.1", 443)
+    assert outside("::ffff:203.0.113.5", 443)

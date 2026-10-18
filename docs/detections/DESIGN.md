@@ -870,12 +870,17 @@ SCM event-log filter, whose consumer is the built-in log kind, so 0 rows.
   deleted (package upgrades), hence no "deleted" clause.
 - **Route:** ALERT, code-only. **Safe test:** `cp /usr/bin/curl /tmp/c && /tmp/c -s https://example.com >/dev/null;
   rm /tmp/c` → one alert. **Blind spots:** an interpreter (python, perl) holding the shell's socket; a payload
-  under the home folder.
+  under the home folder; the 26,447 of 49,975 eBPF rows with no path (the process had exited when osquery looked
+  it up), so the measured zero covers the 47% that carry one. **FPs:** `go run` binaries under /tmp/go-build*,
+  AppImages under /tmp/.mount_*, installers or test copies run from /tmp (suppress per program).
 
 **R23 on Linux also reads** new SSH authorized keys (`authorized_keys`: the key type and its last 16 characters,
 never the file path; an alert, T1098.004) and new systemd units (`systemd_units`: units outside the package
 directories, snap mounts excluded, and every user unit file; a digest item, T1543.002). Measured 2026-10-18 on the
-WSL box: 0 keys; 24 user unit files, which the first run after deploy lists at once and R23 learns as an inventory.
+WSL box: 0 keys; 24 user unit files (13 files and 11 enablement links), which the first run after deploy lists at
+once and R23 learns as an inventory. Any batch osquery marks as a query's first run (`counter` 0) is an inventory
+whatever its size, so a machine with one or two existing keys does not alert on them. The same key added to a
+second account is not seen again (the key identity has no account).
 
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the

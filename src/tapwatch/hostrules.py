@@ -143,7 +143,9 @@ def outside(remote: str, port) -> bool:
         addr = ipaddress.ip_address(remote)
     except ValueError:
         return False
-    return not (addr.is_loopback or is_internal(remote)) and str(port) != "53"
+    if getattr(addr, "ipv4_mapped", None):  # ::ffff:192.168.x.x is the LAN (3,276 such eBPF rows, 2026-10-18)
+        addr = addr.ipv4_mapped
+    return not (addr.is_loopback or is_internal(str(addr))) and str(port) != "53"
 
 
 @dataclass
@@ -649,6 +651,11 @@ class NewPersistence(HostDetector):
     def feed(self, rec: dict) -> list[Case]:
         now = float(rec.get("ts") or 0)
         out = super().feed(rec) if rec.get("_type") == OSQUERY else []
+        if rec.get("name") in self.QUERIES and str(rec.get("counter", "")) == "0" and rec.get("action") == "added":
+            # osquery's first run of a query (new config, or its database reset) lists what already exists: an
+            # inventory whatever its size. Measured: all three dumps (36, 108, 224 rows) and the 18-row extension
+            # listing had counter 0; a machine with one or two SSH keys would otherwise alert on them (review of #148).
+            self._batch(rec["name"], float(rec.get("ts") or 0))["first_run"] = True
         return out + self.settle(now)
 
     def _batch(self, query: str, rec_ts: float) -> dict:
@@ -701,7 +708,7 @@ class NewPersistence(HostDetector):
             query, b = bkey[0], self.pending.pop(bkey)
             gone = {self.key(query, c) for c in b["removed"]}
             new = [c for c in b["added"] if self.key(query, c) not in gone]
-            inventory = len(new) >= DUMP_MIN and not b["removed"]
+            inventory = b.get("first_run") or (len(new) >= DUMP_MIN and not b["removed"])
             for c in new:
                 k = self.key(query, c)
                 seen = k in self.known
@@ -920,7 +927,10 @@ class LinuxSuspiciousConnect(HostDetector):
     over 30.7 h of the WSL box's log: 49,975 outgoing connections, none from /tmp, /dev/shm, /var/tmp, /run/user or
     memfd; shells ran 78,967 times and held a connection 0 times (curl, git, python, node and the agent do the
     talking). A binary deleted while running is not counted: java, lua and python did that during upgrades. Any
-    match is an alert, suppressible per program (a developer running a build from /tmp).
+    match is an alert, suppressible per program. Likely false positives: `go run` binaries under /tmp/go-build*,
+    AppImages mounted under /tmp/.mount_*, installers or test copies run from /tmp. Blind spot: 26,447 of the
+    49,975 rows carry no path (the process was gone when osquery looked it up), so the rule sees the other half.
+    Repeats are folded by the store's one-hour dedupe on the program; no weekly memory (severity 4).
     """
 
     name = "host_linux_connect"
@@ -941,7 +951,7 @@ class LinuxSuspiciousConnect(HostDetector):
                  "port": _port(c.get("remote_port"))}
         title = ("A shell or netcat held an internet connection" if shell and not (memory or temp)
                  else "Program from a temporary folder or memory connected to the internet")
-        return self.emit(ts, title, facts, 4, prog[:80], (self.state.host, prog, what))
+        return self.emit(ts, title, facts, 4, prog[:80])
 
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
