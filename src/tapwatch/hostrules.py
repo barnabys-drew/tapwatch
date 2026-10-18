@@ -80,7 +80,10 @@ NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", 
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
                    "wmi_persistence": "WMI event subscription", "authorized_keys": "SSH authorized key",
-                   "systemd_units": "systemd unit"}
+                   "systemd_units": "systemd unit", "suid_bin": "set-user-ID program", "kernel_modules": "kernel module",
+                   "ld_preload": "preloaded library (/etc/ld.so.preload)",
+                   "risky_containers": "privileged or Docker-socket container", "listening_ports": "listening port"}
+LINUX_SYSTEM = ("suid_bin", "kernel_modules", "ld_preload", "risky_containers", "listening_ports")
 SCRIPT_EXT = (".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".bat", ".cmd", ".hta", ".sh", ".py", ".pl", ".rb")
 EXEC_EXT = SCRIPT_EXT + (".exe", ".com", ".dll", ".msc", ".scr", ".cpl", ".lnk")
 POSIX_SHELLS = {"sh", "bash", "zsh", "dash", "python", "python3", "perl", "node", "ruby", "nohup"}
@@ -684,6 +687,16 @@ class NewPersistence(HostDetector):
             return " ".join(str(c.get(k) or "") for k in ("action", "args")).strip()
         if query == "authorized_keys":
             return str(c.get("key_tail") or "")
+        if query == "listening_ports":
+            port = int(c.get("port") or 0)
+            # ephemeral ports change every run; the program, its folder and the protocol are the listener (a /tmp
+            # copy taking over a port must not match the installed program's key)
+            where = posix_folder_class(str(c.get("path") or "")) if str(c.get("path") or "").startswith("/") else "win"
+            return f'{c.get("protocol")}/{port if port < 32768 else "ephemeral"}/{where}'
+        if query in ("suid_bin", "ld_preload"):
+            return str(c.get("path") or "")
+        if query == "risky_containers":   # the image: a container's name is the owner's choice and can name a project
+            return str(c.get("image") or "")
         return str(c.get("path") or "")   # services, startup items
 
     @staticmethod
@@ -693,7 +706,42 @@ class NewPersistence(HostDetector):
             return "a user's crontab" if "/etc/" not in p else _basename(p) or "crontab"   # /etc/cron.d/<file>, /etc/crontab
         if query == "authorized_keys":  # the key file's path names the user: the algorithm only
             return f"authorized key ({c.get('algorithm') or 'unknown type'})"
+        if query in ("suid_bin", "ld_preload"):
+            return _basename(str(c.get("path") or "")) or query
+        if query == "risky_containers":
+            return str(c.get("image") or "container")
+        if query == "listening_ports":
+            return _basename(str(c.get("path") or c.get("name") or "")) or "unknown"
         return str(c.get("label") if query == "launchd_run_at_load" else c.get("name") or "")
+
+    def judge_linux_system(self, query: str, c: dict, ts: float, entry: str, target: str) -> list[Case]:
+        """#28: Linux changes that mean root or a way back to it. Measured 2026-10-18 on the WSL box: 40 SUID programs,
+        23 kernel modules, no /etc/ld.so.preload, no privileged or Docker-socket container, 11 stable listeners; the
+        first run after the agent's config is updated lists them all and is learned as an inventory."""
+        kind = PERSIST_QUERIES[query]
+        path = str(c.get("path") or "")
+        folder = posix_folder_class(path) if path.startswith("/") else "other"
+        if query == "listening_ports":
+            if not path.startswith("/") or str(c.get("address") or "") in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+                return []   # Windows rows churn (47 new listeners in 21 h, mostly svchost): Linux, outside loopback only
+            name = _basename(path).lower()
+            bind_shell = name in POSIX_REMOTE_SHELLS   # a shell or netcat; interpreters fall under the folder test
+            if not (bind_shell or folder in ("temp", "profile")):
+                return []   # an installed service starting to listen is routine
+            facts = _linux_system_facts(kind, entry, folder)
+            facts.update({"shell": bind_shell, "port": _port(c.get("port"))})
+            return self.emit(ts, "New listening program on the PC (Linux)", facts, 4, entry[:80],
+                             (self.state.host, query, entry, target))
+        severity = {"ld_preload": 5, "suid_bin": 4 if folder in ("temp", "profile", "other") else 3,
+                    "kernel_modules": 3, "risky_containers": 3}[query]
+        facts = _linux_system_facts(kind, entry, folder)
+        if query == "risky_containers":
+            facts.update({"privileged": str(c.get("privileged")) == "1", "docker_socket": str(c.get("sock") or "0") != "0"})
+        if query == "risky_containers":
+            entry = str(c.get("image") or "container")
+            facts["entry"] = facts["program"] = entry[:80]
+        return self.emit(ts, f"New {kind} on the PC (Linux)", facts, severity, entry[:80],
+                         (self.state.host, query, entry, folder), must_alert=query == "ld_preload")
 
     def key(self, query: str, c: dict) -> tuple:
         """What makes an entry the same entry across runs: never `last_run_time`, which changes whenever it runs."""
@@ -709,6 +757,12 @@ class NewPersistence(HostDetector):
         for bkey in [k for k, b in self.pending.items() if now - b["ts"] >= BATCH_GRACE]:
             query, b = bkey[0], self.pending.pop(bkey)
             gone = {self.key(query, c) for c in b["removed"]}
+            if query == "listening_ports":
+                # The query is old, so no first-run inventory comes with this rule: a dev server that is down at one
+                # hourly run and up at the next would look new every time. A listener seen stopping is learned, so
+                # its return is a restart (review of #169).
+                for k in gone:
+                    self.known[k] = b["ts"]
             new = [c for c in b["added"] if self.key(query, c) not in gone]
             inventory = b.get("first_run") or (len(new) >= DUMP_MIN and not b["removed"])
             for c in new:
@@ -738,6 +792,8 @@ class NewPersistence(HostDetector):
                      "registry": False}
             return self.emit(ts, "New WMI event subscription on the PC", facts, 4, prog or "wmi",
                              (self.state.host, query, _entry_key(entry)))
+        if query in LINUX_SYSTEM:
+            return self.judge_linux_system(query, c, ts, entry, target)
         if query in ("authorized_keys", "systemd_units"):
             # Linux persistence with no program to read: a new SSH key someone can log in with (T1098.004) is an
             # alert; a new systemd unit (T1543.002) is a digest item, since installing a service is also what
@@ -794,6 +850,11 @@ class NewPersistence(HostDetector):
         facts = {"kind": kind, "entry": entry[:120], "program": prog, "folder": folder, "script": script, "shell": shell,
                  "signals": ["an encoded or download-and-run command"] if signals else [], "url": url, "registry": registry}
         return self.emit(ts, f"New {kind} on the PC", facts, severity, prog, (self.state.host, query, _entry_key(entry)))
+
+
+def _linux_system_facts(kind: str, entry: str, folder: str) -> dict:
+    return {"kind": kind, "entry": entry[:120], "program": entry[:80], "folder": folder, "script": False,
+            "shell": False, "signals": [], "url": False, "registry": False}
 
 
 def _entry_key(entry: str) -> str:
@@ -964,7 +1025,8 @@ class LinuxSuspiciousConnect(HostDetector):
 
 
 LINUX_CMD = {"dlrun": "a download piped into a shell", "revshell": "a reverse shell", "b64exec": "base64 decoded into a shell",
-             "histclear": "shell history switched off or cleared", "tmpexec": "a file in a temporary folder made executable"}
+             "histclear": "shell history switched off or cleared", "tmpexec": "a file in a temporary folder made executable",
+             "miner": "a cryptocurrency miner"}
 
 
 class LinuxCommand(HostDetector):

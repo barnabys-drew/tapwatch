@@ -798,7 +798,7 @@ def test_the_agent_keeps_the_linux_command_line_only_when_a_signal_fires():
     from pathlib import Path
     raw = Path(__file__).resolve().parents[1].joinpath("agents", "config", "osquery.conf").read_text()
     q = json.loads(_re.sub(r"^\s*//.*$", "", raw, flags=_re.MULTILINE), strict=False)["schedule"]["bpf_process_events"]["query"]
-    flags = ("dlrun", "revshell", "b64exec", "histclear", "tmpexec")
+    flags = ("dlrun", "revshell", "b64exec", "histclear", "tmpexec", "miner")
     assert "CASE WHEN " + " OR ".join(f"lcmd_{f}" for f in flags) + " THEN cmdline END AS cmdline" in q
     assert all(f") IS NOT NULL) AS lcmd_{f}" in q for f in flags)
 
@@ -833,3 +833,53 @@ def test_a_document_app_starting_the_lsass_reader_is_must_alert():
     tool = r"C:\Program Files\Vendor\helper.exe"
     (c,) = run(LsassAccess(st()), start(T0, tool, WORD, guid="{x9}"), lsass(T0 + 2, tool, source_guid="{x9}"))
     assert c.must_alert and c.facts["parent_class"] == "document" and c.facts["parent"] == "WINWORD.EXE"
+
+
+# ------------------------------------------------------------ #28 pass 2: Linux system changes in R23, miners in R28
+
+def test_linux_system_changes_by_how_close_they_are_to_root():
+    det = NewPersistence(st())
+    rows = [persist(T0, "ld_preload", path="/etc/ld.so.preload", size="24"),
+            persist(T0, "suid_bin", path="/home/u/.cache/x/helper", permissions="S"),
+            persist(T0, "suid_bin", path="/usr/bin/newgrp2", permissions="S"),
+            persist(T0, "kernel_modules", name="hid_logger", status="Live"),
+            persist(T0, "risky_containers", name="/secret-project", image="ubuntu:24.04", privileged="1", sock="0")]
+    pre, home_suid, pkg_suid, mod, ctr = settle(det, *rows)
+    assert (pre.base_severity, pre.must_alert, pre.facts["entry"]) == (5, True, "ld.so.preload")
+    assert (home_suid.base_severity, home_suid.facts["folder"], home_suid.facts["entry"]) == (4, "profile", "helper")
+    assert pkg_suid.base_severity == 3 and mod.base_severity == 3 and mod.facts["entry"] == "hid_logger"
+    assert ctr.facts["privileged"] and not ctr.facts["docker_socket"] and ctr.base_severity == 3
+    assert ctr.facts["entry"] == "ubuntu:24.04" and "secret-project" not in json.dumps(ctr.facts)   # the image, not the name
+    for c in (pre, home_suid, ctr):
+        assert "/home/" not in json.dumps(c.facts)
+
+
+def test_new_linux_listeners_only_from_shells_or_user_folders():
+    det = NewPersistence(st())
+    rows = [persist(T0, "listening_ports", name="nc", path="/usr/bin/nc.openbsd", port="4444", protocol="6", address="0.0.0.0"),
+            persist(T0, "listening_ports", name="srv", path="/home/u/tool/srv", port="8080", protocol="6", address="0.0.0.0"),
+            persist(T0, "listening_ports", name="nginx", path="/usr/sbin/nginx", port="80", protocol="6", address="0.0.0.0"),
+            persist(T0, "listening_ports", name="svchost.exe", path=r"C:\Windows\System32\svchost.exe", port="5050",
+                    protocol="17", address="0.0.0.0")]
+    nc, home = settle(det, *rows)
+    assert nc.facts["shell"] and nc.base_severity == 4 and nc.facts["port"] == 4444
+    assert home.facts["folder"] == "profile" and not home.facts["shell"]
+    loop = persist(T0 + 3600, "listening_ports", name="dev", path="/home/u/app", port="9000", protocol="6", address="127.0.0.1")
+    assert settle(det, loop) == []                                                  # loopback only: nothing
+    # review of #169: a dev server in the home folder that stops and comes back an hour later is a restart
+    dev = {"name": "uvicorn", "path": "/home/u/.venv/bin/uvicorn", "port": "8000", "protocol": "6", "address": "0.0.0.0"}
+    fresh = NewPersistence(st())
+    assert settle(fresh, persist(T0, "listening_ports", "removed", **dev)) == []
+    assert settle(fresh, persist(T0 + 3600, "listening_ports", **dev)) == []
+    # node on 0.0.0.0 under /usr is a dev server, not a bind shell; a /tmp copy taking over a known port is new
+    node = persist(T0, "listening_ports", name="node", path="/usr/bin/node", port="3000", protocol="6", address="0.0.0.0")
+    assert settle(NewPersistence(st()), node) == []
+    other = NewPersistence(st())
+    settle(other, persist(T0, "listening_ports", "removed", name="nginx", path="/usr/sbin/nginx", port="8080", protocol="6", address="0.0.0.0"))
+    (tmp,) = settle(other, persist(T0 + 3600, "listening_ports", name="nginx", path="/tmp/nginx", port="8080", protocol="6", address="0.0.0.0"))
+    assert tmp.facts["folder"] == "temp"
+
+
+def test_a_cryptominer_command_line_is_an_r28_case():
+    (c,) = run(LinuxCommand(st()), lexec(T0, "/tmp/.x/kworker", miner=1))
+    assert c.base_severity == 4 and c.facts["signals"] == ["a cryptocurrency miner"]

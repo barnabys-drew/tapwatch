@@ -135,7 +135,7 @@ a remote-control tool found on a work laptop, which the labels call benign and t
 about; two of its items are a phone's iCloud backup and a work laptop's EDR upload. The earlier run
 (2026-10-13) and what changed are in [eval/RESULTS.md](eval/RESULTS.md). The sample is small, so
 treat it as a sanity check, not a benchmark. The scripted self-check (`tapwatch selfcheck`) stands at
-26/26 attack shapes detected and 4/4 false-positive shapes quiet, and runs on every push to `dev`.
+27/27 attack shapes detected and 4/4 false-positive shapes quiet, and runs on every push to `dev`.
 
 ## What it catches
 
