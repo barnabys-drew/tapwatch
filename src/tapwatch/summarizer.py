@@ -305,15 +305,21 @@ def _endpoint(c: Case) -> str:
         return (f"On the PC itself, the program {prog} held a connection to the internet{port} while its code signature "
                 f"was {f.get('signature', 'bad')}: {SIGNATURE_WORDS.get(f.get('signature'), 'it could not be verified')}."
                 f"{signer}{started_by}{folder}")
+    if c.detector == "host_destructive":
+        what = " and ".join(f.get("harm") or ["a destructive command"])
+        return (f"On the PC itself, {prog} ran a command that means {what}.{started_by}{cmdline}{folder} Ransomware "
+                "removes backups and recovery before it encrypts, and an intruder clears logs and adds accounts; "
+                "an owner doing this on purpose knows the alert is coming.")
     if c.detector == "host_persist":
-        what = ("a script" if f.get("script") else "a shell or script host" if f.get("shell") else "a program")
+        what = (f"a script through {prog}" if f.get("script") and f.get("shell") else "a script" if f.get("script")
+                else f"a shell or script host, {prog}," if f.get("shell") else f"a program, {prog},")
         where = FOLDER_WORDS.get(f.get("folder"), "an unknown location")
         how = {"scheduled task": "runs on a schedule or at logon", "service": "starts with Windows",
                "startup item": "runs at every logon" + (" (a Run key in the registry)" if f.get("registry") else
                                                         " (the Startup folder)"),
                "cron job": "runs on a schedule", "launch agent": "runs at every login"}.get(f.get("kind"), "runs again")
         return (f"On the PC itself, a new {f.get('kind', 'entry')} named {_program(f.get('entry', ''))} appeared: it "
-                f"{how} and runs {what}, {prog}, from {where}.{cmdline} Malware registers itself this way to survive "
+                f"{how} and runs {what} from {where}.{cmdline} Malware registers itself this way to survive "
                 "a reboot; installers and updaters do too, which is why only scripts, shells and user folders are "
                 "reported.")
     return c.title + "."

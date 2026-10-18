@@ -11,6 +11,7 @@ from tapwatch.hostrules import (
     NAMES,
     AppSpawnsShell,
     BadSignatureConnects,
+    DestructiveCommand,
     EncodedCommand,
     EndpointState,
     LolbinConnects,
@@ -588,3 +589,57 @@ def test_a_corrupted_saved_known_set_is_discarded_at_restore():
                     program_arguments="", path="/Users/u/Library/LaunchAgents/com.example.helper.plist")
     (la,) = settle(NewPersistence(st()), agent)
     assert la.facts["kind"] == "launch agent" and la.facts["entry"] == "com.example.helper" and la.facts["folder"] == "profile"
+
+
+# ------------------------------------------------------------ R24 destructive or evasive command
+
+VSSADMIN = r"C:\Windows\System32\vssadmin.exe"
+
+
+def test_shadow_copies_or_logs_removed_is_must_alert_on_any_program():
+    (c,) = run(DestructiveCommand(st()), start(T0, VSSADMIN, CMD, cmd_shadow="1"))
+    assert c.must_alert and c.base_severity == 5 and c.detector == "host_destructive"
+    assert c.facts["harm"] == ["shadow copies or backups removed"] and c.facts["program"] == "vssadmin.exe"
+    # `cmd /c vssadmin delete shadows`: cmd's start and vssadmin's carry the same line milliseconds apart: one case
+    chain = DestructiveCommand(st())
+    assert len(run(chain, start(T0, CMD, EXPLORER, cmd_shadow="1"), start(T0 + 0.2, VSSADMIN, CMD, cmd_shadow="1"))) == 1
+    assert len(run(chain, start(T0 + 120, VSSADMIN, CMD, cmd_shadow="1"))) == 1                # two minutes on: a new command
+    assert c.facts["parent"] == "cmd.exe" and c.facts["parent_class"] == "shell" and c.indicators == ["vssadmin.exe"]
+    no_paths(c)
+    (logs,) = run(DestructiveCommand(st()), start(T0, PS, EXPLORER, cmd_logclear="1", cmd_hidden="1"))
+    assert logs.must_alert and logs.facts["harm"] == ["event logs cleared"] and logs.facts["unusual"] == ["a hidden window"]
+
+
+def test_defender_and_account_changes_alert_but_can_be_suppressed():
+    (d,) = run(DestructiveCommand(st()), start(T0, PS, EXPLORER, cmd_defender="1"))
+    assert (d.base_severity, d.must_alert) == (4, False) and d.facts["harm"] == ["Defender turned off or given an exclusion"]
+    (a,) = run(DestructiveCommand(st()), start(T0, CMD, EXPLORER, cmd_admin="1"))
+    assert (a.base_severity, a.must_alert) == (4, False) and a.title == "Protection or accounts changed on the PC"
+    (both,) = run(DestructiveCommand(st()), start(T0, PS, EXPLORER, cmd_defender="1", cmd_shadow="1"))
+    assert both.must_alert and len(both.facts["harm"]) == 2
+    assert run(DestructiveCommand(st()), start(T0, PS, EXPLORER, cmd_enc="1", cmd_dl="1")) == []   # R17's signals are R17's
+    assert run(DestructiveCommand(st()), start(T0, VSSADMIN, CMD)) == []                           # vssadmin list shadows: nothing
+    (rec,) = run(DestructiveCommand(st()), start(T0, CMD, EXPLORER, cmd_recovery="1"))
+    assert (rec.base_severity, rec.must_alert, rec.facts["harm"]) == (4, False, ["Windows recovery turned off"])   # a documented repair step
+
+
+def test_the_agent_keeps_the_command_line_for_exactly_the_r24_patterns():
+    """The kept-cmdline CASE in the agent's Sysmon query must carry the same five regexes as the flags, or a case
+    arrives with no text in the agent's log to investigate (review of #141)."""
+    import json
+    import re
+    from pathlib import Path
+    raw = Path(__file__).resolve().parents[1].joinpath("agents", "config", "osquery.conf").read_text()
+    q = json.loads(re.sub(r"^\s*//.*$", "", raw, flags=re.MULTILINE), strict=False)["schedule"]["sysmon_events"]["query"]
+    keep = q[:q.index(" END AS cmdline")]
+    for flag in ("shadow", "recovery", "logclear", "defender", "admin"):
+        i = q.index(f" AS cmd_{flag}")
+        pattern = re.findall(r"'((?:[^'\\]|\\.)*)', 0\) IS NOT NULL\)$", q[:i])[-1]
+        assert f"'{pattern}', 0) IS NOT NULL)" in keep, flag
+
+
+def test_the_rule_and_its_signals_are_wired_in():
+    from tapwatch.hostrules import NAMES, flags_of
+    from tapwatch.router import CODE_ONLY
+    assert "host_destructive" in NAMES and "host_destructive" in CODE_ONLY
+    assert flags_of({"cmd_shadow": "1", "cmd_recovery": "1", "cmd_admin": "1", "cmd_url": "1"}) == ("shadow", "recovery", "admin", "url")

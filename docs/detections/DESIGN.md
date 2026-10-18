@@ -771,6 +771,48 @@ the same `HostDetector` base and `EndpointState`.
 - **Blind spots:** WMI subscriptions, Office add-ins, browser extensions (#27 pass 2); a persistence entry
   pointing at an installed, signed program (an attacker who writes to Program Files is past this rule).
 
+### R24 Backups, logs, protection or accounts changed (`host_destructive`) — **built**
+- **Threat:** what ransomware runs before it encrypts and what an intruder runs to stay and hide: shadow
+  copies, the backup catalog or recovery removed (T1490), event logs cleared (T1070.001), Defender turned off
+  or given an exclusion (T1562.001), a local account or administrator added (T1136.001, T1098).
+- **Data:** `sysmon_events` event 1 with the signals the agent computes on the PC: `cmd_shadow`
+  (`vssadmin delete shadows`, `vssadmin resize shadowstorage`, `wbadmin delete catalog|systemstatebackup`,
+  WMI `shadowcopy delete`, `Win32_ShadowCopy` from PowerShell), `cmd_recovery` (`bcdedit recoveryenabled no`,
+  `bootstatuspolicy ignoreallfailures`), `cmd_logclear` (`wevtutil cl`, `Clear-EventLog`, `Limit-EventLog`),
+  `cmd_defender` (`Set-MpPreference -Disable…`, `Add-MpPreference -Exclusion…`, `MpCmdRun -RemoveDefinitions`,
+  `sc stop|config WinDefend`), `cmd_admin` (`net user … /add`, `net localgroup administrators … /add`,
+  `Add-LocalGroupMember`, `New-LocalUser`). Each pattern also matches the tool's `.exe` or quoted-path form,
+  which is how a program spawning it looks (7 of the 13 kept lines in the live log start that way). The raw
+  command line is never read by this rule; the agent keeps it in its own log when one of these fires, as for
+  R17, and a test holds the two clauses to the same five regexes.
+- **Logic:** `hostrules.DestructiveCommand`. Any program: `vssadmin`'s command line is vssadmin's, the
+  PowerShell forms are PowerShell's. Shadow or logs → severity 5, **must_alert** (no benign reading on a home
+  PC; an administrator doing it on purpose knows the alert is coming). Recovery, Defender or accounts →
+  severity 4, suppressible per program: `bcdedit recoveryenabled no` is the documented fix for an Automatic
+  Repair loop, and an installer or the owner adding an exclusion or a user happens once. A shell chain
+  (`cmd /c vssadmin …`) carries the same line on both starts milliseconds apart: the same harm on the same PC
+  within a minute is one case, named after the first program seen.
+- **Baseline:** none. Measured 2026-10-16/17, 40 h of the main PC's log, 15,389 process starts: vssadmin,
+  wbadmin, bcdedit, wevtutil, net, net1 and wmic started 0 times (reg.exe 1,537, PowerShell 581, cmd 501,
+  mpcmdrun 24 for Defender's own updates, none with `-RemoveDefinitions`, schtasks 15, sc 5); the 13 command
+  lines the agent kept matched none of the patterns.
+- **Dedupe:** `host_destructive|pc|program`, the store's hour, plus the one-minute same-harm rule above.
+- **FPs:** an installer adding a Defender exclusion for its folder (severity 4, then a program suppression);
+  re-enabling protection (`-DisableRealtimeMonitoring $false` matches too: severity 4, once); the owner
+  creating a local account or repairing boot with bcdedit (once). None for the must_alert pair in the
+  measured window.
+- **Route:** ALERT, code-only; must_alert for shadow and logs. Host context does not apply: the command is
+  the verdict, whoever typed it.
+- **Jev:** none.
+- **Safe test:** `cmd /c echo vssadmin delete shadows /all` from a terminal: the echo's command line carries
+  the pattern, nothing runs, the agent flags it → one must_alert case (cmd and its echo are one chain) and a
+  Herdr pop-up. `powershell -c "echo Add-MpPreference -ExclusionPath x"` → severity 4 alert. Needs the agent's
+  updated `osquery.conf` (`agents/windows/install.ps1` copies it; or copy it by hand and restart osqueryd; see
+  agents/README.md).
+- **Blind spots:** the same actions through the registry or Group Policy without a command line
+  (`DisableAntiSpyware` via `reg add`, which R24 does not read), WMI from a compiled binary (no command line),
+  and log clearing by deleting the `.evtx` files; Sysmon 10 (LSASS access) is a separate rule.
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
@@ -836,6 +878,7 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R20 Built-in tool (LOLBin) connects out (built) | osquery + Sysmon | alert (msbuild: digest) | code-only; must_alert for the downloaders |
 | — | R21 Bad code signature connects out (built) | osquery snapshot | alert | code-only |
 | — | R23 New persistence entry (built) | osquery differential (tasks, services, startup, cron, launchd) | digest / alert | code-only |
+| — | R24 Backups, logs, protection or accounts changed (built) | osquery + Sysmon | alert | code-only; must_alert for backups and logs |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 
