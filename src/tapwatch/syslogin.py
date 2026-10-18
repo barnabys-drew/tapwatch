@@ -151,8 +151,9 @@ class Stats:
     one summary line a period says what the router is sending and whether anything useful is in it.
     """
 
-    def __init__(self, every: float = STATS_EVERY):
+    def __init__(self, every: float = STATS_EVERY, writer=None):
         self.every, self.counts, self.since = every, Counter(), None
+        self.writer = writer  # when set, each period that heard the router also writes a `stats` row to udm.log
         self.warned_refused = False  # one warning per period, not per sender: UDP sources are spoofable
 
     def add(self, outcome: str, now: float) -> None:
@@ -167,6 +168,11 @@ class Stats:
         if self.counts:
             summary = ", ".join(f"{k} {v}" for k, v in sorted(self.counts.items()))
             log.info("syslog: %s in the last %d min (kept: cef, firewall_drop)", summary, minutes)
+            if self.writer is not None and set(self.counts) - {"refused"}:
+                # A heartbeat R22 (feed_silence) can watch: the kept rows are too sparse to time (gaps of 4 h at night,
+                # measured 2026-10-15..17), but the router sends ~200 lines every 10 minutes. On 2026-10-17 the router's
+                # target changed and nothing arrived for 18.6 h without a case.
+                self.writer.write({"ts": now, "kind": "stats", "minutes": minutes, "counts": dict(self.counts)}, now)
         else:  # a silent feed must look different from a quiet one: the router or the firewall rule is off
             log.info("syslog: nothing arrived in the last %d min", minutes)
         self.counts.clear()
@@ -201,7 +207,8 @@ def serve(listen: str, out_dir: str, allow: set[str]) -> None:
     host, _, port = listen.rpartition(":")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((host or "0.0.0.0", int(port)))
-    writer, stats = UdmWriter(out_dir), Stats()
+    writer = UdmWriter(out_dir)
+    stats = Stats(writer=writer)
     sock.settimeout(stats.every)  # so a feed that stops still gets its summary line
     log.info("syslog listening on %s, writing %s (accepting from: %s)", listen, writer.path,
              ", ".join(sorted(allow)) or "anyone")

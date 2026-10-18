@@ -745,7 +745,9 @@ the same `HostDetector` base and `EndpointState`.
   20 min, severity 4 (99.9th-percentile gap 0.1 min); Windows sockets 10 min, 4 (ran every 1.1 min until it
   stopped); Sysmon 15, 4 (1.3); the Windows snapshots 20, 3 (5.4); WSL socket history 30, 3 (8.1); eBPF execs
   15, 3 (2.1); eBPF connections 60, 3 (idles 16 min at night); its address snapshot 30, 3 (12.4). Inventory
-  queries and the router syslog (178 rows in two days) are too sparse to watch. Config `detectors.feed_silence`:
+  queries are too sparse to watch. The router syslog (178 kept rows in two days) is watched through a heartbeat:
+  the listener writes a `stats` row to udm.log each 10 minutes it heard the router; once R22 has seen one the feed is
+  armed (persisted) and 30 minutes without one is a severity-3 case (2026-10-17: 18.6 h of silence went unnoticed). Config `detectors.feed_silence`:
   `minutes: {feed: n}`, `ignore: [feed]`, `enabled: false`.
 - **Baseline:** none; the limits are fixed and measured.
 - **Dedupe:** `feed_silence|pc|<agent>:<feed>`; one case per silence, re-armed by the next row.

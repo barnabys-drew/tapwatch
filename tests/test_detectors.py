@@ -1604,3 +1604,29 @@ def test_router_config_events_are_not_logins_for_the_admin_rule():
     (c,) = run(det, [udm_config(T0, "Config Modified", "Internet", "usg", "failover: true", src="192.168.50.20")])
     assert c.title == "Router settings changed from a new place" and not c.facts["failed"]
     assert run(det, [udm_config(T0 + i, "Config Modified", "Internet", "usg", "wan failover failed", src="192.168.50.20") for i in range(6)]) == []
+
+
+def test_feed_silence_watches_the_router_syslog_once_its_heartbeat_was_seen():
+    """2026-10-17: the router's syslog target changed and nothing arrived for 18.6 h without a case."""
+    from tapwatch.detectors import FeedSilence, decode, encode
+    now = [T0]
+    fs = FeedSilence({}, started=T0, clock=lambda: now[0])
+    fs.feed({"_type": "udm", "ts": T0, "kind": "cef", "name": "WiFi Client Connected"})
+    assert "udm" not in fs.expected                                               # an event is not the heartbeat
+    fs.feed({"_type": "udm", "ts": T0, "kind": "stats", "counts": {"system": 200}})
+    for m in range(1, 30):
+        now[0] = T0 + m * 60
+        assert fs.tick(now[0]) == []
+    now[0] = T0 + 30 * 60
+    (c,) = fs.tick(now[0])
+    assert c.facts["feeds"] == ["router syslog"] and c.facts["from"] == "the router" and c.base_severity == 3
+    restarted = FeedSilence({}, started=now[0], clock=lambda: now[0])
+    restarted.restore({k: decode(encode(v)) for k, v in fs.snapshot().items()})
+    assert "udm" in restarted.expected                                           # still armed after a restart
+    ignored = FeedSilence({}, started=now[0], clock=lambda: now[0], router=None)
+    ignored.restore({k: decode(encode(v)) for k, v in fs.snapshot().items()})
+    ignored.feed({"_type": "udm", "ts": now[0], "kind": "stats", "counts": {"system": 1}})
+    assert "udm" not in ignored.expected and not ignored.armed                    # `ignore: [udm]` wins over saved state
+    short = FeedSilence({}, started=T0, clock=lambda: now[0], router=(600, 3))
+    short.feed({"_type": "udm", "ts": T0, "kind": "stats", "counts": {"system": 1}})
+    assert short.expected["udm"] == (600, 3)                                     # `minutes: {udm: 10}`
