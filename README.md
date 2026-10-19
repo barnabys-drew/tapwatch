@@ -20,6 +20,10 @@ PC a case says whether the owner's coding agent was behind it. An optional small
 reach your phone. One small box runs it all, with no SIEM; nothing leaves but your
 notifications, list downloads and the optional AI questions, and those see words, not packets.
 
+> **Start here.** Setting it up in an office or home with UniFi and a Windows PC, and new to all of
+> this? Follow [docs/setup/office-unifi.md](docs/setup/office-unifi.md): one installer
+> (`install-windows.cmd`) and a few clicks in UniFi. Everything below is the detail.
+
 ## Why this exists
 
 - **Homes have no SOC.** Commercial NSM assumes an analyst reads alerts all day. tapwatch's job is
@@ -181,9 +185,12 @@ TAP_IFACE=<mirror NIC> docker compose -f deploy/docker-compose.yml up -d --build
 
 Add `--profile syslog` for the router syslog listener, or `--profile ids` for Suricata.
 
-**Linux without Docker, or a Windows PC:** run tapwatch as systemd user services with
-`tapwatch service install --zeek-dir <dir>`. On Windows, Npcap captures and everything else runs
-in WSL (`--capture-iface` adds the capture service). See [docs/setup/windows.md](docs/setup/windows.md).
+**A Windows PC:** double-click `install-windows.cmd`. It sets up WSL, Ubuntu, Npcap, tapwatch, the
+endpoint agent and the services, restarting once, and finishes with `tapwatch doctor`
+([the guide](docs/setup/office-unifi.md); each step by hand: [docs/setup/windows.md](docs/setup/windows.md)).
+
+**Linux without Docker:** run tapwatch as systemd user services with
+`tapwatch service install --zeek-dir <dir>`.
 
 `init` writes `config.yaml`, `assets.yaml` and `.env` (secrets live only in `.env`), offers to
 download the public lists, and lists every VLAN's gateway you tell it about (one is strict, the
@@ -291,20 +298,20 @@ adds Semgrep and Trivy on PRs into `main`.
 
 ## Status
 
-**v0.1.1**, running on a real home network, so expect rough edges. The Linux paths (a bare
-container following this README, and the Compose stack) were installed from scratch and run on
-2026-10-15. The router syslog feed is verified against a live UniFi gateway, the twelve endpoint
-rules (R17–R21, R23–R29) are in, and host context's attribution of a one-second `curl` to the agent that
-ran it was verified live on 2026-10-16. Site categories (UT1 lists, optional model) landed the
-same day. On 2026-10-17 the host-context verdicts were verified live on test shapes: the owner's
-prompt naming a destination corroborates the agent's connection, and a tampered binary's connection
-raised the bad-signature rule. The same day fixed a blind spot found by looking: the Windows agent's
-signature check had been running per socket, slowly enough that osquery banned the query for a day
-at a time, so the check now runs once per program, and a new rule watches every feed for silence
-(it caught that ban ten minutes after deploy). A scripted detection-rate check runs in CI, and the
-stats page gained a week-by-week benchmark. Next up, per the [roadmap](docs/ROADMAP.md): a
-clean-machine Windows test, Linux endpoint rules, and letting the noise rate fall as the baselines
-age. macOS waits until there's a Mac to test on.
+**v0.1.1**, running on a real home network since 2026-10-13, so expect rough edges.
+
+- **Installs verified from scratch:** the Linux paths (a bare container and the Compose stack, 2026-10-15)
+  and the Windows path on a clean Windows 11 machine (2026-10-18: capture into Zeek and an alert to
+  Discord, which found and fixed a Discord 403). The one-step Windows installer (`install-windows.cmd`)
+  and `tapwatch doctor` are new and are next to be run on a clean machine.
+- **Detection:** the network rules, the router's syslog (verified against a live UniFi gateway), and
+  the endpoint rules R17–R29 on Windows and Linux (the Linux set verified live on 2026-10-18). A scripted
+  detection-rate check runs in CI; a feed-silence rule watches every log source, the router included.
+- **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement and
+  host-context accuracy week by week. The first full week of host-context numbers closes v0.2 on 2026-10-20.
+
+Next, per the [roadmap](docs/ROADMAP.md): the easy-install milestone (v0.2.5), then more endpoint rules
+(v0.3) and learning from the owner's closed cases (v0.4). macOS waits until there's a Mac to test on.
 
 ## License
 

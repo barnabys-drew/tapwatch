@@ -63,6 +63,9 @@ def test_windows_capture_path_is_offered_when_npcap_is_there():
     f = wizard.Facts(gateway="192.168.50.1", windows_capture=True)
     _, _, _, notes = wizard.build(f, answers())
     assert any("--capture-iface 'Ethernet'" in n for n in notes)
+    assert wizard.build(wizard.Facts(this_ip="192.168.50.10", windows_capture=True), answers())[0]["host_context"] \
+        == {"host": "192.168.50.10"}
+    assert "host_context" not in wizard.build(FACTS, answers())[0]
 
 
 def test_anthropic_key_turns_on_site_categories():

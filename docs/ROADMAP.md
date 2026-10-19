@@ -100,6 +100,23 @@ the Windows path installs on a clean machine from the docs alone, and the README
 | [#11](https://github.com/barnabys-drew/tapwatch/issues/11) | Stats page refreshes itself | **done** |
 | [#13](https://github.com/barnabys-drew/tapwatch/issues/13) | Test matrix: Python 3.10–3.13 in CI | **done** |
 
+## v0.2.5: easy install ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/6))
+
+The clean-machine test (#6) worked, but took an expert most of an afternoon. The first outside user is new to
+all of this: a Windows PC in a UniFi office, installing alone from the docs. So: one installer that does every
+step a script can, one command that says what's wrong, and one guide in plain words.
+
+**Done when** a fresh Windows 11 machine goes from the downloaded ZIP to a test alert with nothing typed but the
+installer's questions, and `tapwatch doctor` reports every problem the #6 run hit by name.
+
+| Issue | What | Status |
+|---|---|---|
+| [#175](https://github.com/barnabys-drew/tapwatch/issues/175) | Windows one-step installer (`install-windows.cmd`) | **built** 2026-10-18, to run on a clean machine |
+| [#176](https://github.com/barnabys-drew/tapwatch/issues/176) | `tapwatch doctor`: every part of the install, with fixes | **done** 2026-10-18 ([#181](https://github.com/barnabys-drew/tapwatch/pull/181)); all 13 checks ok on the live box |
+| [#177](https://github.com/barnabys-drew/tapwatch/issues/177) | `init`: answers from the installer, the optional AI keys | **done** 2026-10-18 ([#180](https://github.com/barnabys-drew/tapwatch/pull/180)) |
+| [#178](https://github.com/barnabys-drew/tapwatch/issues/178) | Plain-English guide for a UniFi office | **written** 2026-10-18 (docs/setup/office-unifi.md), to follow step by step |
+| [#179](https://github.com/barnabys-drew/tapwatch/issues/179) | README: a "start here", and Status brought up to date | **done** 2026-10-18 |
+
 ## v0.3: endpoint rules ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/3))
 
 Some attacks never look odd on the wire: a script that lives off built-in tools, a new scheduled task,
