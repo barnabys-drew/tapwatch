@@ -140,6 +140,10 @@ def build(f: Facts, ask) -> tuple[dict, dict, dict, list[str]]:
     if key:
         env["ANTHROPIC_API_KEY"] = key
         cfg["categories"] = {"ai": True, "model": "claude-haiku-5-5", "per_hour": 60, "api_key_env": "ANTHROPIC_API_KEY"}
+    if f.windows_capture and this_ip:
+        # The Windows installer puts the osquery agent on this PC, so cases can name the program behind a
+        # connection from this PC's address (hostctx.py). Harmless without the agent: nothing to ask.
+        cfg["host_context"] = {"host": this_ip}
     assets = {}
     if gateway:
         assets[gateway] = {"name": "router", "role": "router"}
