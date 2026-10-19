@@ -29,6 +29,20 @@ $env:WSL_UTF8 = "1"                               # wsl.exe prints UTF-16 otherw
 $Distro = "Ubuntu"
 $RepoUrl = "https://github.com/barnabys-drew/tapwatch"
 $Here = Split-Path -Parent $PSScriptRoot | Split-Path -Parent          # the unzipped repo
+# QuickEdit off for this window: a click in a console window otherwise freezes the program ("Select" in the title)
+# until Esc, which looks exactly like a hung installer.
+try {
+    Add-Type -Name ConsoleMode -Namespace TapWatch -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int h);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@
+    $stdin = [TapWatch.ConsoleMode]::GetStdHandle(-10)
+    $mode = [uint32]0
+    if ([TapWatch.ConsoleMode]::GetConsoleMode($stdin, [ref]$mode)) {
+        [void][TapWatch.ConsoleMode]::SetConsoleMode($stdin, ($mode -band (-bnot [uint32]0x40)) -bor 0x80)   # QUICK_EDIT off, EXTENDED_FLAGS on
+    }
+} catch { }
 $StateDir = Join-Path $env:LOCALAPPDATA "tapwatch"
 $Answers = Join-Path $StateDir "installer-answers.json"                # the everyday answers, kept over the restart
 $ResumeTask = "tapwatch installer (continues after restart)"
@@ -79,11 +93,14 @@ function Distro-Installed {
     return ($LASTEXITCODE -eq 0) -and ($list -match "(?m)^\s*$Distro\s*$")
 }
 
+# Every Linux command runs with `wsl.exe -e`, never `--`: `--` hands the line to the Linux shell, which ate the
+# backslashes of a Windows path (C:\Users\... became C:Users...) and would split a path with a space in it.
+
 # Linux steps: wsl-setup.sh from this folder, as root or as the tapwatch user. Values in $vars reach the
 # script as environment variables through WSLENV, so they never appear on a command line. Its output goes
 # through Write-Host so the transcript (the support log) has it: native output otherwise bypasses it.
 function Invoke-Linux($user, [string[]]$stageArgs, [hashtable]$vars = @{}, [switch]$Capture) {
-    $script = ((Quiet { & wsl.exe -d $Distro -u root -- wslpath -a (Join-Path $Here "deploy\windows\wsl-setup.sh") }) -join "").Trim()
+    $script = ((Quiet { & wsl.exe -d $Distro -u root -e wslpath -a (Join-Path $Here "deploy\windows\wsl-setup.sh") }) -join "").Trim()
     if (-not $script) { throw "Ubuntu can't see this folder: $Here" }
     $names = @()
     foreach ($k in $vars.Keys) { Set-Item "env:$k" $vars[$k]; $names += $k }
@@ -91,8 +108,8 @@ function Invoke-Linux($user, [string[]]$stageArgs, [hashtable]$vars = @{}, [swit
     $old = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        if ($Capture) { return ((& wsl.exe -d $Distro -u $user -- bash $script @stageArgs 2>$null) -join "`n") }
-        & wsl.exe -d $Distro -u $user -- bash $script @stageArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
+        if ($Capture) { return ((& wsl.exe -d $Distro -u $user -e bash $script @stageArgs 2>$null) -join "`n") }
+        & wsl.exe -d $Distro -u $user -e bash $script @stageArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
         if ($LASTEXITCODE -ne 0) { throw "the Linux step '$($stageArgs[0])' failed (exit $LASTEXITCODE); the lines above say why" }
     } finally {
         $ErrorActionPreference = $old
@@ -142,7 +159,7 @@ if ($saved) {
     Say "A few questions first (Enter takes the suggestion in [brackets])"
     $existing = ""
     if (Distro-Installed) {
-        $existing = ((Quiet { & wsl.exe -d $Distro -u root -- getent passwd 1000 }) -join "").Split(":")[0]
+        $existing = ((Quiet { & wsl.exe -d $Distro -u root -e getent passwd 1000 }) -join "").Split(":")[0]
         Note "Ubuntu is already on this PC. If tapwatch is set up in it, its settings are kept: answer as before."
     }
     $linuxUser = if ($existing) { $existing } else { ($env:USERNAME.ToLower() -replace '[^a-z0-9_-]', '') }
@@ -243,14 +260,14 @@ if (-not (Distro-Installed)) {
     if (-not (Distro-Installed)) { Stop-Install "Ubuntu didn't install. Try 'wsl --install -d Ubuntu' in this window, then run this again." }
 }
 
-$hasAccount = (Quiet { & wsl.exe -d $Distro -u root -- id -u $linuxUser }) -and $LASTEXITCODE -eq 0
+$hasAccount = (Quiet { & wsl.exe -d $Distro -u root -e id -u $linuxUser }) -and $LASTEXITCODE -eq 0
 $password = ""
 if (-not $hasAccount) {
     Write-Host ""
     Note "Pick a password for the Linux account '$linuxUser'. You'll rarely need it (only for admin commands in Ubuntu)."
     while ($true) {
         $password = Ask-Secret "Password (hidden as you type)"
-        if ($password.Length -lt 8) { Warn "At least 8 characters, please."; continue }
+        if ($password.Length -lt 8) { Warn "At least 8 characters, please (that was $($password.Length))."; continue }
         if ((Ask-Secret "Same password again") -eq $password) { break }
         Warn "Those didn't match. Again:"
     }
@@ -262,7 +279,7 @@ $password, $pwVar = "", $null
 Quiet { & wsl.exe --shutdown } | Out-Null   # applies systemd, the default user, the docker group and mirrored networking
 Invoke-Linux "root" @("linger", $linuxUser)
 
-Quiet { & wsl.exe -d $Distro -u $linuxUser -- test -f "/home/$linuxUser/tapwatch/config.yaml" } | Out-Null
+Quiet { & wsl.exe -d $Distro -u $linuxUser -e test -f "/home/$linuxUser/tapwatch/config.yaml" } | Out-Null
 $needSettings = $LASTEXITCODE -ne 0
 $discordUrl, $typesafeKey, $anthropicKey = "", "", ""
 if (-not $needSettings) {
