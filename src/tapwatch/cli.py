@@ -238,8 +238,19 @@ def cmd_init(args, cfg) -> int:
     facts = wizard.detect()
     print(f"Detected: gateway {facts.gateway or '?'}, this machine {facts.this_ip or '?'}, "
           f"timezone {facts.timezone or '?'}, Npcap capture {'yes' if facts.windows_capture else 'no'}")
-    ask = (lambda q, d, c=None: d) if args.yes else wizard.prompt
-    conf, assets, env, notes = wizard.build(facts, ask)
+    if args.answers:
+        try:
+            ask = wizard.from_answers(sys.stdin.read() if args.answers == "-" else Path(args.answers).read_text())
+        except (OSError, ValueError, TypeError) as e:
+            print(f"answers: {e}", file=sys.stderr)
+            return 2
+    else:
+        ask = (lambda q, d, c=None, key="": d) if args.yes else wizard.prompt
+    try:
+        conf, assets, env, notes = wizard.build(facts, ask)
+    except ValueError as e:  # an answers-file answer outside a question's choices
+        print(f"answers: {e}", file=sys.stderr)
+        return 2
     try:
         written = wizard.write(args.dir, conf, assets, env, force=args.force)
     except FileExistsError as e:
@@ -249,7 +260,7 @@ def cmd_init(args, cfg) -> int:
     # The popular-domains list is what keeps the first day quiet (config.missing_feeds), so offer it
     # here rather than leave it to a note. --yes skips the download: it may be running offline.
     if not args.yes and ask("Download the public lists now (popular domains, MAC vendors, IP-to-network)?",
-                            "yes", ["yes", "no"]) == "yes":
+                            "yes", ["yes", "no"], key="download_feeds") == "yes":
         from . import feeds
 
         report = feeds.update(str(Path(args.dir) / conf.get("feeds_dir", "feeds")))
@@ -370,6 +381,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--dir", default=".", help="where to write config.yaml, assets.yaml and .env")
     s.add_argument("--yes", action="store_true", help="accept every detected default (no questions)")
     s.add_argument("--force", action="store_true", help="replace an existing config.yaml / assets.yaml")
+    s.add_argument("--answers", metavar="FILE", help="answer from a JSON object keyed by question (wizard.ANSWER_KEYS); "
+                   "'-' reads stdin, so secrets need not touch the disk")
     s.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("syslog", help="receive the router's CEF syslog (UniFi SIEM) into udm.log for `run`")
