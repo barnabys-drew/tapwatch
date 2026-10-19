@@ -53,6 +53,10 @@
           <SourceImage condition="end with">\NisSrv.exe</SourceImage>
         </Rule>
         <SourceImage condition="is">C:\Program Files\Windows Defender Advanced Threat Protection\MsSense.exe</SourceImage>
+        <!-- Query-only opens (limited information, with or without full information): no memory read, so R29 ignores
+             them anyway. Measured 2026-10-19: 8,823 lsass opens in 6 hours, every one 0x1000, 99% powershell.exe. -->
+        <GrantedAccess condition="is">0x1000</GrantedAccess>
+        <GrantedAccess condition="is">0x1400</GrantedAccess>
       </ProcessAccess>
     </RuleGroup>
     <!-- Off: empty include rules match nothing. -->
