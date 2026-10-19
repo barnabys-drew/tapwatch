@@ -339,10 +339,15 @@ def cmd_doctor(args, cfg) -> int:
 
     zeek_dir = args.zeek_dir or doctor.zeek_dir_from_units() or "logs/zeek"
     results = doctor.run_all(cfg, args.config, zeek_dir)
-    print(doctor.report(results))
     if args.send and any(r.part == "Alerts" and r.level == doctor.OK for r in results):
-        print()
-        cmd_test_alert(argparse.Namespace(herdr=False), cfg)
+        try:
+            sent = config.notifier(cfg).send("tapwatch test alert", [{"heading": "This is a test - no action needed",
+                                                                      "facts": {"Why": "tapwatch doctor --send"}}])
+            results.append(doctor.Result(doctor.OK, "Test alert", "sent via " + ", ".join(sent)))
+        except Exception as e:  # noqa: BLE001 -- any channel failure is a line in the report, not a traceback
+            results.append(doctor.Result(doctor.FAIL, "Test alert", f"not delivered: {e}",
+                                         "check the address in .env, then: tapwatch test-alert"))
+    print(doctor.report(results))
     return 1 if any(r.level == doctor.FAIL for r in results) else 0
 
 

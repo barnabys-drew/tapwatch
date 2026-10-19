@@ -17,7 +17,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
-import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -33,6 +33,7 @@ SYSLOG_STALE = 1800        # the listener writes a heartbeat row every 10 minute
 AGENT_STALE = 900          # the agents' busiest queries run every minute
 FEEDS_OLD_DAYS = 30
 TAIL_BYTES = 2_000_000     # enough recent conn.log for the mirror check without reading the whole file
+SETTLING = 900             # services this new may not have written a log yet: a missing log is a note, not a failure
 
 
 @dataclass
@@ -45,9 +46,10 @@ class Result:
 
 def _run(cmd: list[str], timeout: float = 10) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=timeout)
+        # errors="replace": sc.exe and schtasks.exe answer in the OEM code page on a non-English Windows
+        p = subprocess.run(cmd, check=False, capture_output=True, text=True, errors="replace", timeout=timeout)
         return p.returncode, p.stdout
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return -1, ""
 
 
@@ -73,13 +75,27 @@ def installed_units(unit_dir: Path = service.UNIT_DIR) -> list[str]:
 
 
 def zeek_dir_from_units(unit_dir: Path = service.UNIT_DIR) -> str | None:
-    """The log directory `service install` gave the alerter, so `doctor` needs no arguments after an install."""
+    """The log directory `service install` gave the alerter, so `doctor` needs no arguments after an install.
+    The unit quotes it with shlex.quote, so shlex.split undoes that, quotes inside the path included."""
     try:
         text = (unit_dir / "tapwatch-alerter.service").read_text()
     except OSError:
         return None
-    m = re.search(r"--zeek-dir\s+('([^']+)'|(\S+))", text)
-    return (m.group(2) or m.group(3)) if m else None
+    for line in text.splitlines():
+        if line.startswith("ExecStart="):
+            try:
+                words = shlex.split(line.removeprefix("ExecStart="))
+            except ValueError:
+                return None
+            if "--zeek-dir" in words[:-1]:
+                return words[words.index("--zeek-dir") + 1]
+    return None
+
+
+def units_age(units: list[str], now: float, unit_dir: Path = service.UNIT_DIR) -> float | None:
+    """Seconds since `service install` last wrote the units: right after an install, logs may not exist yet."""
+    ages = [a for u in units if (a := _age(unit_dir / f"{u}.service", now)) is not None]
+    return min(ages) if ages else None
 
 
 def tail_records(path: Path, limit: int = TAIL_BYTES) -> list[dict]:
@@ -134,6 +150,9 @@ def check_services(units: list[str], run=_run) -> list[Result]:
     if not units:
         return [Result(FAIL, "Services", "tapwatch isn't installed as a service, so it stops when this window closes",
                        "tapwatch service install --zeek-dir logs/zeek  (add --capture-iface and --syslog as needed)")]
+    if run(["systemctl", "--user", "show-environment"])[0] != 0:
+        return [Result(WARN, "Services", "can't reach your Linux services from here",
+                       "run tapwatch doctor from an Ubuntu window")]
     down = [u for u in units if run(["systemctl", "--user", "is-active", "--quiet", u])[0] != 0]
     out = [Result(FAIL, "Services", f"not running: {', '.join(down)}",
                   f"systemctl --user restart {' '.join(down)}; if it stops again: journalctl --user -u {down[0]} -n 30")
@@ -144,9 +163,11 @@ def check_services(units: list[str], run=_run) -> list[Result]:
     return out
 
 
-def check_capture(zeek_dir: Path, this_pc: set[str], now: float) -> list[Result]:
+def check_capture(zeek_dir: Path, this_pc: set[str], now: float, new: bool = False) -> list[Result]:
     conn = zeek_dir / "conn.log"
     age = _age(conn, now)
+    if age is None and new:
+        return [Result(WARN, "Capture", "just started: no traffic logged yet", "check again in 15 minutes: tapwatch doctor")]
     if age is None:
         return [Result(FAIL, "Capture", f"no traffic log yet in {zeek_dir}",
                        "check the capture: systemctl --user status tapwatch-capture (Windows: is Npcap installed "
@@ -165,11 +186,14 @@ def check_capture(zeek_dir: Path, this_pc: set[str], now: float) -> list[Result]
     return out
 
 
-def check_router(units: list[str], zeek_dir: Path, now: float) -> list[Result]:
+def check_router(units: list[str], zeek_dir: Path, now: float, new: bool = False) -> list[Result]:
     if "tapwatch-syslog" not in units:
         return [Result(WARN, "Router", "router logs are off (optional: the router's own blocks and admin logins)",
                        "docs/setup/router-syslog.md, then tapwatch service install ... --syslog")]
     age = _age(zeek_dir / "udm.log", now)
+    if age is None and new:  # the listener writes its first row when the router has spoken for 10 minutes
+        return [Result(WARN, "Router", "just started: nothing from the router yet",
+                       "set up the router's logs (docs/setup/router-syslog.md), then check again in 15 minutes")]
     if age is None or age > SYSLOG_STALE:
         when = "nothing has arrived" if age is None else f"nothing for {_mins(age)}"
         return [Result(FAIL, "Router", f"the router isn't sending its logs: {when}",
@@ -187,10 +211,10 @@ def check_agents(cfg: dict, now: float) -> list[Result]:
     out = []
     for p in found:
         age = _age(p, now)
-        if not os.access(p, os.R_OK):
+        if age is None or not os.access(p, os.R_OK):
             out.append(Result(FAIL, "PC agent", f"can't read {p}", "re-run the agent installer (agents/README.md)"))
-        elif age is None or age > AGENT_STALE:
-            out.append(Result(FAIL, "PC agent", f"{p} hasn't changed for {_mins(age or 0)}",
+        elif age > AGENT_STALE:
+            out.append(Result(FAIL, "PC agent", f"{p} hasn't changed for {_mins(age)}",
                               "restart osquery (Windows: Restart-Service osqueryd in an admin PowerShell; "
                               "Linux: sudo systemctl restart osqueryd)"))
         else:
@@ -220,8 +244,9 @@ def check_ai(cfg: dict) -> list[Result]:
     else:
         out.append(Result(OK, "AI", "AI triage has its key"))
     c = cfg.get("categories") or {}
-    if c.get("ai") and not os.environ.get(c.get("api_key_env", "ANTHROPIC_API_KEY")):
-        out.append(Result(FAIL, "AI", "site categories are on but have no key", "add ANTHROPIC_API_KEY to .env"))
+    key_env = c.get("api_key_env", "ANTHROPIC_API_KEY")
+    if c.get("ai") and not os.environ.get(key_env):
+        out.append(Result(FAIL, "AI", "site categories are on but have no key", f"add {key_env} to .env"))
     return out
 
 
@@ -280,9 +305,11 @@ def run_all(cfg: dict, cfg_path: str, zeek_dir: str, now: float | None = None, r
     results = check_setup(cfg_path)
     if results and results[0].level == FAIL:
         return results
+    age = units_age(units, now, unit_dir)
+    new = age is not None and age < SETTLING
     results += check_services(units, run)
-    results += check_capture(z, this_pc_addresses(cfg), now)
-    results += check_router(units, z, now)
+    results += check_capture(z, this_pc_addresses(cfg), now, new)
+    results += check_router(units, z, now, new)
     results += check_agents(cfg, now)
     results += check_alerts(cfg)
     results += check_ai(cfg)

@@ -39,6 +39,13 @@ def test_mirror_port_seen_only_when_other_lan_devices_talk(tmp_path):
     assert levels(r, "Mirror port") == [doctor.OK] and "2 other devices" in r[1].said
 
 
+def test_a_fresh_install_without_logs_yet_is_a_note_not_a_failure(tmp_path):
+    assert doctor.check_capture(tmp_path, set(), NOW, new=True)[0].level == doctor.WARN
+    assert doctor.check_router(["tapwatch-syslog"], tmp_path, NOW, new=True)[0].level == doctor.WARN
+    touch(tmp_path / "tapwatch-alerter.service", age=60)
+    assert doctor.units_age(["tapwatch-alerter"], NOW, tmp_path) == 60
+
+
 def test_router_logs_optional_until_the_listener_is_installed(tmp_path):
     assert doctor.check_router([], tmp_path, NOW)[0].level == doctor.WARN
     assert doctor.check_router(["tapwatch-syslog"], tmp_path, NOW)[0].level == doctor.FAIL
@@ -52,6 +59,8 @@ def test_services_report_the_stopped_ones_and_linger(monkeypatch):
     def run(cmd, timeout=10):
         if cmd[0] == "loginctl":
             return 0, "Linger=no\n"
+        if cmd[-1] == "show-environment":
+            return 0, ""
         return (3, "") if cmd[-1] == "tapwatch-capture" else (0, "")
     r = doctor.check_services(["tapwatch-alerter", "tapwatch-capture"], run)
     assert r[0].level == doctor.FAIL and "tapwatch-capture" in r[0].said and "alerter" not in r[0].said
@@ -89,6 +98,9 @@ def test_zeek_dir_comes_from_the_installed_alerter_unit(tmp_path):
     (tmp_path / "tapwatch-alerter.service").write_text(
         "ExecStart=/py -m tapwatch.cli -c config.yaml run --zeek-dir '/home/o/tap watch/logs'\n")
     assert doctor.zeek_dir_from_units(tmp_path) == "/home/o/tap watch/logs"
+    (tmp_path / "tapwatch-alerter.service").write_text(
+        "ExecStart=/py -m tapwatch.cli run --zeek-dir " + __import__("shlex").quote("/tmp/o'brien/zeek") + "\n")
+    assert doctor.zeek_dir_from_units(tmp_path) == "/tmp/o'brien/zeek"
     assert doctor.zeek_dir_from_units(tmp_path / "none") is None
 
 
@@ -105,3 +117,25 @@ def test_only_the_long_running_units_are_checked(tmp_path):
     for u in ("tapwatch-alerter", "tapwatch-capture", "tapwatch-explain-report"):
         (tmp_path / f"{u}.service").write_text("")
     assert doctor.installed_units(tmp_path) == ["tapwatch-alerter", "tapwatch-capture"]
+
+
+def test_unreachable_user_services_are_not_reported_as_stopped():
+    r = doctor.check_services(["tapwatch-alerter"], lambda cmd, timeout=10: (1, ""))
+    assert len(r) == 1 and r[0].level == doctor.WARN and "Ubuntu window" in r[0].fix
+
+
+def test_send_failure_is_a_failed_line_not_a_traceback(tmp_path, monkeypatch, capsys):
+    from tapwatch import cli, config
+
+    class Broken:
+        def channels(self):
+            return ["ntfy"]
+
+        def send(self, title, items):
+            raise RuntimeError("ntfy: HTTP Error 403: Forbidden")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text("{}\n")
+    monkeypatch.setattr(config, "notifier", lambda cfg: Broken())
+    assert cli.main(["doctor", "--zeek-dir", str(tmp_path), "--send"]) == 1
+    out = capsys.readouterr().out
+    assert "[FAIL] Test alert" in out and "403" in out
