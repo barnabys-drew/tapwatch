@@ -80,7 +80,15 @@ def test_answers_file_answers_by_key_and_refuses_typos():
     with pytest.raises(ValueError, match="alert"):
         wizard.from_answers('{"alert": "ntfy"}')
     with pytest.raises(ValueError, match="one of"):
-        wizard.build(FACTS, wizard.from_answers('{"alerts": "pager"}'))
+        wizard.from_answers('{"alerts": "pager"}')
+    with pytest.raises(ValueError, match="one of"):
+        wizard.from_answers('{"download_feeds": "maybe"}')          # checked before anything is written
+    with pytest.raises(TypeError):
+        wizard.from_answers('{"typesafe_key": 5}')
+    with pytest.raises(ValueError, match="one line"):
+        wizard.from_answers('{"discord_url": "https://x\\nTYPESAFE_API_KEY=evil"}')
+    cfg, _, env, _ = wizard.build(FACTS, wizard.from_answers('{"anthropic_key": null}'))   # null: unanswered
+    assert "ANTHROPIC_API_KEY" not in env and "categories" not in cfg
 
 
 def test_init_reads_answers_from_stdin(tmp_path, monkeypatch, capsys):
@@ -91,6 +99,20 @@ def test_init_reads_answers_from_stdin(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO('{"alerts": "none", "download_feeds": "no"}'))
     assert cli.main(["init", "--dir", str(tmp_path), "--answers", "-"]) == 0
     assert (tmp_path / "config.yaml").exists() and "TAPWATCH_NTFY_URL" not in (tmp_path / ".env").read_text()
+
+
+def test_init_refuses_bad_answers_cleanly_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    import io
+
+    from tapwatch import cli
+    monkeypatch.setattr(wizard, "detect", lambda: FACTS)
+    for bad in ('{"download_feeds": "maybe"}', '[1]', '{not json', '{"alert": "ntfy"}'):
+        monkeypatch.setattr("sys.stdin", io.StringIO(bad))
+        assert cli.main(["init", "--dir", str(tmp_path), "--answers", "-"]) == 2
+        assert "Traceback" not in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
+    with pytest.raises(SystemExit):                                 # --yes and --answers can't be combined
+        cli.main(["init", "--yes", "--answers", "-"])
 
 
 # ------------------------------------------------------------ systemd user services

@@ -246,11 +246,7 @@ def cmd_init(args, cfg) -> int:
             return 2
     else:
         ask = (lambda q, d, c=None, key="": d) if args.yes else wizard.prompt
-    try:
-        conf, assets, env, notes = wizard.build(facts, ask)
-    except ValueError as e:  # an answers-file answer outside a question's choices
-        print(f"answers: {e}", file=sys.stderr)
-        return 2
+    conf, assets, env, notes = wizard.build(facts, ask)
     try:
         written = wizard.write(args.dir, conf, assets, env, force=args.force)
     except FileExistsError as e:
@@ -379,9 +375,10 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("init", help="set up: detect the network, ask a few questions, write config, assets and .env")
     s.add_argument("--dir", default=".", help="where to write config.yaml, assets.yaml and .env")
-    s.add_argument("--yes", action="store_true", help="accept every detected default (no questions)")
+    how = s.add_mutually_exclusive_group()
+    how.add_argument("--yes", action="store_true", help="accept every detected default (no questions)")
     s.add_argument("--force", action="store_true", help="replace an existing config.yaml / assets.yaml")
-    s.add_argument("--answers", metavar="FILE", help="answer from a JSON object keyed by question (wizard.ANSWER_KEYS); "
+    how.add_argument("--answers", metavar="FILE", help="answer from a JSON object keyed by question (wizard.ANSWER_KEYS); "
                    "'-' reads stdin, so secrets need not touch the disk")
     s.set_defaults(fn=cmd_init)
 

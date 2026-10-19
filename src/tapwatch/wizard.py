@@ -182,22 +182,34 @@ ANSWER_KEYS = {"gateway", "this_ip", "timezone", "windows_capture", "capture_ifa
                "typesafe_key", "anthropic_key", "download_feeds"}
 
 
+ANSWER_CHOICES = {"windows_capture": ["yes", "no"], "alerts": ["ntfy", "discord", "email", "none"],
+                  "download_feeds": ["yes", "no"]}
+
+
 def from_answers(text: str):
     """An `ask` that answers from a JSON object keyed by question key, else takes the detected default.
-    An unknown key is refused (a typo would otherwise silently fall back to a default), and so is an
-    answer outside a question's choices."""
+
+    Everything is checked before anything is written: an unknown key (a typo would otherwise silently fall
+    back to a default), a value that isn't a string (JSON null would become the text "None" in .env), a line
+    break (it would write a second .env line), and an answer outside a question's choices. null means
+    unanswered."""
     given = json.loads(text)
     if not isinstance(given, dict):
         raise TypeError("answers must be a JSON object")
     unknown = sorted(set(given) - ANSWER_KEYS)
     if unknown:
         raise ValueError(f"unknown answer keys: {', '.join(unknown)}")
+    given = {k: v for k, v in given.items() if v is not None}
+    for k, v in given.items():
+        if not isinstance(v, str):
+            raise TypeError(f"{k}: answers must be strings")
+        if "\n" in v or "\r" in v:
+            raise ValueError(f"{k}: answers must be one line")
+        if k in ANSWER_CHOICES and v.strip() not in ANSWER_CHOICES[k]:
+            raise ValueError(f"{k}: answer one of {', '.join(ANSWER_CHOICES[k])}")
 
     def ask(question: str, default: str, choices: list[str] | None = None, key: str = "") -> str:
-        got = str(given[key]).strip() if key in given else default
-        if choices and got not in choices:
-            raise ValueError(f"{key}: answer one of {', '.join(choices)}, not {got!r}")
-        return got
+        return given[key].strip() if key in given else default
     return ask
 
 
