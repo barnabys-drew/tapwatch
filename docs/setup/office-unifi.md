@@ -24,6 +24,8 @@ Tick these off first; each one is explained below.
 
 The installer is new. If it stops, it says why and where its log is: send that file to whoever is helping you.
 
+Helping someone else set it up? Start with [helping-an-install.md](helping-an-install.md).
+
 ## 0. Permission first
 
 tapwatch sees every device's traffic on the network: who talks to what, and when (not the contents of

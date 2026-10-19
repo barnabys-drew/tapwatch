@@ -7,7 +7,6 @@
 #   TW_IFACE    the Windows adapter name for the capture, e.g. "Ethernet 2" (stage app)
 #   TW_SYSLOG   "yes" to also run the router syslog listener (stage app)
 #
-#   wsl-setup.sh user-of                as root: print the Linux user tapwatch runs as (uid 1000), if any
 #   wsl-setup.sh root <user>            as root: account, systemd, packages, docker group (then: wsl --shutdown)
 #   wsl-setup.sh linger <user>          as root: keep the user's services running with nobody signed in
 #   wsl-setup.sh app <repo-url>         as the user: tapwatch, init, lists, services
@@ -20,10 +19,6 @@ say() { printf '==> %s\n' "$*"; }
 stage=${1:?stage}
 
 case "$stage" in
-user-of)
-    getent passwd 1000 | cut -d: -f1
-    ;;
-
 root)
     user=${2:?user}
     [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "not a usable Linux user name: $user" >&2; exit 2; }
@@ -34,9 +29,15 @@ root)
     if [ -n "${TW_PW:-}" ]; then
         printf '%s\n' "$TW_PW" | chpasswd
     fi
-    # The default user and systemd (tapwatch runs as systemd user services). Rewritten whole: the
-    # installer owns this file on a machine it set up.
-    printf '[boot]\nsystemd=true\n\n[user]\ndefault=%s\n' "$user" > /etc/wsl.conf
+    # systemd (tapwatch runs as systemd user services) and, unless someone already chose one, this user
+    # as the default when Ubuntu opens. Added to an existing file, never rewritten: it may be the owner's.
+    touch /etc/wsl.conf
+    if ! grep -qE '^\s*systemd\s*=\s*true' /etc/wsl.conf; then
+        if grep -qE '^\s*systemd\s*=' /etc/wsl.conf; then sed -i -E 's/^\s*systemd\s*=.*/systemd=true/' /etc/wsl.conf
+        elif grep -q '^\[boot\]' /etc/wsl.conf; then sed -i '/^\[boot\]/a systemd=true' /etc/wsl.conf
+        else printf '\n[boot]\nsystemd=true\n' >> /etc/wsl.conf; fi
+    fi
+    grep -q '^\[user\]' /etc/wsl.conf || printf '\n[user]\ndefault=%s\n' "$user" >> /etc/wsl.conf
     say "Installing git, Python and Docker (a few minutes)"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -q
@@ -77,11 +78,15 @@ app)
         printf '%s\n' "$out" | grep -v 'ntfy app to:' || true
     fi
     say "Downloading the public lists"
-    .venv/bin/tapwatch update-feeds
+    # One list host being down shouldn't stop the install: tapwatch runs without any of them (noisier),
+    # and doctor names the missing ones.
+    .venv/bin/tapwatch update-feeds || say "Some lists didn't download; tapwatch works without them. Later: tapwatch update-feeds"
     args=(service install --zeek-dir logs/zeek --capture-iface "${TW_IFACE:?capture adapter}")
     [ "${TW_SYSLOG:-}" = yes ] && args+=(--syslog)
     say "Starting tapwatch's services"
     .venv/bin/tapwatch "${args[@]}"
+    # `enable --now` leaves already-running units alone, so on a re-run (an update) they'd keep the old code.
+    systemctl --user restart 'tapwatch-*.service'
     ;;
 
 ntfy-url)
