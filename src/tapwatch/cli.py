@@ -334,6 +334,18 @@ def cmd_notify(args, cfg) -> int:
     return 0
 
 
+def cmd_doctor(args, cfg) -> int:
+    from . import doctor
+
+    zeek_dir = args.zeek_dir or doctor.zeek_dir_from_units() or "logs/zeek"
+    results = doctor.run_all(cfg, args.config, zeek_dir)
+    print(doctor.report(results))
+    if args.send and any(r.part == "Alerts" and r.level == doctor.OK for r in results):
+        print()
+        cmd_test_alert(argparse.Namespace(herdr=False), cfg)
+    return 1 if any(r.level == doctor.FAIL for r in results) else 0
+
+
 def cmd_test_alert(args, cfg) -> int:
     if args.herdr:
         h = config.herdr(cfg)
@@ -430,6 +442,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("case_id", type=int)
     s.add_argument("label", choices=["fp", "tp"])
     s.set_defaults(fn=cmd_mark)
+
+    s = sub.add_parser("doctor", help="check every part of the install and say how to fix what isn't working")
+    s.add_argument("--zeek-dir", help="the log dir `run` watches (default: the one `service install` used)")
+    s.add_argument("--send", action="store_true", help="also send a test alert")
+    s.set_defaults(fn=cmd_doctor)
 
     s = sub.add_parser("test-alert", help="send a sample alert")
     s.add_argument("--herdr", action="store_true", help="pop a test notification in Herdr instead")
