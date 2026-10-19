@@ -9,6 +9,21 @@ logging in to the router, a program setting itself up to run at every start. It 
 anything, and nothing it sees leaves the PC except the alerts (and, only if you add the optional
 keys, short descriptions for the AI).
 
+## Before you start
+
+Tick these off first; each one is explained below.
+
+- [ ] **Permission:** the network's owner has said yes in writing, and the people who use it will be told (step 0).
+- [ ] **A UniFi switch** (a USW model) sits between the UniFi router and the rest of the network. The router's own
+      ports can't copy traffic; without a switch, buy one first.
+- [ ] **A second network port** on the PC: a USB-to-Ethernet adapter (about $15) is fine.
+- [ ] **A Windows 11 PC** that stays on all the time, with 8 GB of memory and 20 GB free.
+- [ ] **The UniFi admin login**, to set up the copy port and the router's logs.
+- [ ] **The ntfy app** on your phone (or a Discord channel for alerts).
+- [ ] **About an hour**, with the PC free to restart once.
+
+The installer is new. If it stops, it says why and where its log is: send that file to whoever is helping you.
+
 ## 0. Permission first
 
 tapwatch sees every device's traffic on the network: who talks to what, and when (not the contents of
