@@ -1086,8 +1086,10 @@ def test_file_changes_ship_as_digest_items_with_what_they_would_be():
     assert auto.facts["kind"] == "autostart entry"
     assert run(det, fim(T0 + 60, "~/.bashrc")) == []                      # once a day per file
     assert run(FileChanged(st()), fim(T0, "/etc/hosts")) == []
-    (live,) = run(FileChanged(st(), alert=True), fim(T0, "/etc/sudoers.d/90-x"))
+    alerting = FileChanged(st(), alert=True)
+    (live,) = run(alerting, fim(T0, "/etc/sudoers.d/90-x"))
     assert live.base_severity == 4
+    assert run(alerting, fim(T0 + 3 * 3600, "/etc/sudoers.d/90-x", "MOVED_TO")) == []   # once a day, at alert level too
     assert "/home/" not in json.dumps(rc.facts)
 
 
@@ -1106,5 +1108,7 @@ def test_a_startup_folder_drop_names_the_program_that_wrote_it():
 
 def test_the_agent_logs_file_names_not_paths():
     q = _conf_query("sysmon_events")
-    assert "eventid IN (1, 10, 11, 22)" in q and "AS file_name" in q and "TargetFilename') AS" not in q
-    assert "AS file FROM file_events" in _conf_query("file_changes")
+    assert "(eventid = 11 AND lower(json_extract(data, '$.EventData.TargetFilename')) LIKE" in q   # Startup only
+    assert "AS file_name" in q and "TargetFilename') AS" not in q
+    fc = _conf_query("file_changes")
+    assert "AS file FROM file_events" in fc and "sed[A-Za-z0-9]{6}" in fc

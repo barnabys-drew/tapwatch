@@ -1022,13 +1022,17 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   T1548.003, T1547.001): a shell start-up file gaining a line, `/etc/ld.so.preload`, `sudoers`, a file dropped in
   a Windows Startup folder.
 - **Data:** Linux: osquery `file_events` (inotify; `--enable_file_events=true` beside the existing
-  `--disable_events=false`) over a top-level `file_paths` block: `/etc/ld.so.preload`, `/etc/sudoers`,
-  `/etc/sudoers.d/%%`, `/etc/profile.d/%%`, and `/home/%/.bashrc`, `.bash_profile`, `.profile`, `.zshrc`,
-  `/home/%/.config/autostart/%` (and the same under `/root/`). Wildcards expand when the config loads, so a home
-  created later needs a restart. The query strips `/home/<user>` to `~` in SQL. inotify works on WSL2's ext4,
-  not on `/mnt/c`; an editor that saves by rename is caught as a create (to test with `sed -i`). Windows: Sysmon
+  `--disable_events=false`). `file_paths` watches *directories* (`/etc/`, `/etc/sudoers.d/`, `/etc/profile.d/`,
+  each home and `/root/`, their `.config/autostart/`) and the query's WHERE picks the files (`ld.so.preload`,
+  `sudoers`, anything in sudoers.d and profile.d, the shells' start-up files, autostart entries), leaving out
+  `sed`'s and editors' temporary names. Measured with osqueryd 5.23.1: a watch on a single file misses a file that
+  doesn't exist yet (ld.so.preload normally doesn't) and goes blind after the first save-by-rename (`sed -i`,
+  visudo, editors); a directory watch sees a new file as CREATED and `sed -i` as MOVED_TO the real name, and keeps
+  seeing later writes. Wildcards expand when the config loads, so a home created later needs a restart. The query
+  strips `/home/<user>` to `~` in SQL. inotify works on WSL2's ext4, not on `/mnt/c`. Windows: Sysmon
   event 11 (file created), its "off" include removed and a `TargetFilename contains \Start Menu\Programs\Startup\`
-  include added; `sysmon_events` gains event 11 and keeps the file's base name and whether the folder is per-user
+  include added; `sysmon_events` gains event 11, filtered to Startup folders in its own WHERE too (so a fuller
+  Sysmon config can't turn every file creation into a case), and keeps the file's base name and whether the folder is per-user
   or all-users, never the path (it holds the user name). Sysmon names the program that wrote it.
 - **Logic:** `ld.so.preload` or sudoers written → 4 (R23 still reports preload *content* at 5). A shell start-up
   file changed → 3. A Startup-folder file created by a shell, script host, LOLBin, document or mail app, or from a

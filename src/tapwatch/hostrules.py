@@ -1339,7 +1339,9 @@ class FilesStaged(HostDetector):
 class FileChanged(HostDetector):
     """R39. A file that gives persistence or privilege changes (T1546.004, T1574.006, T1548.003, T1547.001): on Linux,
     `/etc/ld.so.preload` or sudoers written, a shell's start-up file, `/etc/profile.d/` or an XDG autostart entry
-    changed (the agent's `file_changes` inotify query, the home part reduced to ~ on the PC); on Windows, a file
+    changed (the agent's `file_changes` inotify query, the home part reduced to ~ on the PC; it watches the
+    directories and picks the files, because a missing file is never watched and a save-by-rename drops a file's
+    watch: measured with osqueryd 5.23.1, a new file is CREATED and `sed -i` is MOVED_TO the real name); on Windows, a file
     created in a Startup folder (Sysmon event 11, only the file name and per-user or all-users).
 
     Privilege files and a Startup-folder file written by a shell, script host, LOLBin, document or mail app, or a
@@ -1384,6 +1386,10 @@ class FileChanged(HostDetector):
     def _case(self, ts: float, facts: dict, level: int, indicator: str, key: tuple) -> list[Case]:
         severity = level if self.alert else 3
         facts["would_alert"] = level >= 4
+        if severity >= 4:   # emit's once-a-day applies below alert level only; a file is one case a day either way
+            if still_reported(self.reported, key, ts, self.ttl):
+                return []
+            self.reported[key] = ts
         return self.emit(ts, f"A {facts['kind']} changed on the PC", facts, severity, indicator, key)
 
 
