@@ -908,9 +908,10 @@ second account is not seen again (the key identity has no account).
   patterns. The rule never reads the command line.
 - **Logic:** `hostrules.LinuxCommand`. Any signal → severity 4, suppressible per program; the temp-folder chmod
   alone → 3. The same signals within a minute are one case (`sudo bash -c "…"` starts two processes with one line).
-- **Baseline:** measured 2026-10-19, the first day and a half with command lines on (from 2026-10-18): no flag on
-  anything but the safe test below, which was the only case. No pattern demoted. (Older rotated logs were
-  compressed and not read; the case store covers the whole time since deploy.)
+- **Baseline:** measured 2026-10-20 over the first two days with command lines on (from 2026-10-18), from the case
+  store: two cases. One was the safe test below; the other a file in a temporary folder made executable during
+  normal work (digest, closed as expected). That signal already routes to the digest on its own, so it stays
+  there; nothing demoted. The four alert-level signals fired on nothing but the test.
   Each pattern was checked against matches and harmless neighbours (`curl -o`, `nc -zv`, `nc -l`, `base64 -d
   file`, `chmod 644 /tmp/…`, `grep -e`, `docker exec`), and the shipped SQL was run in osquery.
 - **FPs (expected):** installers the owner or a coding agent runs with `curl … | sh` on request; netcat tests.
