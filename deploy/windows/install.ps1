@@ -29,6 +29,8 @@ $env:WSL_UTF8 = "1"                               # wsl.exe prints UTF-16 otherw
 $Distro = "Ubuntu"
 $RepoUrl = "https://github.com/barnabys-drew/tapwatch"
 $Here = Split-Path -Parent $PSScriptRoot | Split-Path -Parent          # the unzipped repo
+# GitHub names a branch's ZIP folder tapwatch-<branch>; inside Ubuntu, tapwatch is downloaded from that same branch.
+$Branch = if ((Split-Path -Leaf $Here) -match '^tapwatch-(.+)$') { $Matches[1] } else { "main" }
 # QuickEdit off for this window: a click in a console window otherwise freezes the program ("Select" in the title)
 # until Esc, which looks exactly like a hung installer.
 try {
@@ -144,6 +146,7 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 $free = (Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':'))).Free / 1GB
 if ($free -lt 20) { Stop-Install ("Only {0:N0} GB free on {1}; tapwatch needs about 20 GB." -f $free, $env:SystemDrive) }
 Note "Windows build $build, virtualization on, $([int]$free) GB free"
+if ($Branch -ne "main") { Warn "Installing the '$Branch' branch (a test version), from this folder's name." }
 $route = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1
 $gateway = if ($route) { $route.NextHop } else { "" }
 $thisIp = if ($route) { (Get-NetIPAddress -InterfaceIndex $route.ifIndex -AddressFamily IPv4 | Select-Object -First 1).IPAddress } else { "" }
@@ -336,7 +339,7 @@ if ($discordUrl) { $answersJson.discord_url = $discordUrl }
 if ($typesafeKey) { $answersJson.typesafe_key = $typesafeKey }
 if ($anthropicKey) { $answersJson.anthropic_key = $anthropicKey }
 $vars = @{ TW_ANSWERS = ($answersJson | ConvertTo-Json -Compress); TW_IFACE = $iface; TW_SYSLOG = $(if ($syslog) { "yes" } else { "no" }) }
-Invoke-Linux $linuxUser @("app", $RepoUrl) $vars
+Invoke-Linux $linuxUser @("app", $RepoUrl, $Branch) $vars
 $discordUrl, $typesafeKey, $anthropicKey, $vars, $answersJson = "", "", "", $null, $null
 
 # ------------------------------------------------------------------ 7. keep running; agent; router

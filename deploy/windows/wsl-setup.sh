@@ -9,7 +9,7 @@
 #
 #   wsl-setup.sh root <user>            as root: account, systemd, packages, docker group (then: wsl --shutdown)
 #   wsl-setup.sh linger <user>          as root: keep the user's services running with nobody signed in
-#   wsl-setup.sh app <repo-url>         as the user: tapwatch, init, lists, services
+#   wsl-setup.sh app <repo-url> [branch] as the user: tapwatch (that branch, default main), init, lists, services
 #   wsl-setup.sh doctor                 as the user: the final check and a test alert
 #   wsl-setup.sh ntfy-url               as the user: print the ntfy address (the installer shows it after its log closes)
 # Every stage checks what is already done, so the installer can be run again.
@@ -51,17 +51,28 @@ linger)
 
 app)
     repo=${2:?repo url}
+    branch=${3:-main}
+    git check-ref-format --branch "$branch" >/dev/null 2>&1 && [[ "$branch" != -* ]] \
+        || { echo "not a branch name: $branch (rename the folder to tapwatch-main)" >&2; exit 2; }
     cd ~
     # A non-interactive wsl.exe call has no login session; point systemctl --user at the user's manager,
     # which linger started.
     export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
     export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
+    # The same branch as the ZIP the installer came from: a ZIP of one branch with the code of another fails
+    # (a dev ZIP's installer passed `init --answers` to main's tapwatch, which didn't have it yet).
     if [ -d tapwatch/.git ]; then
-        say "Updating tapwatch"
-        git -C tapwatch pull -q --ff-only
+        say "Updating tapwatch ($branch)"
+        git -C tapwatch fetch -q origin "$branch"
+        if git -C tapwatch rev-parse --verify -q "refs/heads/$branch" >/dev/null; then
+            git -C tapwatch checkout -q "$branch"
+        else
+            git -C tapwatch checkout -q -b "$branch" "origin/$branch"
+        fi
+        git -C tapwatch merge -q --ff-only "origin/$branch"
     else
-        say "Downloading tapwatch"
-        git clone -q "$repo" tapwatch
+        say "Downloading tapwatch ($branch)"
+        git clone -q -b "$branch" "$repo" tapwatch
     fi
     cd tapwatch
     [ -x .venv/bin/python ] || python3 -m venv .venv
