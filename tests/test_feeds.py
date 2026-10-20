@@ -1,11 +1,32 @@
 """Public reference lists: download, atomic writes, ASN lookup, config defaults."""
 
 import gzip
+import hashlib
 import io
 import tarfile
 import zipfile
 
+import pytest
+
 from tapwatch import config, feeds
+
+# The AdFection list's shape: indicator<TAB>tier<TAB>confidence<TAB>source, '#' comments.
+IOC_LIST = ("# as-of: 2026-10-18\n"
+            "c2.example\tcc\tprimary\tcitizenlab\n"
+            "ads.example\tdelivery\tprimary\tcitizenlab\n"
+            "adtimizer.co\tdelivery\tprimary\tcitizenlab\n"
+            "old.example\thistorical\tsecondary\teset\n"
+            "198.51.100.66\tcandiru-ip\tprimary\trecordedfuture\n"
+            "10.0.0.5\tcandiru-ip\tprimary\tbad-row\n"
+            "localhost\tcc\tprimary\tbad-row\n"
+            + "ab" * 32 + "\tsample\tprimary\tmsft\n").encode()
+
+
+@pytest.fixture(autouse=True)
+def pinned_ioc_list(monkeypatch):
+    """Pin the IOC feed to the fixture above, the way feeds.IOC_FEEDS pins the real release."""
+    monkeypatch.setattr(feeds, "IOC_FEEDS", {"iocs-adfection.tsv": ("https://iocs.example/adfection_iocs.txt",
+                                                                   hashlib.sha256(IOC_LIST).hexdigest())})
 
 
 def ut1_archive(cat, domains):
@@ -20,6 +41,8 @@ def ut1_archive(cat, domains):
 
 
 def fake_fetch(url):
+    if url.startswith("https://iocs.example/"):
+        return IOC_LIST
     if "ut-capitole" in url:
         cat = url.rsplit("/", 1)[1].removesuffix(".tar.gz")
         return ut1_archive(cat, [f"{cat}.example", f"two.{cat}.example"])
@@ -136,3 +159,28 @@ def test_categories_load_and_match_by_suffix(tmp_path):
     finally:
         categories.set_categories({})
     assert config.with_feeds({"feeds_dir": str(tmp_path)})["categories_file"] == str(f)
+
+
+def test_the_ioc_list_is_written_only_when_it_matches_the_pinned_checksum(tmp_path):
+    report = feeds.update(str(tmp_path), fetch=fake_fetch)
+    assert report["iocs-adfection.tsv"] == "ok, 8 indicators"
+    (tmp_path / "iocs-adfection.tsv").write_bytes(b"c2.example\tcc\n")
+
+    def tampered(url):
+        return IOC_LIST + b"google.com\tcc\tprimary\tx\n" if url.startswith("https://iocs.") else fake_fetch(url)
+
+    report = feeds.update(str(tmp_path), fetch=tampered)
+    assert report["iocs-adfection.tsv"].startswith("failed: checksum")
+    assert (tmp_path / "iocs-adfection.tsv").read_bytes() == b"c2.example\tcc\n"  # the old list stays
+
+
+def test_iocs_reads_your_list_and_the_tiered_feed(tmp_path):
+    feeds.update(str(tmp_path), fetch=fake_fetch)
+    (tmp_path / "mine.txt").write_text("bad.example  # from a vendor report\n203.0.113.9\n10.0.0.7\n")
+    cfg = config.with_feeds({"feeds_dir": str(tmp_path), "ioc_file": str(tmp_path / "mine.txt")})
+    ips, domains, labels = config.iocs(cfg)
+    assert ips == {"203.0.113.9", "10.0.0.7", "198.51.100.66"}  # your own LAN entry is kept; the feed's is not
+    assert domains == {"bad.example", "c2.example", "ads.example", "old.example"}  # no hash, no dotless name, no bare adtimizer.co
+    assert labels["c2.example"] == {"list": "AdFection / Candiru", "tier": "cc", "confidence": "primary",
+                                    "source": "citizenlab"}
+    assert labels["198.51.100.66"]["tier"] == "candiru-ip" and "bad.example" not in labels
