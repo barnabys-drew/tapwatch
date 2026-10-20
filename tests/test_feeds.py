@@ -40,7 +40,14 @@ def ut1_archive(cat, domains):
     return buf.getvalue()
 
 
+KEV = (b'{"catalogVersion": "2026.10.20", "count": 1, "vulnerabilities": [{"cveID": "CVE-2026-0001", '
+       b'"vendorProject": "Google", "product": "Chromium V8", "dateAdded": "2026-10-01", '
+       b'"knownRansomwareCampaignUse": "Unknown"}]}')
+
+
 def fake_fetch(url):
+    if "cisa.gov" in url:
+        return KEV
     if url.startswith("https://iocs.example/"):
         return IOC_LIST
     if "ut-capitole" in url:

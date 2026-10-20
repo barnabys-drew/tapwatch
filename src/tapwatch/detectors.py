@@ -2494,7 +2494,8 @@ class FeedSilence(Detector):
     over 0.1 min at the 99.9th percentile (the one long gap, 34 min, was the reboot). The Windows socket
     query ran every 1.1 min until it stopped, Sysmon every 1.3, the 5-minute snapshots within 5.4; WSL's eBPF
     connections idle up to 16 min at night and its 1-minute socket history up to 8. Inventory queries (hourly
-    to daily) are too sparse to watch and are not expected. The router syslog's kept rows are too (178 in two
+    to daily, including the daily `software_*` and `os_version` snapshots of #224) are too sparse to watch and
+    are not expected. The router syslog's kept rows are too (178 in two
     days), so the listener writes a `stats` row each 10 minutes it heard the router, and R22 watches that once
     it has seen one (the feed is armed, and stays armed across restarts): 30 minutes, severity 3. Measured
     2026-10-17: the router's syslog target changed and nothing arrived for 18.6 h without a case.

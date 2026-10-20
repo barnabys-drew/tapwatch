@@ -12,6 +12,7 @@ import sqlite3
 import time
 from dataclasses import asdict
 
+from . import inventory
 from .detectors import base_domain, suffix_match
 from .models import Case, Route, Verdict, device_id, main_indicator
 
@@ -80,6 +81,23 @@ CREATE TABLE IF NOT EXISTS suppressions (
     hits INTEGER NOT NULL DEFAULT 0,
     last_hit_ts REAL
 );
+CREATE TABLE IF NOT EXISTS software (     -- each agent's latest software snapshot (#224), replaced on each one
+    agent TEXT NOT NULL,        -- osquery hostIdentifier: the WSL distro and the Windows host are two agents
+    kind TEXT NOT NULL,         -- windows | deb | rpm | brew
+    name TEXT NOT NULL,
+    version TEXT NOT NULL,
+    source TEXT NOT NULL,       -- deb/rpm source package (what OSV names); '' for Windows
+    product TEXT NOT NULL,      -- inventory.WINDOWS_PRODUCTS key, '' when not one the vulnerability check knows
+    seen_ts REAL NOT NULL,
+    PRIMARY KEY (agent, kind, name, version)
+);
+CREATE TABLE IF NOT EXISTS agents (       -- what each agent says it runs (os_version), for the ecosystem
+    agent TEXT PRIMARY KEY,
+    os_name TEXT NOT NULL,
+    os_version TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    seen_ts REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS notes_case ON notes(case_id);
 CREATE INDEX IF NOT EXISTS audit_case ON audit(case_id);
 """
@@ -145,6 +163,49 @@ class Store:
                 self.db.execute("UPDATE cases SET disposition=? WHERE feedback=? AND disposition IS NULL",
                                 (disposition, label))
             self.db.commit()
+
+    # ------------------------------------------------------- software inventory (#224)
+
+    def replace_software(self, agent: str, kind: str, rows: list[dict], ts: float) -> int:
+        """One agent's snapshot of one kind replaces its previous one (a snapshot is the full list). An empty
+        snapshot is ignored: osquery returns no rows when the table read failed, which is not 'uninstalled all'."""
+        if not agent or not rows:
+            return 0
+        with self.db:
+            self.db.execute("DELETE FROM software WHERE agent=? AND kind=?", (agent, kind))
+            self.db.executemany("INSERT OR REPLACE INTO software VALUES (?,?,?,?,?,?,?)",
+                                [(agent, kind, r["name"], r["version"], r["source"], r["product"], ts) for r in rows])
+        return len(rows)
+
+    def set_agent_os(self, agent: str, row: dict, ts: float) -> None:
+        if not agent:
+            return
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO agents VALUES (?,?,?,?,?)",
+                            (agent, str(row.get("name") or ""), str(row.get("version") or ""),
+                             str(row.get("platform") or ""), ts))
+
+    def agents(self) -> dict[str, dict]:
+        return {r["agent"]: dict(r) for r in self.db.execute("SELECT * FROM agents")}
+
+    def software(self, agent: str | None = None) -> list[sqlite3.Row]:
+        q, args = "SELECT * FROM software", ()
+        if agent:
+            q, args = q + " WHERE agent=?", (agent,)
+        return self.db.execute(q + " ORDER BY agent, kind, name", args).fetchall()
+
+    def ecosystems(self) -> dict[str, set[str]]:
+        """Ecosystem -> the source packages installed in it, across agents: what update-feeds fetches for."""
+        agents = self.agents()
+        out: dict[str, set[str]] = {}
+        for r in self.db.execute("SELECT agent, kind, name, source, product FROM software"):
+            os_row = agents.get(r["agent"])
+            eco = inventory.ecosystem(r["kind"], {"name": os_row["os_name"], "version": os_row["os_version"]}
+                                      if os_row else None)
+            key = r["product"] if eco == "windows" else (r["source"] or r["name"])
+            if eco and key:   # a Windows program no product maps has nothing to fetch for
+                out.setdefault(eco, set()).add(key)
+        return out
 
     # ------------------------------------------------------- detector state
 
