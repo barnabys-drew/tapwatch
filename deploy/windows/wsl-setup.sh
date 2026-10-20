@@ -11,6 +11,7 @@
 #   wsl-setup.sh linger <user>          as root: keep the user's services running with nobody signed in
 #   wsl-setup.sh app <repo-url> [branch] as the user: tapwatch (that branch, default main), init, lists, services
 #   wsl-setup.sh doctor                 as the user: the final check and a test alert
+#   wsl-setup.sh test-alert             as the user: send a test alert (after subscribing in the ntfy app)
 #   wsl-setup.sh ntfy-url               as the user: print the ntfy address (the installer shows it after its log closes)
 # Every stage checks what is already done, so the installer can be run again.
 set -euo pipefail
@@ -98,6 +99,11 @@ app)
     .venv/bin/tapwatch "${args[@]}"
     # `enable --now` leaves already-running units alone, so on a re-run (an update) they'd keep the old code.
     systemctl --user restart 'tapwatch-*.service'
+    ;;
+
+test-alert)
+    cd ~/tapwatch
+    .venv/bin/tapwatch test-alert 2>&1 || true
     ;;
 
 ntfy-url)

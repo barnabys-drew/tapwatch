@@ -111,7 +111,7 @@ installer's questions, and `tapwatch doctor` reports every problem the #6 run hi
 
 | Issue | What | Status |
 |---|---|---|
-| [#175](https://github.com/barnabys-drew/tapwatch/issues/175) | Windows one-step installer (`install-windows.cmd`) | **built** 2026-10-18, to run on a clean machine |
+| [#175](https://github.com/barnabys-drew/tapwatch/issues/175) | Windows one-step installer (`install-windows.cmd`) | **passed** 2026-10-19 on a fresh Windows 11 VM: ZIP to "0 problems" and a test alert via ntfy, all 5 services up, no Ubuntu first-run prompt, no secret in the log. The runs found four bugs, fixed in [#184](https://github.com/barnabys-drew/tapwatch/pull/184), [#185](https://github.com/barnabys-drew/tapwatch/pull/185) and the polish after |
 | [#176](https://github.com/barnabys-drew/tapwatch/issues/176) | `tapwatch doctor`: every part of the install, with fixes | **done** 2026-10-18 ([#181](https://github.com/barnabys-drew/tapwatch/pull/181)); all 13 checks ok on the live box |
 | [#177](https://github.com/barnabys-drew/tapwatch/issues/177) | `init`: answers from the installer, the optional AI keys | **done** 2026-10-18 ([#180](https://github.com/barnabys-drew/tapwatch/pull/180)) |
 | [#178](https://github.com/barnabys-drew/tapwatch/issues/178) | Plain-English guide for a UniFi office | **written** 2026-10-18 (docs/setup/office-unifi.md), to follow step by step |
