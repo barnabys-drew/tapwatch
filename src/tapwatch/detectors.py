@@ -2458,12 +2458,14 @@ class FeedSilence(Detector):
     person noticed. Each expected feed has a longest allowed silence and a severity; `tick` (once a minute)
     raises a case when feeds go silent, one per agent or tap per tick, and a row arriving again re-arms them.
     Silence is the time since the feed's last row *arrived* (not the row's own timestamp: the Windows agent and
-    WSL keep different clocks, and a backlog catch-up delivers old timestamps live) or since tapwatch's own
-    start, whichever is later. A restart therefore gives every feed a full grace period, and a feed already
-    dead at start is still reported once the period passes. When the monitor itself was away (the box slept:
+    WSL keep different clocks, and a backlog catch-up delivers old timestamps live), or since tapwatch's own
+    start for a feed not seen yet. When the monitor itself was away (the box slept, or tapwatch was stopped:
     two ticks more than two minutes apart) every clock shifts forward by the time away, so a feed nine minutes
-    silent before the sleep is nine minutes silent after it, and waking does not fire every feed at once. A
-    reboot is a restart, which this rule therefore cannot report: tapwatch restarts with the box.
+    silent before is nine minutes silent after, and waking does not fire every feed at once. The last-seen
+    times, the last tick and the feeds already reported are saved with the learned state, so a restart is
+    time away too: measured 2026-10-20, the Linux connection feed went silent at 06:03, the alerter restarted
+    at 06:40 for a deploy, and the reset gave the dead feed a fresh hour. A reboot is time away like any other,
+    which this rule therefore cannot report: tapwatch restarts with the box.
 
     Limits, from the gaps measured over 2026-10-15..17 (two days): Zeek's conn and dns rows never paused
     over 0.1 min at the 99.9th percentile (the one long gap, 34 min, was the reboot). The Windows socket
@@ -2478,7 +2480,7 @@ class FeedSilence(Detector):
     """
 
     name = "feed_silence"
-    PERSIST: ClassVar[tuple[str, ...]] = ("armed",)
+    PERSIST: ClassVar[tuple[str, ...]] = ("armed", "last", "silent", "_last_tick")
     AWAY = 120  # seconds between ticks beyond which the monitor itself was asleep or stopped
     ROUTER: ClassVar[tuple[int, int]] = (1800, 3)   # the router syslog's heartbeat, once armed
     ZEEK: ClassVar[dict[str, tuple[int, int]]] = {"conn": (1200, 4), "dns": (1200, 4)}
@@ -2537,13 +2539,14 @@ class FeedSilence(Detector):
     def tick(self, now: float) -> list[Case]:
         if self._last_tick is not None and now - self._last_tick > self.AWAY:
             shift = now - self._last_tick - 60  # the monitor was away (the box slept): the time away does not count
-            self.started += shift
+            if self.started <= self._last_tick:   # a restart already set `started` after the gap: leave it
+                self.started += shift
             for key in self.last:
                 self.last[key] += shift
         self._last_tick = now
         gone: dict[str, list[tuple]] = {}  # source tag -> (name, severity, since, never seen, limit, source words)
         for key, (limit, severity) in self.expected.items():
-            since = max(self.last.get(key, 0.0), self.started)
+            since = self.last.get(key, self.started)   # seen: its last row (shifted for time away); never: our start
             if key in self.silent or now - since < limit:
                 continue
             self.silent.add(key)

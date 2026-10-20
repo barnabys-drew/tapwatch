@@ -193,7 +193,9 @@ class Pipeline:
             return []
         mine = case.facts.get("source") == "endpoint"
         partners = []
-        for r in self.store.nearby(case, CORRELATE_WINDOW):
+        partners_of = hostrules.PAIRS.get(case.detector, frozenset()) if mine \
+            else {h for h, nets in hostrules.PAIRS.items() if case.detector in nets}
+        for r in self.store.nearby(case, CORRELATE_WINDOW, set(partners_of)):
             # The side and the pairing come from the rule names alone (no facts to parse): a host rule is one of
             # hostrules.NAMES, and a monitor case (R22) is in no host rule's PAIRS.
             if (r["detector"] in hostrules.NAMES) == mine:
