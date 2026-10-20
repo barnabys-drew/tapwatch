@@ -183,8 +183,11 @@ true positives auto-closed.
 
 | Issue | What | Status |
 |---|---|---|
-| [#52](https://github.com/barnabys-drew/tapwatch/issues/52) | Long-horizon behavioral detections: 30 days of per-device history | planned |
-| [#37](https://github.com/barnabys-drew/tapwatch/issues/37) | Learned judge: automate tier-1 triage from the owner's closed cases | planned |
+| [#52](https://github.com/barnabys-drew/tapwatch/issues/52) | Long-horizon behavioral detections: 30 days of per-device history | designed 2026-10-20: daily summaries (#193), then R30–R35 (#194–#199) |
+| [#37](https://github.com/barnabys-drew/tapwatch/issues/37) | Learned judge: automate tier-1 triage from the owner's closed cases | designed 2026-10-20: training set, guardrails, shadow judge, scorecard, auto-close, drift back-off (#200–#205) |
+
+Each design issue is a sub-issue of its parent, with what it reads, the logic, expected false positives, a safe
+test and what it depends on. Open question on #204: the default keeps alert-routed cases out of auto-close.
 
 ## v0.5: home XDR ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/5))
 
@@ -195,12 +198,15 @@ shown before it runs, recorded, and undoable.
 
 | Issue | What | Status |
 |---|---|---|
-| [#53](https://github.com/barnabys-drew/tapwatch/issues/53) | Email: correlate phishing in the mailbox with clicks on the network (read-only, no mail gateway) | planned |
-| [#54](https://github.com/barnabys-drew/tapwatch/issues/54) | DNS resolver logs and blocking (AdGuard Home or Pi-hole), for devices that can't run agents | planned |
-| [#55](https://github.com/barnabys-drew/tapwatch/issues/55) | Response actions: one-tap quarantine and block, always owner-approved | planned |
-| [#56](https://github.com/barnabys-drew/tapwatch/issues/56) | Canary tokens: fake credentials and files that alert when touched | planned |
-| [#57](https://github.com/barnabys-drew/tapwatch/issues/57) | Identity signals: account sign-ins from new devices or places | planned |
-| [#58](https://github.com/barnabys-drew/tapwatch/issues/58) | Vulnerable software: installed programs checked against known vulnerabilities | planned |
+| [#53](https://github.com/barnabys-drew/tapwatch/issues/53) | Email: correlate phishing in the mailbox with clicks on the network (read-only, no mail gateway) | designed 2026-10-20 (#206–#208) |
+| [#54](https://github.com/barnabys-drew/tapwatch/issues/54) | DNS resolver logs and blocking (AdGuard Home or Pi-hole), for devices that can't run agents | designed 2026-10-20 (#209–#213) |
+| [#55](https://github.com/barnabys-drew/tapwatch/issues/55) | Response actions: one-tap quarantine and block, always owner-approved | designed 2026-10-20 (#214–#217) |
+| [#56](https://github.com/barnabys-drew/tapwatch/issues/56) | Canary tokens: fake credentials and files that alert when touched | designed 2026-10-20 (#218–#220) |
+| [#57](https://github.com/barnabys-drew/tapwatch/issues/57) | Identity signals: account sign-ins from new devices or places | designed 2026-10-20 (#221–#223) |
+| [#58](https://github.com/barnabys-drew/tapwatch/issues/58) | Vulnerable software: installed programs checked against known vulnerabilities | designed 2026-10-20 (#224–#227) |
+
+The v0.5 designs are sub-issues of each row above. Rule numbers: R30–R35 are v0.4, R40–R48 v0.5, and R36–R39
+are kept for v0.3's remaining rules (#39, #167).
 
 ## Not planned
 
