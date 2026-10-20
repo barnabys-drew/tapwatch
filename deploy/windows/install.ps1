@@ -96,7 +96,7 @@ function Distro-Installed {
 }
 
 # Every Linux command runs with `wsl.exe -e`, never `--`: `--` hands the line to the Linux shell, which ate the
-# backslashes of a Windows path (C:\Users\... became C:Users...) and would split a path with a space in it.
+# backslashes of a Windows path (C:\x\y became C:xy) and would split a path with a space in it.
 
 # Linux steps: wsl-setup.sh from this folder, as root or as the tapwatch user. Values in $vars reach the
 # script as environment variables through WSLENV, so they never appear on a command line. Its output goes
