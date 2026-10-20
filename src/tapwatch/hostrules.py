@@ -1244,6 +1244,16 @@ def _agent_facts(c: dict) -> dict:
             "agent_unattended": attended == "0" or ssh, "via_ssh": ssh}
 
 
+# R37/R38: programs that only *carry* another command line (`bash -c "7z a -p..."`, `timeout 40 powershell -Command
+# ...`, `sudo ngrok ...`): the tool's own start has the same signal, so these are skipped. Measured 2026-10-20: the
+# R38 safe test raised four cases, for bash, timeout, powershell.exe and 7z.exe.
+WRAPPERS = frozenset({"bash", "sh", "dash", "zsh", "fish", "ksh", "sudo", "doas", "env", "timeout", "nohup", "nice",
+                      "setsid", "xargs", "script", "strace", "watch", "su", "runuser", "flock", "stdbuf",
+                      "cmd.exe", "powershell.exe", "pwsh.exe", "wsl.exe", "wslhost.exe", "conhost.exe", "cscript.exe",
+                      "wscript.exe", "runas.exe"})
+SIGNAL_CHAIN = 60   # seconds: the same signal and destination again is the same command (a wrapper we don't know)
+
+
 def _program_and_folder(query: str, c: dict) -> tuple[str, str]:
     path = str(c.get("path") or "")
     if query == SYSMON:
@@ -1263,11 +1273,20 @@ class TunnelOpened(HostDetector):
     name = "host_tunnel"
     QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
 
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7):
+        super().__init__(state, reported_days)
+        self.chain: dict[tuple, float] = {}
+
+    def _chained(self, key: tuple, ts: float) -> bool:
+        return _chained(self.chain, key, ts)
+
     def row(self, query: str, c: dict, ts: float) -> list[Case]:
         flag = "cmd_tunnel" if query == SYSMON else "lcmd_tunnel"
         if str(c.get(flag, "0")) != "1" or (query == SYSMON and str(c.get("eventid")) != "1"):
             return []
         prog, folder = _program_and_folder(query, c)
+        if prog in WRAPPERS or self._chained(("tunnel", prog, folder), ts):
+            return []
         agent = _agent_facts(c)
         must = folder in ("temp", "shared")
         severity = 5 if must else 3 if agent.get("agent_attended") else 4
@@ -1278,6 +1297,18 @@ class TunnelOpened(HostDetector):
 
 STAGING_LEARN_DAYS = 7   # the box's own backups and sync jobs are learned in the rule's first week
 USER_FOLDERS = {"documents", "desktop", "pictures", "onedrive"}
+
+
+def _chained(chain: dict[tuple, float], key: tuple, ts: float) -> bool:
+    """True when the same signal (and destination) was seen within SIGNAL_CHAIN seconds of the first one. A hit doesn't
+    move the window, so something restarting every 30 s can't keep a different start hidden."""
+    if ts - chain.get(key, -1e18) < SIGNAL_CHAIN:
+        return True
+    chain[key] = ts
+    if len(chain) > 200:
+        for k in [k for k, t in chain.items() if ts - t >= SIGNAL_CHAIN]:
+            del chain[k]
+    return False
 
 
 class FilesStaged(HostDetector):
@@ -1303,6 +1334,7 @@ class FilesStaged(HostDetector):
         self.learn = learn_days * DAY
         self.known: set[tuple] = set()      # (tool, destination) seen on this box
         self.since: float | None = None
+        self.chain: dict[tuple, float] = {}
 
     def row(self, query: str, c: dict, ts: float) -> list[Case]:
         if query == SYSMON and str(c.get("eventid")) != "1":
@@ -1311,6 +1343,8 @@ class FilesStaged(HostDetector):
             self.since = ts
         pre = "cmd_" if query == SYSMON else "lcmd_"
         prog, folder = _program_and_folder(query, c)
+        if prog in WRAPPERS:
+            return []
         agent = _agent_facts(c)
         if str(c.get(pre + "sync", "0")) == "1":
             # No destination on the command line: a restic repository from the environment, or a local one (never
@@ -1318,7 +1352,7 @@ class FilesStaged(HostDetector):
             dest = str(c.get("sync_dest") or "local or from the environment").lower()[:120]
             tool = prog.removesuffix(".exe").removesuffix(".com")
             key = (tool, dest)
-            if key in self.known:
+            if key in self.known or _chained(self.chain, ("sync", dest), ts):
                 return []
             self.known.add(key)
             if ts - self.since < self.learn:
@@ -1328,6 +1362,8 @@ class FilesStaged(HostDetector):
                              ("sync",) + key)
         if str(c.get(pre + "archive_pw", "0")) == "1":
             of = str(c.get("archive_of") or "").lower()
+            if _chained(self.chain, ("archive", of), ts):
+                return []
             user = of in USER_FOLDERS
             facts = {"program": prog[:80], "archive_of": of or None, "folder": folder, **agent}
             return self.emit(ts, "A password-protected archive was made" + (f" of {of.title()}" if user else ""),
@@ -1386,11 +1422,41 @@ class FileChanged(HostDetector):
     def _case(self, ts: float, facts: dict, level: int, indicator: str, key: tuple) -> list[Case]:
         severity = level if self.alert else 3
         facts["would_alert"] = level >= 4
+        if not self.alert:
+            facts["max_route"] = "digest"   # until baselined, a pairing with an unrelated case can't lift it either
         if severity >= 4:   # emit's once-a-day applies below alert level only; a file is one case a day either way
             if still_reported(self.reported, key, ts, self.ttl):
                 return []
             self.reported[key] = ts
         return self.emit(ts, f"A {facts['kind']} changed on the PC", facts, severity, indicator, key)
+
+
+# Host <-> network correlation (pipeline.correlate): which network rules tell the same story as each host rule, so a
+# pairing within five minutes means something. Measured 2026-10-20: with any pairing allowed, every R36-R39 safe test
+# was lifted to an alert by an unrelated dns_bypass digest item three minutes earlier (this PC has network digest items
+# most hours). Both sides are filtered with this one table. A host rule not listed pairs with nothing.
+# The program reached somewhere: what a first contact looks like. Not dns_bypass: none of the true pairs measured on
+# 2026-10-17 involved it, and it was the coincidence that lifted the 2026-10-20 tests. The IDS verdicts (Suricata,
+# the router's IPS) are rare and strong, so they pair.
+CONTACT = frozenset({"new_domain", "beaconing", "dns_anomaly", "tls_odd", "takeover", "ioc_match", "upload_spike",
+                     "odd_port", "ids_alert", "udm_ips"})
+PAIRS: dict[str, frozenset[str]] = {
+    **dict.fromkeys(("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig",
+                     "host_linux_connect", "host_linux_cmd"), CONTACT),
+    "host_persist": frozenset({"beaconing", "takeover", "ioc_match"}),
+    "host_destructive": frozenset({"upload_spike", "takeover", "ioc_match"}),
+    "host_recon": frozenset({"scan", "takeover", "ioc_match", "new_domain"}),
+    "host_extension": frozenset({"new_domain", "takeover", "ioc_match", "upload_spike"}),
+    "host_lsass": frozenset({"takeover", "ioc_match", "upload_spike", "new_domain"}),
+    "host_rmm": frozenset({"takeover"}),                     # R16 sees the same tool's servers
+    "host_tunnel": frozenset({"takeover"}),                  # R16's tunnel services
+    "host_staging": frozenset({"upload_spike", "takeover"}), # the upload itself, or R16's file-drop sites
+    "host_fim": frozenset(),                                 # a file change has no network side
+}
+
+
+def pairs_with(host_detector: str, network_detector: str) -> bool:
+    return network_detector in PAIRS.get(host_detector, frozenset())
 
 
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:

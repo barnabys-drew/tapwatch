@@ -1112,3 +1112,25 @@ def test_the_agent_logs_file_names_not_paths():
     assert "AS file_name" in q and "TargetFilename') AS" not in q
     fc = _conf_query("file_changes")
     assert "AS file FROM file_events" in fc and "sed[A-Za-z0-9]{6}" in fc
+
+
+def test_live_run_fixes_wrappers_chains_and_lifts():
+    """2026-10-20 live safe tests: one 7z run raised four cases (bash, timeout, powershell.exe, 7z.exe), and every test
+    case was lifted to an alert by an unrelated dns_bypass digest item three minutes earlier."""
+    det = FilesStaged(st())
+    rows = [lexec(T0, "/usr/bin/bash", archive_pw=1), lexec(T0, "/usr/bin/timeout", archive_pw=1),
+            start(T0 + 1, r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", EXPLORER, cmd_archive_pw="1"),
+            start(T0 + 2, r"C:\Program Files\Vendor\7z.exe", EXPLORER, cmd_archive_pw="1"),
+            start(T0 + 3, r"C:\Program Files\Other\7z.exe", EXPLORER, cmd_archive_pw="1")]
+    (c,) = run(det, *rows)
+    assert c.facts["program"] == "7z.exe"
+    assert run(det, start(T0 + 120, r"C:\Program Files\Vendor\7z.exe", EXPLORER, cmd_archive_pw="1")) == []  # digest: once a week
+    tun = TunnelOpened(st())
+    assert run(tun, lexec(T0, "/usr/bin/bash", tunnel=1)) == []
+    assert len(run(tun, lexec(T0, "/usr/bin/ssh", tunnel=1), lexec(T0 + 5, "/usr/bin/ssh", tunnel=1))) == 1
+    # a different tunnel program in the same minute is not hidden by the first (review of #240)
+    temp = start(T0 + 10, r"C:\Users\<user>\AppData\Local\Temp\ngrok.exe", EXPLORER, cmd_tunnel="1")
+    assert run(tun, temp)[0].must_alert
+    (f,) = run(FileChanged(st()), fim(T0, "~/.bashrc"))
+    assert f.facts["max_route"] == "digest"
+    assert "max_route" not in run(FileChanged(st(), alert=True), fim(T0, "~/.bashrc"))[0].facts

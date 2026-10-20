@@ -26,7 +26,7 @@ TUNNEL = [
     P + r"devtunnel" + E + r"\s+host\b",
     P + r"tailscale" + E + r"\s+funnel\b",
     P + r"ssh" + E + r"\s+(?:[^|]*\s)?-[a-z]*r\s*[0-9]",
-    P + r"lt" + E + r"\s+(?:--port|-p)\b",
+    P + r"lt(?:\.js)?" + E + r"\s+(?:--port|-p)\b",   # npm's lt; on Windows the work runs as node.exe ...\lt.js
     P + r"bore" + E + r"\s+local\b",
 ]
 SYNC = [
@@ -61,7 +61,7 @@ ARCHIVE_PW = [
 ARCHIVE_OF = r"[\\/](documents|desktop|pictures|onedrive)\b"
 # The LIKE gates: words every matching line must contain. Distinctive ones only (not "lt", "s3" or "-r" alone).
 GATE_TUNNEL = ("%ngrok%", "%cloudflared%", "%tunnel%", "%funnel%", "%ssh%", "lt %", "%/lt %", "%\\lt %", "%/lt\"%",
-               "%\\lt\"%", "%lt.cmd%", "%bore%")
+               "%\\lt\"%", "%lt.cmd%", "%lt.js%", "%bore%")
 GATE_SYNC = ("%rclone%", "%restic%", "%aws%", "%gsutil%", "%gcloud%", "%azcopy%", "%storage blob%", "%mega%",
              "%winscp%")
 GATE_ARCHIVE = ("%7z%", "%rar%", "%zip%")
@@ -88,6 +88,7 @@ CASES = [  # (command line, tunnel?, sync?, archive?, expected dest or None)
     ("restic -r rest:https://example.net:8000/repo backup /x", 0, 1, 0, "example.net"),
     ('winscp.com /command "open sftp://someone:p/w@example.org/" "put x"', 0, 1, 0, "example.org"),
     ("c:\\users\\<user>\\appdata\\roaming\\npm\\lt.cmd --port 80", 1, 0, 0, None),
+    ('"c:\\program files\\nodejs\\node.exe" c:\\users\\<user>\\appdata\\roaming\\npm\\node_modules\\localtunnel\\bin\\lt.js --port 80', 1, 0, 0, None),
     ('"/usr/bin/ssh" -R 9:localhost:9 test@192.0.2.1', 1, 0, 0, None),
     ('"c:\\windows\\system32\\openssh\\ssh.exe" -R 9:localhost:9 test@192.0.2.1', 1, 0, 0, None),
     ('"c:\\program files\\rclone\\rclone.exe" sync "c:\\users\\<user>\\desktop" gdrive:/desk', 0, 1, 0, "gdrive"),
