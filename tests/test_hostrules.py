@@ -1232,3 +1232,21 @@ def test_noise_cut_windows_scheduled_lolbin_and_a_two_adapter_pc():
     assert state.host == PC
     state.update_addresses([{"address": "192.168.50.81"}], T0 + 2 * 3600)  # the configured one gone for an hour: move
     assert state.host == "192.168.50.81"
+
+
+
+def test_noise_cut_review_dll_location_keeps_the_alert_and_the_hold_covers_a_restart():
+    """Review of #250: a scheduled task (svchost) running rundll32 with a DLL in a user folder must still alert, and
+    Windows' own weekly digest item must not hide it; right after a start the first snapshot can't move the host."""
+    svc = r"C:\Windows\System32\svchost.exe"
+    rundll = r"C:\Windows\System32\rundll32.exe"
+    det = LolbinConnects(st())
+    (own,) = run(det, start(T0, rundll, svc, guid="{d1}"), connect(T0 + 5, rundll, guid="{d1}"))
+    (bad,) = run(det, start(T0 + 60, rundll, svc, guid="{d2}", cmd_dllpath="1"), connect(T0 + 65, rundll, guid="{d2}"))
+    assert (own.base_severity, bad.base_severity, bad.facts["windows_service"]) == (3, 4, False)
+    assert "a DLL from outside the system folders" in bad.facts["unusual"]
+    fresh = EndpointState(PC)
+    fresh.update_addresses([{"address": "192.168.50.81"}], T0)              # first snapshot after a start: other adapter
+    assert fresh.host == PC
+    q = _conf_query("sysmon_events")
+    assert "AS cmd_dllpath" in q

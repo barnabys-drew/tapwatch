@@ -101,8 +101,8 @@ BATCH_GRACE = 120            # seconds after a query run before its rows are rea
 DUMP_MIN = 5                 # adds with no removes in one batch: osquery's first run of the query, an inventory, not a change
 KNOWN_MAX = 5000             # entries remembered per PC (a PC has a few hundred); older ones are forgotten first
 LAN_PREFIXES = ("192.168.", "10.")   # where home LANs live; 172.16/12 is where Hyper-V and WSL put their switches
-PC_UNKNOWN = "this PC"
-CONFIGURED_HOLD = 3600   # s: the configured address holds while a snapshot listed it this recently               # the case's host until an agent snapshot or host_context.host names the address
+PC_UNKNOWN = "this PC"               # the case's host until an agent snapshot or host_context.host names the address
+CONFIGURED_HOLD = 3600   # s: the configured address holds while a snapshot listed it this recently
 
 
 def folder_class(path: str) -> str:
@@ -195,7 +195,7 @@ class EndpointState:
         # no identity knew (#792-#794)
         self.lan_nets = {".".join(g.split(".")[:3]) for g in (gateways or ()) if g.count(".") == 3}
         self._routed = False   # once an address on a router's net was seen, a snapshot without one keeps it
-        self._configured_seen = -1e18   # when a snapshot last listed `host_context.host`
+        self._configured_seen: float | None = None   # when a snapshot last listed `host_context.host`; None: none yet
         self.starts: dict[str, Start] = {}
         self.latest = 0.0
         # Signatures arrive every 5 minutes per program path (process_signatures), connections every minute
@@ -212,6 +212,8 @@ class EndpointState:
         if self.configured and self.configured in addrs:
             self._host, self._configured_seen = self.configured, ts
             return
+        if self._configured_seen is None:
+            self._configured_seen = ts   # after a start, the first snapshot opens the hold (review of #250)
         if self.configured and self._host == self.configured and ts - self._configured_seen < CONFIGURED_HOLD:
             # Measured 2026-10-20: the PC has two adapters (two LAN addresses); a snapshot listing only the other
             # one moved the host, and the same events were filed twice under two keys (#948/#960, #949/#961). Keep
@@ -490,8 +492,9 @@ class LolbinConnects(HostDetector):
         severity = 5 if must else 3 if prog in LOLBIN_DEV_TOOLS or windows_own else 4
         facts = {"program": prog, "folder": folder_class(path), "port": _port(c.get("remote_port")),
                  "downloader": must, "windows_service": windows_own, **started}
+        # the downgrade is in the key: Windows' own weekly digest item can't hide a different run of the same tool
         return self.emit(ts, "Built-in Windows tool connected to the internet", facts, severity, prog,
-                         (self.state.host, prog), must_alert=must)
+                         (self.state.host, prog, windows_own), must_alert=must)
 
 
 class BadSignatureConnects(HostDetector):
