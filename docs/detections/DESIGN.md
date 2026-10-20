@@ -773,7 +773,9 @@ the same `HostDetector` base and `EndpointState`.
 - **Logic:** `hostrules.NewPersistence`. Rows are read per query run (same `unixTime`, two minutes' grace) so
   the run is judged as a batch: a key (entry name + what it runs) on both sides is a change, not a new entry; a
   run of five or more adds with no removes is osquery's first listing, an inventory; a key already in `known`
-  (persisted) or seen during warm-up is learned silently. What is left is scored by what the entry runs, with
+  (persisted) or seen during warm-up is learned silently, and so is a key seen in a `removed` row, so an
+  entry that drops out of one run and is listed again at a later one is not new (2026-10-20, #911–#924:
+  16 of WSL's package-owned `/etc/init.d` scripts did exactly that). What is left is scored by what the entry runs, with
   the script's folder when it runs one: a suspicious command line (encoded, download-and-run) or a temp,
   Downloads or shared folder → severity 4; a script, a shell or script host, a LOLBin, or a per-user folder →
   3; an installed program with none of those → learned, no case. Once per (PC, query, entry name with GUIDs,

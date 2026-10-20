@@ -880,6 +880,17 @@ def test_new_linux_listeners_only_from_shells_or_user_folders():
     assert tmp.facts["folder"] == "temp"
 
 
+def test_a_startup_item_removed_and_listed_again_is_not_new():
+    """#911-#924: osquery dropped WSL's /etc/init.d scripts for one run and listed them again at the next."""
+    cron = {"name": "cron", "path": "/etc/init.d/cron", "args": "", "source": "/etc/init.d", "status": "enabled"}
+    det = NewPersistence(st())
+    assert settle(det, persist(T0, "startup_items", "removed", **cron)) == []
+    assert settle(det, persist(T0 + 3600, "startup_items", **cron)) == []
+    # the same name back but running a script in /tmp is a different entry, and judged
+    (c,) = settle(det, persist(T0 + 7200, "startup_items", **dict(cron, path="/tmp/.c/cron.sh")))
+    assert c.facts["folder"] == "temp" and c.base_severity == 4
+
+
 def test_a_cryptominer_command_line_is_an_r28_case():
     (c,) = run(LinuxCommand(st()), lexec(T0, "/tmp/.x/kworker", miner=1))
     assert c.base_severity == 4 and c.facts["signals"] == ["a cryptocurrency miner"]

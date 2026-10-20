@@ -623,8 +623,8 @@ class NewPersistence(HostDetector):
     and 29 entries were genuinely new, of which 19 were Windows' own or an installed app's (per-user svchost
     services for a new logon session, Windows Update tasks, TrustedInstaller, a sandbox service's version bump).
     So: rows are read per query run (same `unixTime`), a key present on both sides of a run is a change, a run
-    of DUMP_MIN or more adds with no removes is an inventory, and a key seen before (`known`, persisted) or seen
-    during warmup is learned silently. What is left is scored by what the entry runs: a suspicious command line
+    of DUMP_MIN or more adds with no removes is an inventory, and a key seen before (`known`, persisted; a removed
+    row counts as seen) or seen during warmup is learned silently. What is left is scored by what the entry runs: a suspicious command line
     or a temp, Downloads or shared folder -> alert; a script, a shell or script host, a LOLBin, or a per-user
     folder -> digest (the measured 40 h replayed: six, the owner's two .vbs files in the Startup folder, OneDrive's
     three RunOnce entries that run cmd.exe, and its startup task under AppData); an installed program with none of
@@ -757,12 +757,14 @@ class NewPersistence(HostDetector):
         for bkey in [k for k, b in self.pending.items() if now - b["ts"] >= BATCH_GRACE]:
             query, b = bkey[0], self.pending.pop(bkey)
             gone = {self.key(query, c) for c in b["removed"]}
-            if query == "listening_ports":
-                # The query is old, so no first-run inventory comes with this rule: a dev server that is down at one
-                # hourly run and up at the next would look new every time. A listener seen stopping is learned, so
-                # its return is a restart (review of #169).
-                for k in gone:
-                    self.known[k] = b["ts"]
+            # An entry seen being removed existed, so its return at a later run is not new: learn it now. First for
+            # listeners (review of #169: a dev server down at one hourly run and up at the next). Then for every
+            # query, measured 2026-10-20 (#911-#924): osquery's Linux startup_items listed 16 of WSL's package-owned
+            # /etc/init.d scripts as removed at one run and added back at the next; they predated the sensor, so
+            # `known` lacked them and each became a case. The key holds what the entry runs, so one that comes
+            # back pointing somewhere else is still a new key and still judged.
+            for k in gone:
+                self.known[k] = b["ts"]
             new = [c for c in b["added"] if self.key(query, c) not in gone]
             inventory = b.get("first_run") or (len(new) >= DUMP_MIN and not b["removed"])
             for c in new:
