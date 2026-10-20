@@ -1248,7 +1248,8 @@ def _agent_facts(c: dict) -> dict:
 # ...`, `sudo ngrok ...`): the tool's own start has the same signal, so these are skipped. Measured 2026-10-20: the
 # R38 safe test raised four cases, for bash, timeout, powershell.exe and 7z.exe.
 WRAPPERS = frozenset({"bash", "sh", "dash", "zsh", "fish", "ksh", "sudo", "doas", "env", "timeout", "nohup", "nice",
-                      "setsid", "xargs", "script", "strace", "watch", "su", "runuser", "flock", "stdbuf",
+                      "setsid", "xargs", "script", "strace", "watch", "su", "runuser", "flock", "stdbuf", "time",
+                      "ionice", "chrt", "taskset", "unbuffer", "sudo.exe", "wt.exe",
                       "cmd.exe", "powershell.exe", "bash.exe", "sh.exe", "pwsh.exe", "wsl.exe", "wslhost.exe", "conhost.exe", "cscript.exe",
                       "wscript.exe", "runas.exe"})
 SIGNAL_CHAIN = 60   # seconds: the same program with the same signal again is one command (`sudo` runs it twice)
@@ -1287,11 +1288,15 @@ class TunnelOpened(HostDetector):
         if str(c.get(flag, "0")) != "1" or (query == SYSMON and str(c.get("eventid")) != "1"):
             return []
         prog, folder = _program_and_folder(query, c)
-        if _is_wrapper(prog, folder) or _chained(self.chain, ("tunnel", prog, folder), ts):
+        if _is_wrapper(prog, folder):
             return []
         agent = _agent_facts(c)
         must = folder in ("temp", "shared")
         severity = 5 if must else 3 if agent.get("agent_attended") else 4
+        if _chained(self.chain, ("tunnel", prog, folder, severity), ts):   # a louder start is never hidden by a quieter
+            return []
+        if prog in ("node", "node.exe"):
+            prog = "localtunnel"   # the only tunnel pattern node runs (lt.js): name the tool, so a suppression is narrow
         facts = {"program": prog[:80], "folder": folder, **agent}
         return self.emit(ts, "A tunnel into the PC was opened", facts, severity, prog[:80], (prog, folder),
                          must_alert=must)
@@ -1366,9 +1371,9 @@ class FilesStaged(HostDetector):
                              ("sync",) + key)
         if str(c.get(pre + "archive_pw", "0")) == "1":
             of = str(c.get("archive_of") or "").lower()
-            if _chained(self.chain, ("archive", prog, folder, of), ts):
-                return []
             user = of in USER_FOLDERS
+            if _chained(self.chain, ("archive", prog, folder, of, bool(agent.get("agent_attended"))), ts):
+                return []
             facts = {"program": prog[:80], "archive_of": of or None, "folder": folder, **agent}
             return self.emit(ts, "A password-protected archive was made" + (f" of {of.title()}" if user else ""),
                              facts, 4 if user and not agent.get("agent_attended") else 3, prog[:80],

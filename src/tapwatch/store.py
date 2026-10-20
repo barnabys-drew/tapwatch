@@ -186,20 +186,23 @@ class Store:
         self.db.commit()
         return cur.lastrowid
 
-    def nearby(self, case: Case, window: float) -> list[sqlite3.Row]:
-        """Cases first raised on the same device within `window` seconds of `case`, newest first, other keys only.
-        The device is its MAC when both sides know it (identity facts), else the address. The window is on a
-        case's first time: a long-running case's later repeats do not pair again. The limit covers a replay
-        flood (measured 2026-10-17: 337 host cases in one hour)."""
-        rows = self.db.execute("SELECT * FROM cases WHERE first_ts BETWEEN ? AND ? AND key != ? ORDER BY id DESC LIMIT 400",
-                               (case.ts - window, case.ts + window, case.key)).fetchall()
+    def nearby(self, case: Case, window: float, detectors: set[str] | None = None) -> list[sqlite3.Row]:
+        """Cases first raised on the same device within `window` seconds of `case`, newest first, other keys only,
+        and only from `detectors` when given. The device is its MAC when both sides know it (identity facts), else
+        the address. The window is on a case's first time: a long-running case's later repeats do not pair again.
+        The device and the detectors are in the query, before the limit: the limit covers a replay flood
+        (measured 2026-10-17: 337 host cases in one hour), and filtering after it could leave the real partner
+        out in one."""
+        if detectors is not None and not detectors:
+            return []
         mac = case.facts.get("device_mac")
-        out = []
-        for r in rows:
-            facts = json.loads(r["facts"] or "{}")
-            if (mac and facts.get("device_mac") == mac) or r["host"] == case.host:
-                out.append(r)
-        return out
+        sql = ("SELECT * FROM cases WHERE first_ts BETWEEN ? AND ? AND key != ? AND (host = ?"
+               + (" OR json_extract(facts, '$.device_mac') = ?" if mac else "") + ")")
+        args: list = [case.ts - window, case.ts + window, case.key, case.host] + ([mac] if mac else [])
+        if detectors:
+            sql += f" AND detector IN ({','.join('?' * len(detectors))})"
+            args += sorted(detectors)
+        return self.db.execute(sql + " ORDER BY id DESC LIMIT 400", args).fetchall()
 
     def link_cases(self, case_id: int, other_id: int, entry: dict, note: str, actor: str = "tapwatch") -> None:
         """Record on an existing case that a later one pairs with it: a `correlated` fact entry and a note."""

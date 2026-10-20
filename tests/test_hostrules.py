@@ -1152,7 +1152,7 @@ def test_code_review_fixes_for_v03_rules():
     again = FilesStaged(st())
     z = r"C:\Program Files\7-Zip\7z.exe"
     run(again, start(T0 + 1000, z, EXPLORER, cmd_archive_pw="1"), start(T0 + 900, z, EXPLORER, cmd_archive_pw="1"))
-    assert again.chain[("archive", "7z.exe", "installed", "")] == T0 + 1000   # the late row didn't wind it back
+    assert again.chain[("archive", "7z.exe", "installed", "", False)] == T0 + 1000   # the late row didn't wind it back
 
 
 def test_every_network_rule_pairs_with_a_host_rule_or_is_listed_as_never():
@@ -1182,3 +1182,33 @@ def test_agent_queries_read_one_process_at_a_time_and_the_ebpf_feeds_are_never_d
     sched = json.loads(_re.sub(r"^\s*//.*$", "", raw, flags=_re.MULTILINE), strict=False)["schedule"]
     assert not [n for n, q in sched.items() if _re.search(r"pid IN \(", q["query"])]
     assert sched["bpf_connections"]["denylist"] is False and sched["bpf_process_events"]["denylist"] is False
+
+
+
+def test_followups_severity_keys_more_wrappers_localtunnel():
+    """The other session's review: an attended tunnel can't hide an unattended one; ionice and time are wrappers;
+    Windows localtunnel is named for the tool, not node.exe."""
+    tun = TunnelOpened(st())
+    owner = lexec(T0, "/usr/bin/ssh", tunnel=1)
+    owner["columns"].update(claude_session="s1", claude_attended="1")
+    other = lexec(T0 + 10, "/usr/bin/ssh", tunnel=1)
+    other["columns"].update(claude_session="s2", claude_attended="0")
+    assert [c.base_severity for c in run(tun, owner, other)] == [3, 4]
+    assert run(TunnelOpened(st()), lexec(T0, "/usr/bin/ionice", tunnel=1), lexec(T0, "/usr/bin/time", tunnel=1)) == []
+    (lt,) = run(TunnelOpened(st()), start(T0, r"C:\Program Files\nodejs\node.exe", EXPLORER, cmd_tunnel="1"))
+    assert lt.indicators == ["localtunnel"]
+
+
+def test_correlation_filters_device_and_pairable_rules_before_the_limit():
+    from tapwatch.models import Case
+    store = Store(":memory:")
+    up = Case("upload_spike", PC, T0, "Upload", {"device_mac": "aa:bb:cc:dd:ee:01"}, ["x"], base_severity=3)
+    store.add(up, "", None, Route.DIGEST, "test")
+    for i in range(450):                              # a burst of unrelated cases on other devices and rules after it
+        store.add(Case("new_domain", f"192.168.50.{20 + i % 200}", T0 + 1, "New domain", {}, [f"d{i}.example"],
+                       base_severity=1), "", None, Route.LOG, "test")
+    staged = Case("host_staging", PC, T0 + 60, "Files sent", {"source": "endpoint", "device_mac": "aa:bb:cc:dd:ee:01"},
+                  ["drive2"], base_severity=3)
+    rows = store.nearby(staged, 300, {"upload_spike", "takeover"})
+    assert [r["detector"] for r in rows] == ["upload_spike"]
+    assert store.nearby(staged, 300, set()) == []
