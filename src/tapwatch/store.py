@@ -133,8 +133,9 @@ class Store:
         have = {r["name"] for r in self.db.execute("PRAGMA table_info(cases)")}
         for name, decl in NEW_CASE_COLUMNS.items():
             if name not in have:
-                try:
-                    self.db.execute(f"ALTER TABLE cases ADD COLUMN {name} {decl}")  # names are our constants
+                try:  # SQLite can't bind identifiers; name and decl are NEW_CASE_COLUMNS' own constants
+                    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+                    self.db.execute(f"ALTER TABLE cases ADD COLUMN {name} {decl}")
                 except sqlite3.OperationalError as e:
                     if "duplicate column" not in str(e):  # another process migrated first: fine
                         raise
@@ -202,6 +203,7 @@ class Store:
         if detectors:
             sql += f" AND detector IN ({','.join('?' * len(detectors))})"
             args += sorted(detectors)
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only fixed text and '?' placeholders are joined; every value is bound
         return self.db.execute(sql + " ORDER BY id DESC LIMIT 400", args).fetchall()
 
     def link_cases(self, case_id: int, other_id: int, entry: dict, note: str, actor: str = "tapwatch") -> None:

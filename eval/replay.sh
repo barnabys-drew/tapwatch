@@ -6,7 +6,8 @@
 set -euo pipefail
 pcap=$(realpath "$1"); out=$(realpath -m "$2")
 mkdir -p "$out"
-docker run --rm --network none -v "$(dirname "$pcap")":/in:ro -v "$out":/out \
-  -v "$(dirname "$(realpath "$0")")/../deploy/zeek":/tapwatch:ro -w /out zeek/zeek:7.0.0 \
+img=$("$(dirname "$(realpath "$0")")/zeek_image.sh")
+docker run --rm --network none --user "$(id -u):$(id -g)" -v "$(dirname "$pcap")":/in:ro -v "$out":/out \
+  -v "$(dirname "$(realpath "$0")")/../deploy/zeek":/tapwatch:ro -w /out "$img" \
   zeek -C -r "/in/$(basename "$pcap")" /tapwatch/tapwatch.zeek   # no rotation: one file per log
 ls "$out"
