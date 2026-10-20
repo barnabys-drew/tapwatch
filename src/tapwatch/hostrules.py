@@ -1249,9 +1249,14 @@ def _agent_facts(c: dict) -> dict:
 # R38 safe test raised four cases, for bash, timeout, powershell.exe and 7z.exe.
 WRAPPERS = frozenset({"bash", "sh", "dash", "zsh", "fish", "ksh", "sudo", "doas", "env", "timeout", "nohup", "nice",
                       "setsid", "xargs", "script", "strace", "watch", "su", "runuser", "flock", "stdbuf",
-                      "cmd.exe", "powershell.exe", "pwsh.exe", "wsl.exe", "wslhost.exe", "conhost.exe", "cscript.exe",
+                      "cmd.exe", "powershell.exe", "bash.exe", "sh.exe", "pwsh.exe", "wsl.exe", "wslhost.exe", "conhost.exe", "cscript.exe",
                       "wscript.exe", "runas.exe"})
-SIGNAL_CHAIN = 60   # seconds: the same signal and destination again is the same command (a wrapper we don't know)
+SIGNAL_CHAIN = 60   # seconds: the same program with the same signal again is one command (`sudo` runs it twice)
+
+
+def _is_wrapper(prog: str, folder: str) -> bool:
+    """A wrapper only where wrappers live: ngrok copied to %TEMP%\\cmd.exe or /tmp/sh is the tool, not a wrapper."""
+    return prog in WRAPPERS and folder == "installed"
 
 
 def _program_and_folder(query: str, c: dict) -> tuple[str, str]:
@@ -1277,15 +1282,12 @@ class TunnelOpened(HostDetector):
         super().__init__(state, reported_days)
         self.chain: dict[tuple, float] = {}
 
-    def _chained(self, key: tuple, ts: float) -> bool:
-        return _chained(self.chain, key, ts)
-
     def row(self, query: str, c: dict, ts: float) -> list[Case]:
         flag = "cmd_tunnel" if query == SYSMON else "lcmd_tunnel"
         if str(c.get(flag, "0")) != "1" or (query == SYSMON and str(c.get("eventid")) != "1"):
             return []
         prog, folder = _program_and_folder(query, c)
-        if prog in WRAPPERS or self._chained(("tunnel", prog, folder), ts):
+        if _is_wrapper(prog, folder) or _chained(self.chain, ("tunnel", prog, folder), ts):
             return []
         agent = _agent_facts(c)
         must = folder in ("temp", "shared")
@@ -1300,11 +1302,13 @@ USER_FOLDERS = {"documents", "desktop", "pictures", "onedrive"}
 
 
 def _chained(chain: dict[tuple, float], key: tuple, ts: float) -> bool:
-    """True when the same signal (and destination) was seen within SIGNAL_CHAIN seconds of the first one. A hit doesn't
-    move the window, so something restarting every 30 s can't keep a different start hidden."""
-    if ts - chain.get(key, -1e18) < SIGNAL_CHAIN:
+    """True when the same key was seen within SIGNAL_CHAIN seconds of the first one, either side (the Windows and Linux
+    feeds and a backlog arrive out of order). A hit doesn't move the window. The key always names the program and its
+    folder, so one program can't hide another (a suppressed 7-Zip can't cover a rar.exe from Temp); the cost is that
+    a wrapper not in WRAPPERS can still double a case."""
+    if abs(ts - chain.get(key, -1e18)) < SIGNAL_CHAIN:   # abs: the agents' feeds arrive out of order
         return True
-    chain[key] = ts
+    chain[key] = max(ts, chain.get(key, ts))   # a late row doesn't wind the window back
     if len(chain) > 200:
         for k in [k for k, t in chain.items() if ts - t >= SIGNAL_CHAIN]:
             del chain[k]
@@ -1343,7 +1347,7 @@ class FilesStaged(HostDetector):
             self.since = ts
         pre = "cmd_" if query == SYSMON else "lcmd_"
         prog, folder = _program_and_folder(query, c)
-        if prog in WRAPPERS:
+        if _is_wrapper(prog, folder):
             return []
         agent = _agent_facts(c)
         if str(c.get(pre + "sync", "0")) == "1":
@@ -1352,7 +1356,7 @@ class FilesStaged(HostDetector):
             dest = str(c.get("sync_dest") or "local or from the environment").lower()[:120]
             tool = prog.removesuffix(".exe").removesuffix(".com")
             key = (tool, dest)
-            if key in self.known or _chained(self.chain, ("sync", dest), ts):
+            if key in self.known or _chained(self.chain, ("sync", prog, folder, dest), ts):
                 return []
             self.known.add(key)
             if ts - self.since < self.learn:
@@ -1362,7 +1366,7 @@ class FilesStaged(HostDetector):
                              ("sync",) + key)
         if str(c.get(pre + "archive_pw", "0")) == "1":
             of = str(c.get("archive_of") or "").lower()
-            if _chained(self.chain, ("archive", of), ts):
+            if _chained(self.chain, ("archive", prog, folder, of), ts):
                 return []
             user = of in USER_FOLDERS
             facts = {"program": prog[:80], "archive_of": of or None, "folder": folder, **agent}
@@ -1422,8 +1426,6 @@ class FileChanged(HostDetector):
     def _case(self, ts: float, facts: dict, level: int, indicator: str, key: tuple) -> list[Case]:
         severity = level if self.alert else 3
         facts["would_alert"] = level >= 4
-        if not self.alert:
-            facts["max_route"] = "digest"   # until baselined, a pairing with an unrelated case can't lift it either
         if severity >= 4:   # emit's once-a-day applies below alert level only; a file is one case a day either way
             if still_reported(self.reported, key, ts, self.ttl):
                 return []
@@ -1448,11 +1450,19 @@ PAIRS: dict[str, frozenset[str]] = {
     "host_recon": frozenset({"scan", "takeover", "ioc_match", "new_domain"}),
     "host_extension": frozenset({"new_domain", "takeover", "ioc_match", "upload_spike"}),
     "host_lsass": frozenset({"takeover", "ioc_match", "upload_spike", "new_domain"}),
-    "host_rmm": frozenset({"takeover"}),                     # R16 sees the same tool's servers
-    "host_tunnel": frozenset({"takeover"}),                  # R16's tunnel services
-    "host_staging": frozenset({"upload_spike", "takeover"}), # the upload itself, or R16's file-drop sites
+    # R16 sees the same tool's servers or tunnel service; Suricata and the router's IPS have signatures for them; a
+    # tunnel or a remote-access tool next to a port opened to the internet is one story.
+    "host_rmm": frozenset({"takeover", "ids_alert", "udm_ips", "exposure"}),
+    "host_tunnel": frozenset({"takeover", "ids_alert", "udm_ips", "exposure"}),
+    "host_staging": frozenset({"upload_spike", "takeover", "ids_alert", "udm_ips"}),  # the upload, or file-drop sites
     "host_fim": frozenset(),                                 # a file change has no network side
 }
+
+
+# Network rules that pair with no host rule, on purpose: about the network or a device rather than a program on this PC.
+# A test holds every network rule to PAIRS or this set, so a new one can't be left out by accident.
+NEVER_PAIRED = frozenset({"new_device", "identity", "gateways", "mgmt_access", "cleartext_auth", "rogue_dhcp",
+                          "dns_bypass", "iot_drift", "udm_admin", "feed_silence", "off_hours", "upload_stopped"})
 
 
 def pairs_with(host_detector: str, network_detector: str) -> bool:
