@@ -947,6 +947,84 @@ privileged or Docker-socket container (3), and a new Linux listener outside loop
 mostly svchost. Measured on the WSL box: 40 SUID programs, 23 modules, no preload, no such container, 11 stable
 listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (stratum URLs, xmrig, `--donate-level`).
 
+### R36 A remote-access tool starts on a PC (`host_rmm`) — designed (#39)
+- **Threat:** remote monitoring and management tools used as a way in (T1219): tech-support scams talk the
+  victim into AnyDesk or Quick Assist, and ransomware crews install ScreenConnect, AnyDesk or Atera because they
+  are signed, trusted and allowed out. The network side is R16 (`takeover`, the tools' servers); this is the PC's
+  side: which program, from which folder, started by what.
+- **Data:** process starts already collected: Sysmon event 1 (`path`, `parent_path`) on Windows, eBPF
+  `bpf_process_events` (`path`) on Linux. A built-in table maps program file names to a tool and its R16 service
+  (`anydesk.exe` → anydesk.com; about 30 tools: AnyDesk, TeamViewer, RustDesk, ScreenConnect, Splashtop, Atera,
+  LogMeIn, Ammyy, Supremo, SimpleHelp, MeshCentral, Tactical RMM, NetSupport, UltraViewer, DWService, Zoho Assist,
+  Action1, NinjaOne, Kaseya, Pulseway, TightVNC/UltraVNC, Quick Assist). No agent change.
+- **Logic:** per (device, tool), the first start after the learning window is a case; later starts are not. The
+  learning window is the rule's first 7 days on a box (persisted), so a company's own RMM on an office PC is
+  learned, not reported forever. A `takeover.expected` entry for the device and the tool's service also counts as
+  known. Severity from the folder class: an installed folder (Program Files, /usr, /opt) 3; a user folder
+  (AppData, home) or Downloads 4, suppressible per (device, tool); Temp or a shared folder, or started by a
+  document or mail app (`WIN_DOC_APPS`), 5 and must_alert. Quick Assist (built into Windows) is 4 wherever it runs.
+- **Baseline:** measured 2026-10-19/20: 11,055 Windows process starts in 29 h and 288,764 Linux execs in two days,
+  no remote-access tool among them.
+- **FPs (expected):** the owner installing a tool to help family; an office's IT tool (learned, or an `expected`
+  entry); a one-off Quick Assist session.
+- **Route:** as above, code-only; pairs with R16's network case through host ↔ network correlation.
+  **Safe test:** copy `notepad.exe` to `%TEMP%\AnyDesk.exe`, run it and close it → one must-alert case.
+- **Blind spot:** matching is by file name; a renamed copy is missed (Sysmon's OriginalFileName isn't collected
+  yet, a later step). R16 still sees its servers.
+
+### R37 A tunnel is opened from a PC (`host_tunnel`) — designed (#39)
+- **Threat:** a tunnel opens a way *in* to a PC from the internet, past the router (T1572): `ngrok`,
+  `cloudflared tunnel`, `code tunnel`, `devtunnel host`, `tailscale funnel`, `ssh -R`, localtunnel, bore.
+- **Data:** new command-line signals computed on the PC, as for R24 and R28: `cmd_tunnel` in the Windows
+  `sysmon_events` query and `lcmd_tunnel` in the Linux `bpf_process_events` query (the line is kept only when a
+  signal fires).
+- **Logic:** severity 4, suppressible per (device, program); from Temp or a shared folder 5, must_alert. On Linux,
+  started under the owner's coding agent (an ancestor in the eBPF process rows is the `claude` binary, as
+  `hostctx` recognises it) → severity 3 and the fact `agent_started`: the owner asked for it, so a digest item.
+- **Baseline:** no tunnel program started in the windows above; the signal's own baseline is the first day after
+  the agent config is updated.
+- **FPs (expected):** the owner's own dev tunnels and `ssh -R` for remote work (agent-started ones go to the
+  digest; others are suppressed per program once).
+- **Route:** as above, code-only. **Safe test:** `ssh -o BatchMode=yes -o ConnectTimeout=2 -R 9:localhost:9
+  test@192.0.2.1` (TEST-NET, fails at once) → one case.
+
+### R38 Files staged or sent somewhere new (`host_staging`) — designed (#39)
+- **Threat:** exfiltration with trusted tools (T1567, T1560): `rclone`, `restic`, `megacmd`, cloud CLIs (`aws s3`,
+  `az storage`/`azcopy`, `gsutil`/`gcloud storage`), WinSCP scripts; a password-protected archive of Documents or
+  Desktop before the upload.
+- **Data:** new signals `cmd_sync`/`lcmd_sync` (a copy or sync to a remote) and `cmd_archive_pw`/`lcmd_archive_pw`
+  (7-Zip `-p`, RAR `-hp`/`-p`, `zip -e`/`-P`). The rule reads the kept line only to take the *destination*: the
+  rclone remote name, `s3://bucket`, `gs://bucket`, the storage account, the restic repository (`env` when it comes
+  from the environment). The line never enters the case; the destination is an indicator.
+- **Logic:** per (device, tool, destination): new after the 7-day learning window → severity 3 (digest); known →
+  nothing. A password archive → 3; of Documents, Desktop or Pictures → 4. An `upload_spike` from the same device
+  within five minutes pairs with it (host ↔ network correlation) and makes an alert. Agent-started on Linux:
+  `agent_started` fact, stays digest.
+- **Baseline:** 2026-10-20: a nightly `restic` (3 execs) on the Linux box, learned in the window; 7-Zip twice from
+  a hardware vendor's installer, no password.
+- **FPs (expected):** the owner's backups to a new bucket; a new cloud CLI workflow; zipping a folder with a
+  password to send it.
+- **Route:** digest, alert when paired; code-only. **Safe test:** `rclone copy /etc/hostname testremote:` with a
+  remote that doesn't exist (fails) → one digest item naming `testremote`.
+
+### R39 A persistence or credential file changes (`host_fim`) — designed (#167)
+- **Threat:** persistence and privilege through files rather than registered entries (T1546.004, T1574.006,
+  T1548.003, T1547.001): a shell start-up file gaining a line, `/etc/ld.so.preload`, `sudoers`, a file dropped in
+  a Windows Startup folder.
+- **Data:** Linux: osquery `file_events` (inotify; needs `--enable_file_events`) over `/etc/ld.so.preload`,
+  `/etc/sudoers`, `/etc/sudoers.d/`, `/etc/profile.d/`, and each home's `.bashrc`, `.bash_profile`, `.profile`,
+  `.zshrc`, `.config/autostart/`. Windows: Sysmon event 11 (file created), included only for paths under
+  `\Start Menu\Programs\Startup\`, which also names the program that wrote it.
+- **Logic:** `ld.so.preload` or sudoers written → 4 (R23 still reports preload *content* at 5). A shell start-up
+  file changed → 3. A Startup-folder file created by a shell, script host, LOLBin, document or mail app, or from a
+  temp folder → 4; by anything else (installers) → 3. Ships at digest for every kind until a week's volume is
+  measured; then the 4s alert.
+- **Baseline:** to measure: file-event volume on the dev PC (coding agents and editors touch dotfiles) and
+  Startup-folder writes in a week.
+- **Blind spot:** osquery's file monitoring can't say which program *read* a file, so "a credential file read by a
+  program that doesn't own it" stays out (a later step, with an eBPF file-open query). WSL's inotify sees only
+  Linux paths.
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
@@ -1018,6 +1096,10 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R27 Linux temp, memory or shell connection (built) | osquery eBPF | alert | code-only |
 | — | R28 Suspicious command on Linux (built, baselined) | osquery eBPF exec + command-line signals | alert (temp chmod: digest) | code-only |
 | — | R29 A program reads lsass memory (built, baselined) | osquery + Sysmon event 10 | alert (must for temp/document) | code-only |
+| — | R36 A remote-access tool starts on a PC (designed) | Sysmon event 1, eBPF exec | digest (installed), alert, must for temp/document | code-only |
+| — | R37 A tunnel is opened from a PC (designed) | command-line signals | alert (agent-started: digest; must from temp) | code-only |
+| — | R38 Files staged or sent somewhere new (designed) | command-line signals, destination | digest, alert when paired with an upload | code-only |
+| — | R39 A persistence or credential file changes (designed) | osquery file_events, Sysmon event 11 | digest until baselined | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 
