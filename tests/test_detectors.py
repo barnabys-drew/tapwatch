@@ -234,6 +234,20 @@ def test_ioc_hits_are_must_alert():
     assert [c.must_alert for c in cases] == [True, True]
 
 
+def test_tiered_ioc_hits_alert_on_spyware_and_grade_the_leads():
+    labels = {"c2.example": {"list": "AdFection / Candiru", "tier": "cc", "confidence": "primary", "source": "cl"},
+              "ads.example": {"list": "AdFection / Candiru", "tier": "delivery", "confidence": "primary", "source": "cl"},
+              "old.example": {"list": "AdFection / Candiru", "tier": "historical", "confidence": "secondary",
+                              "source": "eset"}}
+    det = IOCMatch(set(), {"c2.example", "ads.example", "old.example", "bad.example"}, labels)
+    cases = run(det, [ssl(T0, "x.c2.example"), dns(T0 + 1, "ads.example"), dns(T0 + 2, "www.old.example"),
+                      dns(T0 + 3, "bad.example")])
+    assert [(c.must_alert, c.base_severity) for c in cases] == [(True, 5), (False, 4), (False, 3), (True, 5)]
+    assert cases[0].facts["listed"] == "c2.example" and cases[0].facts["tier"] == "cc"
+    assert cases[0].title == "Contact with spyware infrastructure on the AdFection / Candiru list (TLS connection)"
+    assert "tier" not in cases[3].facts  # your own untiered list: unchanged
+
+
 def test_suricata_severity_one_is_must_alert():
     det = SuricataAlert()
     hi = det.feed(_parse_line(__import__("json").dumps(eve_alert("2026-10-11T12:00:00.000000+0000", 1)), "eve"))

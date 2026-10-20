@@ -151,8 +151,9 @@ def cmd_eval(args, cfg) -> int:
     cfg = {**cfg, "warmup_seconds": args.warmup}  # evaluate.run routes itself: no learning period
     if args.no_ai:
         cfg = without_ai(cfg)
-    ips, doms = config.iocs(cfg)
-    res = evaluate.run(args.zeek_dir, labels, detectors.build(cfg, ips, doms, config.popular_domains(cfg), config.assets(cfg).table), config.assets(cfg),
+    ips, doms, ioc_labels = config.iocs(cfg)
+    res = evaluate.run(args.zeek_dir, labels, detectors.build(cfg, ips, doms, config.popular_domains(cfg), config.assets(cfg).table,
+                                                              ioc_labels), config.assets(cfg),
                        None if args.no_ai else config.jev_client(cfg), config.thresholds(cfg))
     print(evaluate.report(res))
     return 0
@@ -412,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--apply", action="store_true", help="create the suggested suppressions and close those cases")
     s.set_defaults(fn=cmd_explain)
 
-    s = sub.add_parser("update-feeds", help="download Tranco, IEEE MAC vendors, IP-to-ASN and UT1 site-category lists (no data sent)")
+    s = sub.add_parser("update-feeds", help="download Tranco, IEEE MAC vendors, IP-to-ASN, UT1 site-category and AdFection IOC lists (no data sent)")
     s.add_argument("--dir", help="where to save them (default: feeds_dir, or ./feeds)")
     s.set_defaults(fn=cmd_update_feeds)
 

@@ -18,7 +18,8 @@ from .summarizer import Assets
 from .triage import DEFAULT_MODEL, GATEWAY_MODEL, GATEWAY_URL, JevClient
 
 FEED_FILES = {"popular_domains_file": "top-100k.csv", "oui_file": "oui.csv", "asn_file": "ip2asn-v4.tsv.gz",
-              "categories_file": "categories.tsv", "public_suffix_file": "public_suffix_list.dat"}
+              "categories_file": "categories.tsv", "public_suffix_file": "public_suffix_list.dat",
+              "adfection_iocs_file": "iocs-adfection.tsv"}
 LEARNED_CATEGORIES = "categories.learned.tsv"  # the model's cached domain categories (categories.py): written, not downloaded
 
 
@@ -64,20 +65,48 @@ def assets(cfg: dict) -> Assets:
     return Assets(table or {}, cfg.get("audience", "office"))
 
 
-def iocs(cfg: dict) -> tuple[set[str], set[str]]:
-    """IOC file: one IP or domain per line, '#' comments allowed."""
-    p = cfg.get("ioc_file")
-    ips, domains = set(), set()
-    if p and Path(p).exists():
+# Threat-intel lists read on top of your own ioc_file: config key -> the list's name on a case.
+IOC_LISTS = {"ioc_file": "your list", "adfection_iocs_file": "AdFection / Candiru"}
+# Downloaded entries left out, as the list's own blocklist export leaves them out: a bare entry matches every
+# subdomain. Adtimizer denies involvement in Discover-Tech's infrastructure (Citizen Lab), so only its named
+# operational hosts (dtech., noas., tekma.adtimizer.co) are matched.
+IOC_SKIP = frozenset({"adtimizer.co"})
+
+
+def iocs(cfg: dict) -> tuple[set[str], set[str], dict[str, dict]]:
+    """IOC files: one IP or domain per line, '#' comments allowed. A line may carry more columns, tab separated,
+    as the downloaded lists do: indicator, tier, confidence, source. Returns (ips, domains, labels), where
+    labels maps each tiered indicator to {"list", "tier", "confidence", "source"} for ioc_match.
+
+    Your own file is read as written. A downloaded list is checked on the way in: file hashes are skipped
+    (64 hex digits, nothing on the wire to match), and so are LAN, loopback and multicast addresses and names
+    without a dot, so a bad upstream row can't turn ordinary LAN traffic into an always-alert case."""
+    ips, domains, labels = set(), set(), {}
+    for key, list_name in IOC_LISTS.items():
+        p = cfg.get(key)
+        if not p or not Path(p).exists():
+            continue
+        feed = key != "ioc_file"
         for line in Path(p).read_text().splitlines():
-            v = line.split("#", 1)[0].strip()
-            if not v:
+            cols = [c.strip() for c in line.split("#", 1)[0].split("\t")]
+            v = cols[0].lower()
+            if not v or (feed and (v in IOC_SKIP or len(v) == 64 and all(c in "0123456789abcdef" for c in v))):
                 continue
             try:
-                ips.add(str(ipaddress.ip_address(v)))
+                ip = ipaddress.ip_address(v)
             except ValueError:
-                domains.add(v.lower())
-    return ips, domains
+                if feed and "." not in v.strip("."):
+                    continue
+                domains.add(v)
+            else:
+                if feed and (detectors.is_internal(str(ip)) or ip.is_loopback or ip.is_multicast or ip.is_unspecified):
+                    continue
+                ips.add(v := str(ip))
+            if len(cols) > 1 and cols[1]:
+                labels[v.rstrip(".")] = {"list": list_name, "tier": cols[1].lower(),
+                                         "confidence": cols[2] if len(cols) > 2 else "",
+                                         "source": cols[3] if len(cols) > 3 else ""}
+    return ips, domains, labels
 
 
 def popular_domains(cfg: dict) -> set[str]:
@@ -185,8 +214,8 @@ def build_detectors(cfg: dict) -> list:
     """Every detector `run` uses, built from the config: the network rules with the IOC lists, the popular-domain
     list and the asset table, plus the endpoint rules. `tapwatch selfcheck` builds through here too, so what it
     measures is what runs."""
-    ips, doms = iocs(cfg)
-    net = detectors.build(cfg, ips, doms, popular_domains(cfg), assets(cfg).table)
+    ips, doms, labels = iocs(cfg)
+    net = detectors.build(cfg, ips, doms, popular_domains(cfg), assets(cfg).table, labels)
     warmup = next((d.warmup for d in net if isinstance(getattr(d, "warmup", None), detectors.Warmup)), None)
     return net + hostrules.build(cfg, warmup)  # one warm-up clock: the pipeline persists the first detector's
 
