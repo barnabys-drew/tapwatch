@@ -366,36 +366,58 @@ class Warmup:
 # --------------------------------------------------------------------------- IOC
 
 
+# tier -> (what it is, always alert, severity). The AdFection tiers come from the list itself (feeds.IOC_FEEDS).
+IOC_TIERS = {
+    "cc": ("Candiru spyware command-and-control", True, 5),
+    "validator": ("a Candiru validation server, which checks a device before it is infected", True, 5),
+    "candiru": ("Candiru spyware infrastructure", True, 5),
+    "candiru-ip": ("Candiru spyware infrastructure", True, 5),
+    "delivery": ("Discover-Tech ad-delivery infrastructure, which picks and fingerprints targets", False, 4),
+    "historical": ("infrastructure from an older Candiru campaign, possibly re-registered since", False, 3),
+}
+
+
 class IOCMatch(Detector):
-    """Traffic to an address or domain on a threat-intel list. Always alerts."""
+    """Traffic to an address or domain on a threat-intel list. An untiered entry, or one on a tier that marks
+    spyware infrastructure, always alerts. The ad-delivery and older-campaign tiers of the AdFection list are
+    leads, not proof: they route on severity like any other case, so a suppression or the AI can still weigh them.
+    """
 
     name = "ioc_match"
 
-    def __init__(self, ips: set[str], domains: set[str]):
+    def __init__(self, ips: set[str], domains: set[str], labels: dict[str, dict] | None = None):
         self.ips = ips
         self.domains = {d.lower().rstrip(".") for d in domains}
+        self.labels = labels or {}
 
-    def _domain_hit(self, name: str) -> bool:
-        name = name.lower().rstrip(".")
-        return any(name == d or name.endswith("." + d) for d in self.domains)
+    def _domain_hit(self, name: str) -> str | None:
+        """The listed entry `name` falls under (itself or a parent domain), most specific first."""
+        parts = name.lower().rstrip(".").split(".")
+        return next((d for i in range(len(parts)) if (d := ".".join(parts[i:])) in self.domains), None)
 
     def feed(self, rec: dict) -> list[Case]:
         src = rec.get("id.orig_h", "")
         if not is_internal(src):
             return []
         kind = rec["_type"]
-        hit, what = None, ""
+        hit, entry, what = None, None, ""
         if kind == "conn" and rec.get("id.resp_h") in self.ips:
-            hit, what = rec["id.resp_h"], "address"
-        elif kind == "dns" and rec.get("query") and self._domain_hit(rec["query"]):
+            hit, entry, what = rec["id.resp_h"], rec["id.resp_h"], "address"
+        elif kind == "dns" and rec.get("query") and (entry := self._domain_hit(rec["query"])):
             hit, what = rec["query"], "domain lookup"
-        elif kind == "ssl" and rec.get("server_name") and self._domain_hit(rec["server_name"]):
+        elif kind == "ssl" and rec.get("server_name") and (entry := self._domain_hit(rec["server_name"])):
             hit, what = rec["server_name"], "TLS connection"
         if hit is None:
             return []
-        return [Case(self.name, src, rec["ts"], f"Contact with threat-intel listed {what}",
-                     {"what": what, "port": rec.get("id.resp_p"), **dests(rec.get("id.resp_h"))}, [hit],
-                     must_alert=True, base_severity=5)]
+        facts = {"what": what, "port": rec.get("id.resp_p"), **dests(rec.get("id.resp_h"))}
+        title, must, sev = f"Contact with threat-intel listed {what}", True, 5
+        label = self.labels.get(entry)
+        if label:
+            desc, must, sev = IOC_TIERS.get(label["tier"], ("a threat-intel listed host", True, 5))
+            facts |= {"list": label["list"], "tier": label["tier"], "tier_means": desc, "listed": entry,
+                      "confidence": label["confidence"], "list_source": label["source"]}
+            title = f"Contact with {'spyware infrastructure' if must else 'a host'} on the {label['list']} list ({what})"
+        return [Case(self.name, src, rec["ts"], title, facts, [hit], must_alert=must, base_severity=sev)]
 
 
 # -------------------------------------------------------------------- Suricata
@@ -2599,7 +2621,8 @@ def feed_expectations(cfg: dict) -> dict[str, tuple[float, int]]:
 
 
 def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | None = None,
-          popular: set[str] | None = None, assets_table: dict | None = None) -> list[Detector]:
+          popular: set[str] | None = None, assets_table: dict | None = None,
+          ioc_labels: dict[str, dict] | None = None) -> list[Detector]:
     d = cfg.get("detectors", {})
     net = cfg.get("network", {})
     set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
@@ -2645,7 +2668,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
         dets.append(FeedSilence(feed_expectations(cfg), host=(cfg.get("host_context") or {}).get("host") or "this PC",
                                 router=router))
     if ioc_ips or ioc_domains:
-        dets.insert(0, IOCMatch(ioc_ips or set(), ioc_domains or set()))
+        dets.insert(0, IOCMatch(ioc_ips or set(), ioc_domains or set(), ioc_labels))
     for det in dets:
         det.ident = identity  # per-device baselines follow the device, not the address (Detector.dev_key)
     return dets

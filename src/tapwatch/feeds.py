@@ -7,12 +7,14 @@ and renamed into place, so a failed download never leaves a half-written list be
   oui.csv            IEEE MAC vendor registry, for new-device vendor names (R05)
   ip2asn-v4.tsv.gz   iptoasn.com IP range -> network (ASN) and country, for IoT drift (R02)
   public_suffix_list.dat  the Public Suffix List, for registrable domains (bbc.co.uk, not co.uk)
+  iocs-adfection.tsv  AdFection / Candiru spyware indicators, tiered, for ioc_match
 """
 
 from __future__ import annotations
 
 import bisect
 import gzip
+import hashlib
 import io
 import ipaddress
 import tarfile
@@ -27,6 +29,16 @@ SOURCES = {
     "public_suffix_list.dat": "https://publicsuffix.org/list/public_suffix_list.dat",
 }
 TOP_N = 100_000
+
+# Threat-intel lists, each pinned to one release and its published SHA-256. Every hit on a spyware tier always
+# alerts, so a changed upstream list has to be read before tapwatch trusts it: bump the URL and hash together.
+#   iocs-adfection.tsv  the AdFection / Candiru set curated by the zero-breach project (CC0) from The Citizen Lab's
+#                       "Exposing AdFection" (2026-10-15), Confiant, Recorded Future and older Candiru reporting:
+#                       indicator<TAB>tier<TAB>confidence<TAB>source per line (config.iocs reads the tiers)
+IOC_FEEDS = {
+    "iocs-adfection.tsv": ("https://github.com/interplains/zero-breach/releases/download/v0.1.6/adfection_iocs.txt",
+                           "c9801e3ba37376535a676d9938d65550bcaa5478578cb80a6dd09eb2ac402d38"),
+}
 
 # Domain categories: the UT1 blacklists (Université Toulouse Capitole, CC BY-SA), one small archive per
 # category with a `<category>/domains` member. Only the categories a home network's cases turn on; the
@@ -124,6 +136,16 @@ def update(directory: str, fetch=_fetch) -> dict[str, str]:
             _write(d / name, data)
             report[name] = f"ok, {len(data):,} bytes"
         except Exception as e:  # noqa: BLE001 - report every list, don't stop at the first failure
+            report[name] = f"failed: {e}"
+    for name, (url, sha256) in IOC_FEEDS.items():
+        try:
+            data = fetch(url)
+            if hashlib.sha256(data).hexdigest() != sha256:
+                raise ValueError("checksum does not match the pinned release, list not replaced")
+            _write(d / name, data)
+            rows = sum(1 for line in data.decode().splitlines() if line.strip() and not line.startswith("#"))
+            report[name] = f"ok, {rows} indicators"
+        except Exception as e:  # noqa: BLE001 - as above
             report[name] = f"failed: {e}"
     return report
 

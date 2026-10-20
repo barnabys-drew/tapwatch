@@ -238,7 +238,17 @@ def _observed(c: Case, words: dict) -> str:
                 "remote_control": "a remote-control service that lets someone operate this device"}[f["channel"]]
         return f"Its {f['via']} traffic reached {what}. Dev-workstation tuning does not apply to this rule."
     if c.detector == "ioc_match":
-        return f"It made a {f['what']} that matches a threat-intelligence blocklist entry."
+        if not f.get("tier"):
+            return f"It made a {f['what']} that matches a threat-intelligence blocklist entry."
+        text = (f"It made a {f['what']} matching {clean_untrusted(f['listed'])} on the {f['list']} list: "
+                f"{f['tier_means']} (source: {clean_untrusted(f.get('list_source') or 'not given')}, "
+                f"{clean_untrusted(f.get('confidence') or 'unstated')} confidence).")
+        if c.must_alert:
+            return text + (" Mercenary spyware is aimed at specific people, so treat this as serious; if anyone on "
+                           "this device could be a target, get expert help (the Access Now Digital Security Helpline).")
+        if f["tier"] == "delivery":
+            return text + " On its own this is a lead, not proof of infection: that network's ads load on many sites."
+        return text + " On its own this is a lead, not proof of infection."
     if c.detector == "ids_alert":
         return (f"The intrusion detection system matched signature {json.dumps(clean_untrusted(f['signature']))} "
                 f"(category: {f['category'] or 'none'}, IDS severity {f['ids_severity']} of 3 where 1 is worst, "

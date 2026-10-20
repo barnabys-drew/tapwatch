@@ -1188,6 +1188,16 @@ come from files and tool output.
   per (device, port). Overnight replay with those two changes: 0 cases from either rule.
 - `tapwatch update-feeds` downloads Tranco top-100k, the IEEE OUI registry and iptoasn's IPv4 table
   into `feeds_dir` over https. Unset list settings default to it.
+- `ioc_match` also reads the AdFection / Candiru indicators (The Citizen Lab's "Exposing AdFection",
+  2026-10-15, with Confiant, Recorded Future and older Candiru reporting), as curated with a tier per
+  line by the zero-breach project (CC0). `update-feeds` takes one pinned release and writes it only if
+  its SHA-256 matches. The tier decides the route: `cc`, `validator`, `candiru` and `candiru-ip` are
+  spyware infrastructure and always alert; `delivery` (Discover-Tech's ad servers, three of them in the
+  Tranco top 20k) is severity 4 and `historical` (older campaigns, often a secondary source, names that
+  may since have been re-registered) is severity 3, both routed like any other case. A bad upstream row
+  can't page on LAN traffic: LAN, loopback and multicast addresses, dotless names and file hashes are
+  dropped on load, and bare `adtimizer.co` is skipped as the list's own blocklist export skips it.
+  Replayed against a week of the home mirror (2026-10-13 to 10-20): 0 hits.
 
 ## 6. Build order
 
