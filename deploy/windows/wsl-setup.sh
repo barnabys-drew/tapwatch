@@ -52,6 +52,8 @@ linger)
 app)
     repo=${2:?repo url}
     branch=${3:-main}
+    git check-ref-format --branch "$branch" >/dev/null 2>&1 && [[ "$branch" != -* ]] \
+        || { echo "not a branch name: $branch (rename the folder to tapwatch-main)" >&2; exit 2; }
     cd ~
     # A non-interactive wsl.exe call has no login session; point systemctl --user at the user's manager,
     # which linger started.
@@ -62,7 +64,11 @@ app)
     if [ -d tapwatch/.git ]; then
         say "Updating tapwatch ($branch)"
         git -C tapwatch fetch -q origin "$branch"
-        git -C tapwatch checkout -q "$branch" 2>/dev/null || git -C tapwatch checkout -q -b "$branch" "origin/$branch"
+        if git -C tapwatch rev-parse --verify -q "refs/heads/$branch" >/dev/null; then
+            git -C tapwatch checkout -q "$branch"
+        else
+            git -C tapwatch checkout -q -b "$branch" "origin/$branch"
+        fi
         git -C tapwatch merge -q --ff-only "origin/$branch"
     else
         say "Downloading tapwatch ($branch)"
