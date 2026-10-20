@@ -322,6 +322,14 @@ def _endpoint(c: Case) -> str:
         return (f"On the PC itself, {prog} opened lsass.exe, the Windows process that holds signed-in users' credentials, "
                 f"with the right to read its memory.{started_by}{folder} That is how password and token theft tools "
                 "work (mimikatz, a MiniDump of lsass); Windows' own components were already left out.")
+    if c.detector == "host_rmm":
+        tool = _program(f.get("tool", "a remote-access tool"))
+        where = f" from {FOLDER_WORDS.get(f.get('folder'), 'a folder')}" if f.get("folder") else ""
+        parent = f" It was started by {_program(f['parent'])}." if f.get("parent") else ""
+        return (f"On the PC itself, the remote-access tool {tool} ({prog}) started for the first time{where}.{parent} "
+                "These tools let someone else control the PC: tech-support scams talk people into installing one, and "
+                "ransomware crews use them because they are signed and trusted. If nobody here set it up, treat it as "
+                "someone getting in.")
     if c.detector == "host_linux_cmd":
         return (f"On the PC itself (Linux), {prog} was started with a command line that means "
                 + " and ".join(f.get("signals") or ["something suspicious"]) + ". The agent read the command line on "
