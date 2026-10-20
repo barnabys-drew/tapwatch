@@ -92,6 +92,32 @@ def test_a_host_case_and_a_network_case_on_one_device_within_five_minutes_pair_u
     assert len(json.loads(store.get(h_id)["facts"])["correlated"]) == 3
 
 
+def test_only_the_network_rules_a_host_rule_names_pair_with_it():
+    """2026-10-20: every R36-R39 safe test was lifted to an alert by an unrelated dns_bypass item three minutes earlier.
+    The owner chose: each host rule names the network rules that tell its story (hostrules.PAIRS), both sides."""
+    from tapwatch.hostrules import NAMES, PAIRS, pairs_with
+    from tapwatch.pipeline import Pipeline
+    assert set(PAIRS) == set(NAMES)                       # every host rule says what pairs with it
+    assert pairs_with("host_staging", "upload_spike") and not pairs_with("host_staging", "dns_bypass")
+    assert not pairs_with("host_fim", "new_domain")
+    assert not pairs_with("host_temp_exec", "dns_bypass") and pairs_with("host_temp_exec", "ids_alert")
+    pc, mac = "192.168.50.10", "aa:bb:cc:dd:ee:01"
+    dns = Case("dns_bypass", pc, T0, "DNS sent around the resolver", {"device_mac": mac, "how": "DNS over HTTPS", "encrypted": True},
+               ["dns.example"], base_severity=3)
+    staged = Case("host_staging", pc, T0 + 120, "Files sent to a destination this PC hasn't used before",
+                  {"source": "endpoint", "program": "rclone", "destination": "drive2", "device_mac": mac}, ["drive2"],
+                  base_severity=3)
+    up = Case("upload_spike", pc, T0 + 180, "Upload spike",
+              {"device_mac": mac, "mb": 900, "times_normal": 30, "normal_mb": 30}, ["drive.example"], base_severity=3)
+    store = Store(":memory:")
+    p = Pipeline([Scripted([dns, staged, up])], Assets(), store, client=None, notifier=None)
+    out = [p.process({"_type": "conn", "ts": T0 + i})[0] for i in range(3)]
+    (d_id, _, _, _), (_, s_case, _, s_route), (_, u_case, _, u_route) = out
+    assert "correlated" not in s_case.facts and s_route is Route.DIGEST        # the DNS case is not its story
+    assert [e["detector"] for e in u_case.facts["correlated"]] == ["host_staging"] and u_route is Route.ALERT
+    assert "correlated" not in json.loads(store.get(d_id)["facts"])            # nor was the DNS case lifted
+
+
 # ------------------------------------------------------------------ migration
 
 def test_migration_adds_columns_to_an_old_database_and_keeps_rows(tmp_path):
