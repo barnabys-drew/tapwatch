@@ -73,6 +73,8 @@ LOLBIN_DOWNLOADERS = {"certutil.exe", "bitsadmin.exe", "mshta.exe", "regsvr32.ex
 # Built-in tools that connect out legitimately in dev work: MSBuild restores NuGet packages on any Visual Studio
 # PC, so an hourly severity-4 alert would be noise there. A digest item once per reported_days instead.
 LOLBIN_DEV_TOOLS = {"msbuild.exe"}
+# Windows' own service hosts: a LOLBin they start from the system folder with a clean command line is scheduled work.
+WINDOWS_SERVICE_HOSTS = frozenset({"svchost.exe", "taskhostw.exe"})
 # Command-line signals that are weak alone on a dev PC: `iex (irm ...)` installs tools, scripts decode base64.
 WEAK_SIGNALS = {"b64", "iex"}
 GUID_WINDOW = 600            # seconds a process start is remembered, to join the connections it makes next
@@ -99,7 +101,8 @@ BATCH_GRACE = 120            # seconds after a query run before its rows are rea
 DUMP_MIN = 5                 # adds with no removes in one batch: osquery's first run of the query, an inventory, not a change
 KNOWN_MAX = 5000             # entries remembered per PC (a PC has a few hundred); older ones are forgotten first
 LAN_PREFIXES = ("192.168.", "10.")   # where home LANs live; 172.16/12 is where Hyper-V and WSL put their switches
-PC_UNKNOWN = "this PC"               # the case's host until an agent snapshot or host_context.host names the address
+PC_UNKNOWN = "this PC"
+CONFIGURED_HOLD = 3600   # s: the configured address holds while a snapshot listed it this recently               # the case's host until an agent snapshot or host_context.host names the address
 
 
 def folder_class(path: str) -> str:
@@ -192,6 +195,7 @@ class EndpointState:
         # no identity knew (#792-#794)
         self.lan_nets = {".".join(g.split(".")[:3]) for g in (gateways or ()) if g.count(".") == 3}
         self._routed = False   # once an address on a router's net was seen, a snapshot without one keeps it
+        self._configured_seen = -1e18   # when a snapshot last listed `host_context.host`
         self.starts: dict[str, Start] = {}
         self.latest = 0.0
         # Signatures arrive every 5 minutes per program path (process_signatures), connections every minute
@@ -203,10 +207,15 @@ class EndpointState:
     def host(self) -> str:
         return self._host or PC_UNKNOWN
 
-    def update_addresses(self, rows: list[dict]) -> None:
+    def update_addresses(self, rows: list[dict], ts: float = 0.0) -> None:
         addrs = {str(r.get("address")) for r in rows if r.get("address")}
         if self.configured and self.configured in addrs:
-            self._host = self.configured
+            self._host, self._configured_seen = self.configured, ts
+            return
+        if self.configured and self._host == self.configured and ts - self._configured_seen < CONFIGURED_HOLD:
+            # Measured 2026-10-20: the PC has two adapters (two LAN addresses); a snapshot listing only the other
+            # one moved the host, and the same events were filed twice under two keys (#948/#960, #949/#961). Keep
+            # the configured address while any snapshot showed it within the hour; a real DHCP change moves it after.
             return
         v4 = [a for a in addrs if ":" not in a and is_internal(a)]
         lan = sorted(a for a in v4 if a.startswith(LAN_PREFIXES))
@@ -276,7 +285,7 @@ class HostDetector(Detector):
         rows = rec.get("snapshot") if rec.get("action") == "snapshot" else [rec.get("columns")]
         rows = [r for r in (rows or ()) if isinstance(r, dict)]
         if name == ADDRS:
-            self.state.update_addresses(rows)
+            self.state.update_addresses(rows, ts)
             return []
         if rec.get("action") == "removed":
             return self.removed(name, rows, ts)
@@ -457,7 +466,11 @@ class LolbinConnects(HostDetector):
     never connected). certutil, bitsadmin, mshta and regsvr32 exist to fetch or run remote content and
     have no home use on the internet: must_alert. The rest (rundll32, wmic, wscript, cscript, installutil,
     cmstp...) alert, suppressible per program for a tool the owner's software relies on. msbuild is a digest
-    item: on a Visual Studio PC it connects out for every NuGet restore.
+    item: on a Visual Studio PC it connects out for every NuGet restore. So is one of the rest when Windows' own
+    service host started it from the system folder with a clean command line: measured 2026-10-17..20, rundll32
+    started by svchost from System32 connected out on 443 thousands of times (one case alone counted 3,454 hits),
+    Windows' own scheduled work, raising an alert a day that the owner closed as expected each time. A command
+    line with any signal, or another parent or folder, still alerts.
     """
 
     name = "host_lolbin"
@@ -471,9 +484,12 @@ class LolbinConnects(HostDetector):
         if prog not in WIN_LOLBINS:
             return []
         must = prog in LOLBIN_DOWNLOADERS
-        severity = 5 if must else 3 if prog in LOLBIN_DEV_TOOLS else 4
+        started = _start_facts(self.state.start_of(c.get("guid") or "", ts))
+        windows_own = (started.get("parent", "").lower() in WINDOWS_SERVICE_HOSTS and folder_class(path) == "installed"
+                       and not started.get("signals") and not started.get("unusual") and not started.get("url"))
+        severity = 5 if must else 3 if prog in LOLBIN_DEV_TOOLS or windows_own else 4
         facts = {"program": prog, "folder": folder_class(path), "port": _port(c.get("remote_port")),
-                 "downloader": must, **_start_facts(self.state.start_of(c.get("guid") or "", ts))}
+                 "downloader": must, "windows_service": windows_own, **started}
         return self.emit(ts, "Built-in Windows tool connected to the internet", facts, severity, prog,
                          (self.state.host, prog), must_alert=must)
 
