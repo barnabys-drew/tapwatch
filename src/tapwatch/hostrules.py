@@ -31,7 +31,14 @@ import re
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .detectors import Detector, Warmup, is_internal, prune_reported, still_reported
+from .detectors import (
+    Detector,
+    Warmup,
+    _expected_services,
+    is_internal,
+    prune_reported,
+    still_reported,
+)
 from .hostctx import (
     ADDRS,
     BPF,
@@ -75,7 +82,7 @@ SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable b
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
          "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd",
-         "host_lsass")
+         "host_lsass", "host_rmm")
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
@@ -1112,6 +1119,118 @@ class LsassAccess(HostDetector):
         return self.emit(ts, "A program read the memory of Windows' credential store (lsass)", facts, 5 if must else 4,
                          prog, must_alert=must)
 
+# R36: remote-access and RMM programs by file name -> (tool, its R16 service). Quick Assist is built into Windows and
+# talks to Microsoft, so it has no R16 service. File names, not paths: a portable copy has the same name.
+RMM_PROGRAMS: dict[str, tuple[str, str]] = {
+    **dict.fromkeys(("anydesk.exe", "anydesk"), ("AnyDesk", "anydesk.com")),
+    **dict.fromkeys(("teamviewer.exe", "teamviewer_service.exe", "tv_w32.exe", "tv_x64.exe", "teamviewerqs.exe",
+                     "teamviewerqs_x64.exe", "teamviewer", "teamviewerd"), ("TeamViewer", "teamviewer.com")),
+    **dict.fromkeys(("rustdesk.exe", "rustdesk"), ("RustDesk", "rustdesk.com")),
+    **dict.fromkeys(("screenconnect.clientservice.exe", "screenconnect.windowsclient.exe",
+                     "connectwisecontrol.client.exe"), ("ScreenConnect", "screenconnect.com")),
+    **dict.fromkeys(("srservice.exe", "srstreamer.exe", "srmanager.exe", "strwinclt.exe", "splashtopsos.exe"),
+                    ("Splashtop", "splashtop.com")),
+    **dict.fromkeys(("ateraagent.exe", "atera_agent.exe"), ("Atera", "atera.com")),
+    **dict.fromkeys(("logmein.exe", "lmiguardiansvc.exe", "logmeinsystray.exe", "lmi_rescue.exe"), ("LogMeIn", "logmein.com")),
+    **dict.fromkeys(("ammyy_admin.exe", "aa_v3.exe", "ammyy.exe"), ("Ammyy Admin", "ammyy.com")),
+    **dict.fromkeys(("supremo.exe", "supremoservice.exe"), ("Supremo", "supremocontrol.com")),
+    **dict.fromkeys(("remote access.exe", "simplehelp.exe", "simplegatewayservice.exe"), ("SimpleHelp", "simple-help.com")),
+    **dict.fromkeys(("meshagent.exe", "meshagent"), ("MeshCentral", "meshcentral.com")),
+    **dict.fromkeys(("getscreen.exe",), ("Getscreen", "getscreen.me")),
+    **dict.fromkeys(("remotepcservice.exe", "remotepc.exe"), ("RemotePC", "remotepc.com")),
+    **dict.fromkeys(("tacticalrmm.exe", "rmmagent"), ("Tactical RMM", "")),
+    **dict.fromkeys(("client32.exe",), ("NetSupport", "")),
+    **dict.fromkeys(("ultraviewer_desktop.exe", "ultraviewer_service.exe"), ("UltraViewer", "")),
+    **dict.fromkeys(("dwagent.exe", "dwagsvc.exe", "dwagent"), ("DWService", "")),
+    **dict.fromkeys(("zaservice.exe", "zohoassist.exe", "zohoassistagent.exe"), ("Zoho Assist", "")),
+    **dict.fromkeys(("action1_agent.exe",), ("Action1", "")),
+    **dict.fromkeys(("ninjarmmagent.exe", "ninjarmmagentpatcher.exe"), ("NinjaOne", "")),
+    **dict.fromkeys(("agentmon.exe",), ("Kaseya", "")),
+    **dict.fromkeys(("pcmonitorsrv.exe", "pcmonitormanager.exe"), ("Pulseway", "")),
+    **dict.fromkeys(("tvnserver.exe", "winvnc.exe", "vncserver.exe", "x11vnc", "vncserver", "x0vncserver"),
+                    ("VNC server", "")),
+    **dict.fromkeys(("aeroadmin.exe",), ("AeroAdmin", "")),
+    **dict.fromkeys(("rutserv.exe", "rfusclient.exe"), ("Remote Utilities", "")),
+    **dict.fromkeys(("rserver3.exe",), ("Radmin", "")),
+    **dict.fromkeys(("anyviewer.exe", "rcservice.exe"), ("AnyViewer", "")),
+    **dict.fromkeys(("remoting_host.exe",), ("Chrome Remote Desktop", "")),
+    **dict.fromkeys(("gotoassist.exe", "gotoassistcustomer.exe", "g2ax_customer.exe"), ("GoTo Resolve", "")),
+    **dict.fromkeys(("bomgar-scc.exe", "bomgar-rep.exe"), ("BeyondTrust Remote Support", "")),
+    **dict.fromkeys(("quickassist.exe",), ("Quick Assist", "")),
+}
+RMM_LEARN_DAYS = 7   # an office's own RMM, or the owner's, is learned in the rule's first week on a box
+
+
+class RemoteAccessTool(HostDetector):
+    """R36. A remote-access or RMM program starts on the PC for the first time (T1219): the PC's side of R16, which
+    sees the same tools' servers on the wire. Tech-support scams talk people into AnyDesk or Quick Assist; ransomware
+    crews install ScreenConnect, AnyDesk or Atera because they are signed and allowed out.
+
+    Reads the process starts already collected (Sysmon event 1 on Windows, eBPF exec on Linux) and matches the file
+    name or, on Windows, the original file name from the program's version resource (so a renamed copy matches)
+    against RMM_PROGRAMS. Per tool, the first start after a learning window is a case and later starts aren't: the
+    window is the rule's first RMM_LEARN_DAYS on a box (persisted), so an office's own RMM is learned, not reported
+    forever. A risky start (Temp, a shared folder or a document app) is tracked apart and never learned, even in that
+    week, so a portable or Outlook-started copy of a tool the box already uses still reports, once. Known as
+    well: `expected_tools` (tool names, `detectors.host_rmm`) and a `takeover.expected` entry for this PC and the
+    tool's R16 service. Scored by the folder: installed (Program Files, /usr, /opt) 3; a user folder or Downloads 4,
+    suppressible per tool; Temp, a shared folder, or started by a document or mail app 5, must_alert. Quick Assist
+    is 4 wherever it runs. Measured 2026-10-19/20: 11,055 Windows process starts in 29 h and 288,764 Linux execs in
+    two days, no remote-access program among them. Blind spot: a renamed copy with no version resource; R16 still
+    sees its servers.
+    """
+
+    name = "host_rmm"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "known", "since")
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7,
+                 learn_days: float = RMM_LEARN_DAYS, expected: dict[str, set[str]] | None = None,
+                 expected_tools: list[str] | None = None):
+        super().__init__(state, reported_days)
+        self.learn = learn_days * DAY
+        self.expected = expected or {}      # host -> R16 services it's expected to use (takeover.expected)
+        self.expected_tools = {t.lower() for t in expected_tools or ()}
+        self.known: set[str] = set()        # tools seen on this box
+        self.since: float | None = None     # when this rule first read a process start here
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if query == SYSMON and str(c.get("eventid")) != "1":
+            return []
+        path = str(c.get("path") or "")
+        windows = query == SYSMON
+        prog = (_basename(path) if windows else path.rsplit("/", 1)[-1]).lower()
+        if self.since is None:
+            self.since = ts
+        original = str(c.get("original_name") or "").lower() if windows else ""
+        hit = RMM_PROGRAMS.get(prog) or RMM_PROGRAMS.get(original)
+        if hit is None:
+            return []
+        tool, service = hit
+        folder = win_folder_class(path) if windows else posix_folder_class(path)
+        parent = _basename(c.get("parent_path") or "") if windows else ""
+        must = folder in ("temp", "shared") or parent_class(parent) == "document"
+        seen = f"{tool} (risky)" if must else tool    # a risky start of a known tool is still news
+        if seen in self.known or tool.lower() in self.expected_tools \
+                or (service and service in self.expected.get(self.state.host, ())):
+            return []
+        self.known.add(seen)
+        if ts - self.since < self.learn and not must:
+            return []   # learned: there before the rule, or the box's own tool in its first week
+        if must:
+            severity = 5
+        elif tool == "Quick Assist" or folder not in ("installed",):
+            severity = 4
+        else:
+            severity = 3
+        facts = {"tool": tool, "program": prog[:80], "folder": folder, "parent": parent[:80] or None,
+                 "parent_class": parent_class(parent) if parent else None, "service": service or None,
+                 "renamed": bool(original) and prog != original and prog not in RMM_PROGRAMS}
+        # The tool's name is the indicator (and the suppression handle), so a renamed copy can't slip a suppression.
+        return self.emit(ts, f"Remote-access tool started on the PC for the first time: {tool}", facts, severity,
+                         tool, (seen,), must_alert=must)
+
+
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
@@ -1133,4 +1252,6 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     rules.append(LinuxSuspiciousConnect(state, **d.get(LinuxSuspiciousConnect.name, {})))
     rules.append(LinuxCommand(state, **d.get(LinuxCommand.name, {})))
     rules.append(LsassAccess(state, **d.get(LsassAccess.name, {})))
+    rules.append(RemoteAccessTool(state, expected=_expected_services(d.get("takeover", {})),
+                                  **d.get(RemoteAccessTool.name, {})))
     return rules

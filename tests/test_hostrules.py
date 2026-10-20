@@ -21,6 +21,7 @@ from tapwatch.hostrules import (
     LolbinConnects,
     LsassAccess,
     NewPersistence,
+    RemoteAccessTool,
     TempFolderConnects,
     _entry_key,
     build,
@@ -894,3 +895,78 @@ def test_a_startup_item_removed_and_listed_again_is_not_new():
 def test_a_cryptominer_command_line_is_an_r28_case():
     (c,) = run(LinuxCommand(st()), lexec(T0, "/tmp/.x/kworker", miner=1))
     assert c.base_severity == 4 and c.facts["signals"] == ["a cryptocurrency miner"]
+
+
+# ------------------------------------------------------------ R36 remote-access tools (#39)
+
+WEEK = 8 * 86400   # past R36's 7-day learning window
+
+
+def test_remote_access_tools_seen_in_the_first_week_are_learned():
+    det = RemoteAccessTool(st())
+    office_rmm = r"C:\Program Files\NinjaRMMAgent\NinjaRMMAgent.exe"
+    assert run(det, start(T0, EXPLORER, EXPLORER), start(T0 + 3600, office_rmm, EXPLORER)) == []
+    (c,) = run(det, start(T0 + WEEK, r"C:\Program Files\TeamViewer\TeamViewer.exe", EXPLORER))
+    assert (c.detector, c.base_severity, c.must_alert, c.facts["tool"], c.facts["folder"]) == \
+        ("host_rmm", 3, False, "TeamViewer", "installed")
+    assert run(det, start(T0 + WEEK + 60, office_rmm, EXPLORER),
+               start(T0 + WEEK + 120, r"C:\Program Files\TeamViewer\TeamViewer.exe", EXPLORER)) == []
+    no_paths(c)
+
+
+def test_a_portable_remote_access_tool_is_scored_by_its_folder_and_parent():
+    def first(path, parent=EXPLORER):
+        det = RemoteAccessTool(st())
+        return run(det, start(T0, EXPLORER, EXPLORER), start(T0 + WEEK, path, parent))
+    (dl,) = first(r"C:\Users\<user>\Downloads\AnyDesk.exe")
+    assert (dl.base_severity, dl.must_alert, dl.indicators, dl.facts["program"]) == (4, False, ["AnyDesk"], "anydesk.exe")
+    (tmp,) = first(r"C:\Users\<user>\AppData\Local\Temp\AnyDesk.exe")
+    assert (tmp.base_severity, tmp.must_alert, tmp.facts["folder"]) == (5, True, "temp")
+    (doc,) = first(r"C:\Program Files\AnyDesk\AnyDesk.exe", OUTLOOK)
+    assert doc.must_alert and doc.facts["parent_class"] == "document"
+    (qa,) = first(r"C:\Windows\System32\quickassist.exe")
+    assert (qa.facts["tool"], qa.base_severity, qa.must_alert) == ("Quick Assist", 4, False)
+    for c in (dl, tmp, doc, qa):
+        no_paths(c)
+
+
+def test_linux_remote_access_tools_and_the_expected_allowance():
+    det = RemoteAccessTool(st())
+    (c,) = run(det, lexec(T0, "/usr/bin/bash"), lexec(T0 + WEEK, "/tmp/.x/rustdesk"))
+    assert (c.facts["tool"], c.facts["folder"], c.must_alert) == ("RustDesk", "temp", True)
+    allowed = RemoteAccessTool(st(), expected={PC: {"anydesk.com"}})
+    assert run(allowed, start(T0, EXPLORER, EXPLORER), start(T0 + WEEK, r"C:\Users\<user>\Downloads\AnyDesk.exe", EXPLORER)) == []
+
+
+def test_remote_access_learning_survives_a_restart():
+    det = RemoteAccessTool(st())
+    run(det, start(T0, r"C:\Program Files\AnyDesk\AnyDesk.exe", EXPLORER))
+    again = RemoteAccessTool(st())
+    again.restore(json.loads(json.dumps(det.snapshot())))
+    assert run(again, start(T0 + WEEK, r"C:\Program Files\AnyDesk\AnyDesk.exe", EXPLORER)) == []
+    assert len(run(again, start(T0 + WEEK, r"C:\Program Files\RustDesk\rustdesk.exe", EXPLORER))) == 1
+    assert "host_rmm" in NAMES and "host_rmm" in CODE_ONLY
+    assert any(isinstance(r, RemoteAccessTool) for r in build({}))
+
+
+def test_risky_remote_access_starts_are_never_learned_and_renamed_copies_match():
+    det = RemoteAccessTool(st())
+    (c,) = run(det, start(T0, r"C:\Users\<user>\AppData\Local\Temp\AnyDesk.exe", EXPLORER))   # day one, Temp
+    assert c.must_alert
+    renamed = start(T0 + WEEK, r"C:\Users\<user>\Downloads\invoice_viewer.exe", EXPLORER, original_name="rustdesk.exe")
+    (r,) = run(det, renamed)
+    assert (r.facts["tool"], r.facts["renamed"], r.indicators, r.facts["program"]) == \
+        ("RustDesk", True, ["RustDesk"], "invoice_viewer.exe")
+    assert "renamed" in summarize(r, Assets({}))
+    quiet = RemoteAccessTool(st(), expected_tools=["NinjaOne", "quick assist"])
+    assert run(quiet, start(T0, EXPLORER, EXPLORER), start(T0 + WEEK, r"C:\Windows\System32\quickassist.exe", EXPLORER)) == []
+
+
+def test_a_learned_tool_started_from_temp_or_by_outlook_still_reports_once():
+    """Review of #235: the owner's TeamViewer learned in week one; a portable copy in Temp later is the scam shape."""
+    det = RemoteAccessTool(st())
+    tv = r"C:\Program Files\TeamViewer\TeamViewer.exe"
+    assert run(det, start(T0, tv, EXPLORER)) == []
+    (c,) = run(det, start(T0 + WEEK, r"C:\Users\<user>\AppData\Local\Temp\TeamViewerQS.exe", EXPLORER))
+    assert c.must_alert and c.facts["tool"] == "TeamViewer"
+    assert run(det, start(T0 + WEEK + 60, tv, OUTLOOK)) == []      # one risky report per tool

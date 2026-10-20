@@ -969,7 +969,8 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
 - **Baseline:** measured 2026-10-19/20: 11,055 Windows process starts in 29 h and 288,764 Linux execs in two days,
   no remote-access tool among them.
 - **FPs (expected):** the owner installing a tool to help family; an office's IT tool (learned, or an `expected`
-  entry); a one-off Quick Assist session.
+  entry); a one-off Quick Assist session; a real installer that runs the tool from Temp once during setup (one
+  must-alert per tool: risky starts are tracked apart from the learned tool, so a portable copy later is not missed).
 - **Route:** as above, code-only; pairs with R16's network case through host ↔ network correlation.
   **Safe test:** copy `notepad.exe` to `%TEMP%\AnyDesk.exe`, run it and close it → one must-alert case (Temp is
   never learned, so it works in the first week too; a second run is not reported again).
