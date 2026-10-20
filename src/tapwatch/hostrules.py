@@ -1244,6 +1244,16 @@ def _agent_facts(c: dict) -> dict:
             "agent_unattended": attended == "0" or ssh, "via_ssh": ssh}
 
 
+# R37/R38: programs that only *carry* another command line (`bash -c "7z a -p..."`, `timeout 40 powershell -Command
+# ...`, `sudo ngrok ...`): the tool's own start has the same signal, so these are skipped. Measured 2026-10-20: the
+# R38 safe test raised four cases, for bash, timeout, powershell.exe and 7z.exe.
+WRAPPERS = frozenset({"bash", "sh", "dash", "zsh", "fish", "ksh", "sudo", "doas", "env", "timeout", "nohup", "nice",
+                      "setsid", "xargs", "script", "strace", "watch", "su", "runuser", "flock", "stdbuf",
+                      "cmd.exe", "powershell.exe", "pwsh.exe", "wsl.exe", "wslhost.exe", "conhost.exe", "cscript.exe",
+                      "wscript.exe", "runas.exe"})
+SIGNAL_CHAIN = 60   # seconds: the same signal and destination again is the same command (a wrapper we don't know)
+
+
 def _program_and_folder(query: str, c: dict) -> tuple[str, str]:
     path = str(c.get("path") or "")
     if query == SYSMON:
@@ -1263,11 +1273,20 @@ class TunnelOpened(HostDetector):
     name = "host_tunnel"
     QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
 
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7):
+        super().__init__(state, reported_days)
+        self.chain: dict[tuple, float] = {}
+
+    def _chained(self, key: tuple, ts: float) -> bool:
+        return _chained(self.chain, key, ts)
+
     def row(self, query: str, c: dict, ts: float) -> list[Case]:
         flag = "cmd_tunnel" if query == SYSMON else "lcmd_tunnel"
         if str(c.get(flag, "0")) != "1" or (query == SYSMON and str(c.get("eventid")) != "1"):
             return []
         prog, folder = _program_and_folder(query, c)
+        if prog in WRAPPERS or self._chained(("tunnel",), ts):
+            return []
         agent = _agent_facts(c)
         must = folder in ("temp", "shared")
         severity = 5 if must else 3 if agent.get("agent_attended") else 4
@@ -1278,6 +1297,16 @@ class TunnelOpened(HostDetector):
 
 STAGING_LEARN_DAYS = 7   # the box's own backups and sync jobs are learned in the rule's first week
 USER_FOLDERS = {"documents", "desktop", "pictures", "onedrive"}
+
+
+def _chained(chain: dict[tuple, float], key: tuple, ts: float) -> bool:
+    """True when the same signal (and destination) was seen within SIGNAL_CHAIN seconds; records it either way."""
+    hit = ts - chain.get(key, -1e18) < SIGNAL_CHAIN
+    chain[key] = ts
+    if len(chain) > 200:
+        for k in [k for k, t in chain.items() if ts - t >= SIGNAL_CHAIN]:
+            del chain[k]
+    return hit
 
 
 class FilesStaged(HostDetector):
@@ -1303,6 +1332,7 @@ class FilesStaged(HostDetector):
         self.learn = learn_days * DAY
         self.known: set[tuple] = set()      # (tool, destination) seen on this box
         self.since: float | None = None
+        self.chain: dict[tuple, float] = {}
 
     def row(self, query: str, c: dict, ts: float) -> list[Case]:
         if query == SYSMON and str(c.get("eventid")) != "1":
@@ -1311,6 +1341,8 @@ class FilesStaged(HostDetector):
             self.since = ts
         pre = "cmd_" if query == SYSMON else "lcmd_"
         prog, folder = _program_and_folder(query, c)
+        if prog in WRAPPERS:
+            return []
         agent = _agent_facts(c)
         if str(c.get(pre + "sync", "0")) == "1":
             # No destination on the command line: a restic repository from the environment, or a local one (never
@@ -1318,18 +1350,22 @@ class FilesStaged(HostDetector):
             dest = str(c.get("sync_dest") or "local or from the environment").lower()[:120]
             tool = prog.removesuffix(".exe").removesuffix(".com")
             key = (tool, dest)
-            if key in self.known:
+            if key in self.known or _chained(self.chain, ("sync", dest), ts):
                 return []
             self.known.add(key)
             if ts - self.since < self.learn:
                 return []
-            facts = {"program": prog[:80], "tool": tool, "destination": dest, "folder": folder, **agent}
+            facts = {"program": prog[:80], "tool": tool, "destination": dest, "folder": folder, **agent,
+                     "lift_by": ["upload_spike"]}   # only an upload from this PC makes it an alert, not any pairing
             return self.emit(ts, "Files sent to a destination this PC hasn't used before", facts, 3, dest,
                              ("sync",) + key)
         if str(c.get(pre + "archive_pw", "0")) == "1":
             of = str(c.get("archive_of") or "").lower()
+            if _chained(self.chain, ("archive", of), ts):
+                return []
             user = of in USER_FOLDERS
-            facts = {"program": prog[:80], "archive_of": of or None, "folder": folder, **agent}
+            facts = {"program": prog[:80], "archive_of": of or None, "folder": folder, **agent,
+                     "lift_by": ["upload_spike"]}
             return self.emit(ts, "A password-protected archive was made" + (f" of {of.title()}" if user else ""),
                              facts, 4 if user and not agent.get("agent_attended") else 3, prog[:80],
                              ("archive", prog, of))
@@ -1386,6 +1422,8 @@ class FileChanged(HostDetector):
     def _case(self, ts: float, facts: dict, level: int, indicator: str, key: tuple) -> list[Case]:
         severity = level if self.alert else 3
         facts["would_alert"] = level >= 4
+        if not self.alert:
+            facts["max_route"] = "digest"   # until baselined, a pairing with an unrelated case can't lift it either
         if severity >= 4:   # emit's once-a-day applies below alert level only; a file is one case a day either way
             if still_reported(self.reported, key, ts, self.ttl):
                 return []

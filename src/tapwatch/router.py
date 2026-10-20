@@ -77,6 +77,14 @@ def route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
         # Measured 2026-10-17 on the live history: the three alert pairs change nothing, and no logged case had
         # an unsuppressed alert partner, so the floor is for the next real pair, not a re-route of the past.
         pair = (case.facts.get("correlated") or [{}])[0]
+        lift_by = case.facts.get("lift_by")
+        if lift_by:
+            # The rule names the partners that tell its story (R38: files staged, then an upload_spike). Any other
+            # case on a busy PC within five minutes is a coincidence: measured 2026-10-20, the R36-R39 safe tests
+            # were all lifted by an unrelated dns_bypass digest item three minutes earlier.
+            pair = next((p for p in case.facts.get("correlated") or () if p.get("detector") in lift_by), {})
+            if not pair:
+                return r, reason
         with_whom = f"#{pair.get('id')} ({pair.get('detector')}, {abs(pair.get('minutes', 0))} min apart)"
         capped = "digest" in (case.facts.get("max_route"), case.facts.get("host_max_route"))
         if r is Route.LOG and best == "alert":
