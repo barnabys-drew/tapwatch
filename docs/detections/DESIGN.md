@@ -956,31 +956,38 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   `bpf_process_events` (`path`) on Linux. A built-in table maps program file names to a tool and its R16 service
   (`anydesk.exe` → anydesk.com; about 30 tools: AnyDesk, TeamViewer, RustDesk, ScreenConnect, Splashtop, Atera,
   LogMeIn, Ammyy, Supremo, SimpleHelp, MeshCentral, Tactical RMM, NetSupport, UltraViewer, DWService, Zoho Assist,
-  Action1, NinjaOne, Kaseya, Pulseway, TightVNC/UltraVNC, Quick Assist). No agent change.
+  Action1, NinjaOne, Kaseya, Pulseway, TightVNC/UltraVNC, Quick Assist). One agent change: Sysmon event 1's
+  `OriginalFileName` (from the program's version resource) is collected too, so a renamed copy still matches.
 - **Logic:** per (device, tool), the first start after the learning window is a case; later starts are not. The
   learning window is the rule's first 7 days on a box (persisted), so a company's own RMM on an office PC is
-  learned, not reported forever. A `takeover.expected` entry for the device and the tool's service also counts as
-  known. Severity from the folder class: an installed folder (Program Files, /usr, /opt) 3; a user folder
-  (AppData, home) or Downloads 4, suppressible per (device, tool); Temp or a shared folder, or started by a
-  document or mail app (`WIN_DOC_APPS`), 5 and must_alert. Quick Assist (built into Windows) is 4 wherever it runs.
+  learned, not reported forever; a start from Temp, a shared folder or a document app is never learned, even in
+  that week. Known as well: `detectors.host_rmm.expected_tools` (tool names), and a `takeover.expected` entry for
+  this PC and the tool's R16 service (only 14 of the tools have one). Severity from the folder class: an installed
+  folder (Program Files, /usr, /opt) 3; a user folder (AppData, home) or Downloads 4, suppressible per (device,
+  tool); Temp or a shared folder, or started by a document or mail app (`WIN_DOC_APPS`), 5 and must_alert. Quick
+  Assist (built into Windows; System32 or the Store app's folder) is 4 wherever it runs.
 - **Baseline:** measured 2026-10-19/20: 11,055 Windows process starts in 29 h and 288,764 Linux execs in two days,
   no remote-access tool among them.
 - **FPs (expected):** the owner installing a tool to help family; an office's IT tool (learned, or an `expected`
   entry); a one-off Quick Assist session.
 - **Route:** as above, code-only; pairs with R16's network case through host ↔ network correlation.
-  **Safe test:** copy `notepad.exe` to `%TEMP%\AnyDesk.exe`, run it and close it → one must-alert case.
-- **Blind spot:** matching is by file name; a renamed copy is missed (Sysmon's OriginalFileName isn't collected
-  yet, a later step). R16 still sees its servers.
+  **Safe test:** copy `notepad.exe` to `%TEMP%\AnyDesk.exe`, run it and close it → one must-alert case (Temp is
+  never learned, so it works in the first week too; a second run is not reported again).
+- **Blind spot:** a renamed copy with no version resource, or a tool not in the table; R16 still sees its servers.
 
 ### R37 A tunnel is opened from a PC (`host_tunnel`) — designed (#39)
 - **Threat:** a tunnel opens a way *in* to a PC from the internet, past the router (T1572): `ngrok`,
   `cloudflared tunnel`, `code tunnel`, `devtunnel host`, `tailscale funnel`, `ssh -R`, localtunnel, bore.
 - **Data:** new command-line signals computed on the PC, as for R24 and R28: `cmd_tunnel` in the Windows
-  `sysmon_events` query and `lcmd_tunnel` in the Linux `bpf_process_events` query (the line is kept only when a
-  signal fires).
-- **Logic:** severity 4, suppressible per (device, program); from Temp or a shared folder 5, must_alert. On Linux,
-  started under the owner's coding agent (an ancestor in the eBPF process rows is the `claude` binary, as
-  `hostctx` recognises it) → severity 3 and the fact `agent_started`: the owner asked for it, so a digest item.
+  `sysmon_events` query and `lcmd_tunnel` in the Linux `bpf_process_events` query. Unlike R24 and R28, the
+  command line is **never kept** for this signal: a tunnel's line carries its token (`cloudflared --token`,
+  `ngrok --authtoken`) and the results log is readable by every local account. On Linux, when it fires, the
+  query also reads the Claude Code environment markers of the process and its parent (`process_envs`, as
+  `bpf_connections` already does): a tunnel is long-lived, so the process is still there a minute later.
+- **Logic:** severity 4, suppressible per (device, program); from Temp or a shared folder 5, must_alert. Started
+  in an *attended* Claude Code session (the markers say so) → severity 3 and `agent_started`: the owner is at the
+  keyboard and asked for it, so a digest item. An unattended or SSH-driven session stays an alert: a
+  prompt-injected agent opening a tunnel is the threat itself.
 - **Baseline:** no tunnel program started in the windows above; the signal's own baseline is the first day after
   the agent config is updated.
 - **FPs (expected):** the owner's own dev tunnels and `ssh -R` for remote work (agent-started ones go to the
@@ -993,13 +1000,15 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   `az storage`/`azcopy`, `gsutil`/`gcloud storage`), WinSCP scripts; a password-protected archive of Documents or
   Desktop before the upload.
 - **Data:** new signals `cmd_sync`/`lcmd_sync` (a copy or sync to a remote) and `cmd_archive_pw`/`lcmd_archive_pw`
-  (7-Zip `-p`, RAR `-hp`/`-p`, `zip -e`/`-P`). The rule reads the kept line only to take the *destination*: the
-  rclone remote name, `s3://bucket`, `gs://bucket`, the storage account, the restic repository (`env` when it comes
-  from the environment). The line never enters the case; the destination is an indicator.
+  (7-Zip `-p`, RAR `-hp`/`-p`, `zip -e`/`-P`). The command line is **never kept** (an archive password or a
+  `rest:https://user:pass@` repository would land in a world-readable log); the query extracts only the
+  *destination* with a capture group (`regex_match(…, 1)`) into a `dest` column: the rclone remote name,
+  `s3://bucket`, `gs://bucket`, the storage account, the restic repository host (`env` when it comes from the
+  environment). The destination is an indicator.
 - **Logic:** per (device, tool, destination): new after the 7-day learning window → severity 3 (digest); known →
   nothing. A password archive → 3; of Documents, Desktop or Pictures → 4. An `upload_spike` from the same device
-  within five minutes pairs with it (host ↔ network correlation) and makes an alert. Agent-started on Linux:
-  `agent_started` fact, stays digest.
+  within five minutes pairs with it (host ↔ network correlation) and makes an alert. Agent-started on Linux (the
+  markers, as R37; a short `rclone` run may be gone before the query reads them): `agent_started` fact, digest.
 - **Baseline:** 2026-10-20: a nightly `restic` (3 execs) on the Linux box, learned in the window; 7-Zip twice from
   a hardware vendor's installer, no password.
 - **FPs (expected):** the owner's backups to a new bucket; a new cloud CLI workflow; zipping a folder with a
@@ -1011,10 +1020,15 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
 - **Threat:** persistence and privilege through files rather than registered entries (T1546.004, T1574.006,
   T1548.003, T1547.001): a shell start-up file gaining a line, `/etc/ld.so.preload`, `sudoers`, a file dropped in
   a Windows Startup folder.
-- **Data:** Linux: osquery `file_events` (inotify; needs `--enable_file_events`) over `/etc/ld.so.preload`,
-  `/etc/sudoers`, `/etc/sudoers.d/`, `/etc/profile.d/`, and each home's `.bashrc`, `.bash_profile`, `.profile`,
-  `.zshrc`, `.config/autostart/`. Windows: Sysmon event 11 (file created), included only for paths under
-  `\Start Menu\Programs\Startup\`, which also names the program that wrote it.
+- **Data:** Linux: osquery `file_events` (inotify; `--enable_file_events=true` beside the existing
+  `--disable_events=false`) over a top-level `file_paths` block: `/etc/ld.so.preload`, `/etc/sudoers`,
+  `/etc/sudoers.d/%%`, `/etc/profile.d/%%`, and `/home/%/.bashrc`, `.bash_profile`, `.profile`, `.zshrc`,
+  `/home/%/.config/autostart/%` (and the same under `/root/`). Wildcards expand when the config loads, so a home
+  created later needs a restart. The query strips `/home/<user>` to `~` in SQL. inotify works on WSL2's ext4,
+  not on `/mnt/c`; an editor that saves by rename is caught as a create (to test with `sed -i`). Windows: Sysmon
+  event 11 (file created), its "off" include removed and a `TargetFilename contains \Start Menu\Programs\Startup\`
+  include added; `sysmon_events` gains event 11 and keeps the file's base name and whether the folder is per-user
+  or all-users, never the path (it holds the user name). Sysmon names the program that wrote it.
 - **Logic:** `ld.so.preload` or sudoers written → 4 (R23 still reports preload *content* at 5). A shell start-up
   file changed → 3. A Startup-folder file created by a shell, script host, LOLBin, document or mail app, or from a
   temp folder → 4; by anything else (installers) → 3. Ships at digest for every kind until a week's volume is
