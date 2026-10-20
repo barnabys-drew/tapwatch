@@ -194,14 +194,15 @@ class Pipeline:
         mine = case.facts.get("source") == "endpoint"
         partners = []
         for r in self.store.nearby(case, CORRELATE_WINDOW):
-            facts = json.loads(r["facts"] or "{}")
-            if facts.get("source") == "monitor" or (facts.get("source") == "endpoint") == mine:
+            # The side and the pairing come from the rule names alone (no facts to parse): a host rule is one of
+            # hostrules.NAMES, and a monitor case (R22) is in no host rule's PAIRS.
+            if (r["detector"] in hostrules.NAMES) == mine:
                 continue
-            if str(r["reason"] or "").startswith("suppressed:"):
-                continue  # the owner said that side is expected: it is not half of a story (review of #139: #786)
             host_rule, net_rule = (case.detector, r["detector"]) if mine else (r["detector"], case.detector)
             if not hostrules.pairs_with(host_rule, net_rule):
                 continue  # not the same story, just the same PC within five minutes (hostrules.PAIRS)
+            if str(r["reason"] or "").startswith("suppressed:"):
+                continue  # the owner said that side is expected: it is not half of a story (review of #139: #786)
             partners.append(r)
         if not partners:
             return []
