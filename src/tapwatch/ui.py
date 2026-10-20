@@ -378,7 +378,11 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
         where.append("verdict IS NOT NULL")
     sql_where = (" WHERE " + " AND ".join(where)) if where else ""
     db = store.db
+    # The WHERE clauses are fixed text with '?' for every value, and the sort is a QUEUE_SORTS value (f["sort"] is
+    # checked against its keys above), so no request text reaches the SQL.
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     total = db.execute(f"SELECT COUNT(*) FROM cases{sql_where}", args).fetchone()[0]
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     rows = db.execute(f"SELECT * FROM cases{sql_where} ORDER BY {QUEUE_SORTS[f['sort']]} LIMIT {PAGE_SIZE}",
                       args).fetchall()
     # The tiles and pills count with the same route filter as the list, so the numbers match what is shown: the
@@ -386,6 +390,7 @@ def render_queue(store: Store, assets: Assets, params: dict, csrf: str) -> tuple
     # (2026-10-18). How many open cases that hides is said once, with a link that shows them.
     route_sql = "route != 'log'" if f["route"] == "triage" else "route = ?" if f["route"] in ROUTES else "1"
     route_args = [f["route"]] if f["route"] in ROUTES else []
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- route_sql is one of three fixed strings
     by_status = dict(db.execute(f"SELECT status, COUNT(*) FROM cases WHERE {route_sql} GROUP BY status",
                                 route_args).fetchall())
     hidden_log = db.execute("SELECT COUNT(*) FROM cases WHERE status != 'closed' AND route = 'log'").fetchone()[0] \

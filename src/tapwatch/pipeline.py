@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from . import detectors as det
-from . import evidence, hostrules
+from . import evidence, hostrules, inventory
 from .hostctx import HostContext
 from .models import Case, Route, Verdict
 from .notifiers import HerdrNotifier, Notifier
@@ -66,12 +66,25 @@ class Pipeline:
         """One record through every detector; a `{"_type": "tick", "ts": now}` record is the minute tick instead."""
         out = []
         tick = rec.get("_type") == "tick"
+        if not tick and rec.get("_type") == "osquery" and rec.get("action") == "snapshot":
+            self.record_inventory(rec)
         for d in self.detectors:
             for case in (d.tick(rec["ts"]) if tick else d.feed(rec)):
                 handled = self.handle(case)
                 if handled:
                     out.append(handled)
         return out
+
+    def record_inventory(self, rec: dict) -> None:
+        """Software and OS snapshots from the endpoint agents go to the inventory tables (#224); the detectors
+        still see the record."""
+        name, agent = rec.get("name"), str(rec.get("hostIdentifier") or "")
+        rows = [r for r in rec.get("snapshot") or () if isinstance(r, dict)]
+        if name == inventory.OS_QUERY and rows:
+            self.store.set_agent_os(agent, rows[0], rec.get("ts") or time.time())
+        elif name in inventory.QUERIES:
+            self.store.replace_software(agent, inventory.QUERIES[name], inventory.normalise(name, rows),
+                                        rec.get("ts") or time.time())
 
     def flush(self) -> list[tuple[int, Case, Verdict | None, Route]]:
         """Handle cases detectors were still buffering (call at the end of a replay)."""

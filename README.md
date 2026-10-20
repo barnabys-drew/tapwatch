@@ -216,7 +216,8 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch ui` | the case desk at http://127.0.0.1:8765/ (set `TAPWATCH_UI_TOKEN` for other devices) |
 | `tapwatch digest` | send the pending digest now (it also goes out daily) |
 | `tapwatch mark 42 fp` | close case 42 as a false (`fp`) or true (`tp`) positive |
-| `tapwatch update-feeds` | refresh the public lists: Tranco, IEEE MAC vendors, iptoasn, UT1 site categories, the Public Suffix List, the AdFection / Candiru indicators (weekly is plenty) |
+| `tapwatch update-feeds` | refresh the public lists: Tranco, IEEE MAC vendors, iptoasn, UT1 site categories, the Public Suffix List, the AdFection / Candiru indicators, and the vulnerability data for the agents' software (CISA KEV, OSV, NVD; weekly is plenty) |
+| `tapwatch software [--vulns]` | each endpoint agent's installed software from its daily snapshot, and with `--vulns` what the downloaded vulnerability data matches |
 | `tapwatch syslog` | receive the router's CEF syslog into `udm.log` |
 | `tapwatch service install` | install systemd user services (alerter, case desk, watchdog; `--capture-iface` adds capture, `--syslog` the router syslog listener) |
 | `tapwatch who 42 --zeek-dir DIR` | ask the PC (osquery and agent transcripts) who made case 42's traffic |
@@ -239,7 +240,9 @@ connection and feed the twelve host rules.
   command lines. About $0.02 a day at 1,000 cases.
 - **Your notifications**, to the channels you configure. They include the device name and its LAN
   address. Domain names in them are defanged.
-- **Public list downloads** (`update-feeds`): downloads only, nothing is sent.
+- **Public list downloads** (`update-feeds`): downloads only, nothing is sent. The vulnerability check
+  downloads whole public datasets (CISA KEV, OSV's dump for your Linux release) and asks NVD by CVE id, so the
+  house's software list never leaves the box.
 - **Domain categorizer**, if enabled (`categories: {ai: true}`, off by default): the public registrable
   domain only (`example.com`), to Anthropic, once per domain, cached for 30 days, at most `per_hour` (default 60) an hour.
 

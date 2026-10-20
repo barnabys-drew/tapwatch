@@ -11,7 +11,8 @@
 # relative paths `tapwatch init` writes (tapwatch.db, assets.yaml, feeds) resolve there.
 services:
   zeek:
-    image: zeek/zeek:7.0.0
+    build: ./zeek                  # zeek/zeek:9.0.0 (LTS) with Debian's fixes applied; see zeek/Dockerfile
+    image: tapwatch-zeek:9.0.0
     network_mode: host
     cap_add: [NET_RAW, NET_ADMIN]
     working_dir: /logs

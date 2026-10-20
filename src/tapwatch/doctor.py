@@ -32,6 +32,7 @@ CONN_STALE = 600           # same as the watchdog: a busy network writes conn.lo
 SYSLOG_STALE = 1800        # the listener writes a heartbeat row every 10 minutes it hears the router
 AGENT_STALE = 900          # the agents' busiest queries run every minute
 FEEDS_OLD_DAYS = 30
+VULN_FEEDS_OLD_DAYS = 14   # KEV gains entries most weeks; an old copy misses the newest exploited bugs
 TAIL_BYTES = 2_000_000     # enough recent conn.log for the mirror check without reading the whole file
 SETTLING = 900             # services this new may not have written a log yet: a missing log is a note, not a failure
 
@@ -261,6 +262,21 @@ def check_feeds(cfg: dict, now: float) -> list[Result]:
     return [Result(OK, "Lists", "public lists downloaded")]
 
 
+def check_vuln_feeds(cfg: dict, now: float) -> list[Result]:
+    """The known-exploited data (#225). Only worth a line where an endpoint agent reports software."""
+    if not (cfg.get("host_context") or {}).get("results_logs"):
+        return []
+    kev = Path(cfg.get("feeds_dir", "feeds")) / "kev.json"
+    age = _age(kev, now)
+    if age is None:
+        return [Result(WARN, "Vuln data", "no known-exploited (KEV) list, so installed software isn't checked",
+                       "tapwatch update-feeds")]
+    days = int(age // 86400)
+    if age > VULN_FEEDS_OLD_DAYS * 86400:
+        return [Result(WARN, "Vuln data", f"the known-exploited list is {days} days old", "tapwatch update-feeds")]
+    return [Result(OK, "Vuln data", f"known-exploited list {days} day{'s' if days != 1 else ''} old")]
+
+
 def check_disk(path: Path) -> list[Result]:
     free = shutil.disk_usage(path).free / 1e9
     if free < 1:
@@ -314,6 +330,7 @@ def run_all(cfg: dict, cfg_path: str, zeek_dir: str, now: float | None = None, r
     results += check_alerts(cfg)
     results += check_ai(cfg)
     results += check_feeds(cfg, now)
+    results += check_vuln_feeds(cfg, now)
     results += check_disk(Path("."))
     results += check_windows(run)
     return results
