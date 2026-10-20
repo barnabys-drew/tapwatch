@@ -16,6 +16,7 @@ from tapwatch.hostrules import (
     DiscoveryBurst,
     EncodedCommand,
     EndpointState,
+    FileChanged,
     FilesStaged,
     LinuxCommand,
     LinuxSuspiciousConnect,
@@ -1066,3 +1067,48 @@ def test_the_conf_carries_exactly_the_fragments_the_pattern_source_builds():
     assert m.linux_inner() in _conf_query("bpf_process_events")
     assert m.linux_outer() in _conf_query("bpf_process_events")
     assert m.windows() in _conf_query("sysmon_events")
+
+
+# ------------------------------------------------------------ R39 file changes (#167)
+
+def fim(t, file, action="UPDATED"):
+    return {"_type": "osquery", "name": "file_changes", "unixTime": int(t), "ts": int(t), "action": "added",
+            "columns": {"time": str(int(t)), "action": action, "category": "tapwatch", "file": file}}
+
+
+def test_file_changes_ship_as_digest_items_with_what_they_would_be():
+    det = FileChanged(st())
+    pre, rc, auto = run(det, fim(T0, "/etc/ld.so.preload", "CREATED"), fim(T0, "~/.bashrc"),
+                        fim(T0, "~/.config/autostart/x.desktop", "CREATED"))
+    assert (pre.detector, pre.base_severity, pre.facts["would_alert"], pre.facts["kind"]) == \
+        ("host_fim", 3, True, "privilege file")
+    assert (rc.facts["kind"], rc.facts["would_alert"], rc.indicators) == ("shell start-up file", False, ["~/.bashrc"])
+    assert auto.facts["kind"] == "autostart entry"
+    assert run(det, fim(T0 + 60, "~/.bashrc")) == []                      # once a day per file
+    assert run(FileChanged(st()), fim(T0, "/etc/hosts")) == []
+    alerting = FileChanged(st(), alert=True)
+    (live,) = run(alerting, fim(T0, "/etc/sudoers.d/90-x"))
+    assert live.base_severity == 4
+    assert run(alerting, fim(T0 + 3 * 3600, "/etc/sudoers.d/90-x", "MOVED_TO")) == []   # once a day, at alert level too
+    assert "/home/" not in json.dumps(rc.facts)
+
+
+def test_a_startup_folder_drop_names_the_program_that_wrote_it():
+    drop = sysmon(11, T0, path=r"C:\Windows\System32\wscript.exe", file_name="update.vbs", startup_scope="per user")
+    (c,) = run(FileChanged(st()), drop)
+    assert (c.facts["file"], c.facts["program"], c.facts["would_alert"], c.indicators) == \
+        ("update.vbs", "wscript.exe", True, ["update.vbs"])
+    no_paths(c)
+    assert "Startup folder" in summarize(c, Assets({}))
+    inst = sysmon(11, T0, path=r"C:\Program Files\Vendor\setup.exe", file_name="Vendor.lnk", startup_scope="all users")
+    (i,) = run(FileChanged(st()), inst)
+    assert not i.facts["would_alert"] and i.facts["scope"] == "all users"
+    assert "host_fim" in NAMES and "host_fim" in CODE_ONLY
+
+
+def test_the_agent_logs_file_names_not_paths():
+    q = _conf_query("sysmon_events")
+    assert "(eventid = 11 AND lower(json_extract(data, '$.EventData.TargetFilename')) LIKE" in q   # Startup only
+    assert "AS file_name" in q and "TargetFilename') AS" not in q
+    fc = _conf_query("file_changes")
+    assert "AS file FROM file_events" in fc and "sed[A-Za-z0-9]{6}" in fc

@@ -82,7 +82,8 @@ SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable b
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
          "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd",
-         "host_lsass", "host_rmm", "host_tunnel", "host_staging")
+         "host_lsass", "host_rmm", "host_tunnel", "host_staging", "host_fim")
+FIM = "file_changes"   # R39: the Linux agent's inotify query over the file_paths in osquery.conf
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
@@ -1335,6 +1336,63 @@ class FilesStaged(HostDetector):
         return []
 
 
+class FileChanged(HostDetector):
+    """R39. A file that gives persistence or privilege changes (T1546.004, T1574.006, T1548.003, T1547.001): on Linux,
+    `/etc/ld.so.preload` or sudoers written, a shell's start-up file, `/etc/profile.d/` or an XDG autostart entry
+    changed (the agent's `file_changes` inotify query, the home part reduced to ~ on the PC; it watches the
+    directories and picks the files, because a missing file is never watched and a save-by-rename drops a file's
+    watch: measured with osqueryd 5.23.1, a new file is CREATED and `sed -i` is MOVED_TO the real name); on Windows, a file
+    created in a Startup folder (Sysmon event 11, only the file name and per-user or all-users).
+
+    Privilege files and a Startup-folder file written by a shell, script host, LOLBin, document or mail app, or a
+    program in Temp, Downloads or a shared folder would be 4; the rest 3. Until a week's volume is measured on a dev
+    PC, where editors and coding agents touch dotfiles, every case ships as a digest item with `would_alert` set
+    (`alert: true` under detectors.host_fim lifts that). R23 still reports ld.so.preload *content* at 5 and the
+    Startup folder hourly; this one is immediate and names the program on Windows. Blind spots: which program read a
+    file (file monitoring can't say), and on WSL, Windows paths (inotify sees Linux paths only).
+    """
+
+    name = "host_fim"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, FIM)
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 1, alert: bool = False):
+        super().__init__(state, reported_days)
+        self.alert = alert
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if query == FIM:
+            f = str(c.get("file") or "")
+            if f == "/etc/ld.so.preload" or f.startswith("/etc/sudoers"):
+                kind, level = "privilege file", 4
+            elif f.startswith("~/.config/autostart/"):
+                kind, level = "autostart entry", 3
+            elif f.startswith(("~/.", "/etc/profile.d/")):
+                kind, level = "shell start-up file", 3
+            else:
+                return []
+            facts = {"file": f[:120], "kind": kind, "action": str(c.get("action") or "").lower(), "os": "linux"}
+            return self._case(ts, facts, level, f[:120], (f,))
+        if str(c.get("eventid")) != "11":
+            return []
+        name = str(c.get("file_name") or "")[:120] or "unknown"
+        path = str(c.get("path") or "")
+        prog, folder = _basename(path).lower() or "unknown", win_folder_class(path)
+        risky = prog in WIN_SHELLS or prog in WIN_LOLBINS or prog in WIN_DOC_APPS or \
+            folder in ("temp", "downloads", "shared")
+        facts = {"file": name, "kind": "Startup folder file", "scope": c.get("startup_scope"), "program": prog[:80],
+                 "folder": folder, "os": "windows"}
+        return self._case(ts, facts, 4 if risky else 3, name, (name, prog))
+
+    def _case(self, ts: float, facts: dict, level: int, indicator: str, key: tuple) -> list[Case]:
+        severity = level if self.alert else 3
+        facts["would_alert"] = level >= 4
+        if severity >= 4:   # emit's once-a-day applies below alert level only; a file is one case a day either way
+            if still_reported(self.reported, key, ts, self.ttl):
+                return []
+            self.reported[key] = ts
+        return self.emit(ts, f"A {facts['kind']} changed on the PC", facts, severity, indicator, key)
+
+
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
@@ -1360,4 +1418,5 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
                                   **d.get(RemoteAccessTool.name, {})))
     rules.append(TunnelOpened(state, **d.get(TunnelOpened.name, {})))
     rules.append(FilesStaged(state, **d.get(FilesStaged.name, {})))
+    rules.append(FileChanged(state, **d.get(FileChanged.name, {})))
     return rules
