@@ -1435,8 +1435,11 @@ class FileChanged(HostDetector):
 # pairing within five minutes means something. Measured 2026-10-20: with any pairing allowed, every R36-R39 safe test
 # was lifted to an alert by an unrelated dns_bypass digest item three minutes earlier (this PC has network digest items
 # most hours). Both sides are filtered with this one table. A host rule not listed pairs with nothing.
+# The program reached somewhere: what a first contact looks like. Not dns_bypass: none of the true pairs measured on
+# 2026-10-17 involved it, and it was the coincidence that lifted the 2026-10-20 tests. The IDS verdicts (Suricata,
+# the router's IPS) are rare and strong, so they pair.
 CONTACT = frozenset({"new_domain", "beaconing", "dns_anomaly", "tls_odd", "takeover", "ioc_match", "upload_spike",
-                     "odd_port", "dns_bypass"})   # the program reached somewhere: what a first contact looks like
+                     "odd_port", "ids_alert", "udm_ips"})
 PAIRS: dict[str, frozenset[str]] = {
     **dict.fromkeys(("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig",
                      "host_linux_connect", "host_linux_cmd"), CONTACT),

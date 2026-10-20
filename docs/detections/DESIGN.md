@@ -1052,7 +1052,7 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   sides know it, else the address) within ±300 s whose side differs (`source: endpoint` against the rest; R22's
   monitor cases pair with nothing), and only when the host rule names that network rule as part of its story
   (`hostrules.PAIRS`, checked from both sides): a program reaching out (R17–R21, R27, R28) pairs with first
-  contacts, beacons, TLS oddities, takeover channels and uploads; R36 remote-access tools and R37 tunnels with
+  contacts, beacons, DNS and TLS oddities, takeover channels, odd ports, uploads and IDS verdicts (not DNS bypass); R36 remote-access tools and R37 tunnels with
   R16 only; R38 staging with upload_spike and R16; R39 file changes with nothing. Measured 2026-10-20: with any
   pairing allowed, every R36–R39 safe test was lifted to an alert by an unrelated dns_bypass digest item three
   minutes earlier (the dev PC has network digest items most hours). Up to three partners go into the case's `correlated` facts, newest first,

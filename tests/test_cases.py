@@ -100,6 +100,7 @@ def test_only_the_network_rules_a_host_rule_names_pair_with_it():
     assert set(PAIRS) == set(NAMES)                       # every host rule says what pairs with it
     assert pairs_with("host_staging", "upload_spike") and not pairs_with("host_staging", "dns_bypass")
     assert not pairs_with("host_fim", "new_domain")
+    assert not pairs_with("host_temp_exec", "dns_bypass") and pairs_with("host_temp_exec", "ids_alert")
     pc, mac = "192.168.50.10", "aa:bb:cc:dd:ee:01"
     dns = Case("dns_bypass", pc, T0, "DNS sent around the resolver", {"device_mac": mac, "how": "DNS over HTTPS", "encrypted": True},
                ["dns.example"], base_severity=3)
