@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from . import detectors as det
-from . import evidence
+from . import evidence, hostrules
 from .hostctx import HostContext
 from .models import Case, Route, Verdict
 from .notifiers import HerdrNotifier, Notifier
@@ -199,6 +199,9 @@ class Pipeline:
                 continue
             if str(r["reason"] or "").startswith("suppressed:"):
                 continue  # the owner said that side is expected: it is not half of a story (review of #139: #786)
+            host_rule, net_rule = (case.detector, r["detector"]) if mine else (r["detector"], case.detector)
+            if not hostrules.pairs_with(host_rule, net_rule):
+                continue  # not the same story, just the same PC within five minutes (hostrules.PAIRS)
             partners.append(r)
         if not partners:
             return []

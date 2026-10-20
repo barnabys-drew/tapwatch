@@ -1123,23 +1123,14 @@ def test_live_run_fixes_wrappers_chains_and_lifts():
             start(T0 + 2, r"C:\Program Files\Vendor\7z.exe", EXPLORER, cmd_archive_pw="1"),
             start(T0 + 3, r"C:\Program Files\Other\7z.exe", EXPLORER, cmd_archive_pw="1")]
     (c,) = run(det, *rows)
-    assert c.facts["program"] == "7z.exe" and c.facts["lift_by"] == ["upload_spike"]
+    assert c.facts["program"] == "7z.exe"
     assert run(det, start(T0 + 120, r"C:\Program Files\Vendor\7z.exe", EXPLORER, cmd_archive_pw="1")) == []  # digest: once a week
     tun = TunnelOpened(st())
     assert run(tun, lexec(T0, "/usr/bin/bash", tunnel=1)) == []
     assert len(run(tun, lexec(T0, "/usr/bin/ssh", tunnel=1), lexec(T0 + 5, "/usr/bin/ssh", tunnel=1))) == 1
+    # a different tunnel program in the same minute is not hidden by the first (review of #240)
+    temp = start(T0 + 10, r"C:\Users\<user>\AppData\Local\Temp\ngrok.exe", EXPLORER, cmd_tunnel="1")
+    assert run(tun, temp)[0].must_alert
     (f,) = run(FileChanged(st()), fim(T0, "~/.bashrc"))
     assert f.facts["max_route"] == "digest"
     assert "max_route" not in run(FileChanged(st(), alert=True), fim(T0, "~/.bashrc"))[0].facts
-
-
-def test_a_rule_can_name_the_partners_that_lift_it():
-    from tapwatch.models import Case
-    def staged(partner):
-        c = Case("host_staging", PC, T0, "Files sent", {"source": "endpoint", "lift_by": ["upload_spike"],
-                                                        "correlated": [{"id": 9, "detector": partner, "route": "digest",
-                                                                        "minutes": 2}], "correlated_best": "digest"},
-                 ["drive2"], base_severity=3)
-        return route(c, None)[0]
-    assert staged("dns_bypass") is Route.DIGEST
-    assert staged("upload_spike") is Route.ALERT

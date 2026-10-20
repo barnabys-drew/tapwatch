@@ -1285,7 +1285,7 @@ class TunnelOpened(HostDetector):
         if str(c.get(flag, "0")) != "1" or (query == SYSMON and str(c.get("eventid")) != "1"):
             return []
         prog, folder = _program_and_folder(query, c)
-        if prog in WRAPPERS or self._chained(("tunnel",), ts):
+        if prog in WRAPPERS or self._chained(("tunnel", prog, folder), ts):
             return []
         agent = _agent_facts(c)
         must = folder in ("temp", "shared")
@@ -1300,13 +1300,15 @@ USER_FOLDERS = {"documents", "desktop", "pictures", "onedrive"}
 
 
 def _chained(chain: dict[tuple, float], key: tuple, ts: float) -> bool:
-    """True when the same signal (and destination) was seen within SIGNAL_CHAIN seconds; records it either way."""
-    hit = ts - chain.get(key, -1e18) < SIGNAL_CHAIN
+    """True when the same signal (and destination) was seen within SIGNAL_CHAIN seconds of the first one. A hit doesn't
+    move the window, so something restarting every 30 s can't keep a different start hidden."""
+    if ts - chain.get(key, -1e18) < SIGNAL_CHAIN:
+        return True
     chain[key] = ts
     if len(chain) > 200:
         for k in [k for k, t in chain.items() if ts - t >= SIGNAL_CHAIN]:
             del chain[k]
-    return hit
+    return False
 
 
 class FilesStaged(HostDetector):
@@ -1355,8 +1357,7 @@ class FilesStaged(HostDetector):
             self.known.add(key)
             if ts - self.since < self.learn:
                 return []
-            facts = {"program": prog[:80], "tool": tool, "destination": dest, "folder": folder, **agent,
-                     "lift_by": ["upload_spike"]}   # only an upload from this PC makes it an alert, not any pairing
+            facts = {"program": prog[:80], "tool": tool, "destination": dest, "folder": folder, **agent}
             return self.emit(ts, "Files sent to a destination this PC hasn't used before", facts, 3, dest,
                              ("sync",) + key)
         if str(c.get(pre + "archive_pw", "0")) == "1":
@@ -1364,8 +1365,7 @@ class FilesStaged(HostDetector):
             if _chained(self.chain, ("archive", of), ts):
                 return []
             user = of in USER_FOLDERS
-            facts = {"program": prog[:80], "archive_of": of or None, "folder": folder, **agent,
-                     "lift_by": ["upload_spike"]}
+            facts = {"program": prog[:80], "archive_of": of or None, "folder": folder, **agent}
             return self.emit(ts, "A password-protected archive was made" + (f" of {of.title()}" if user else ""),
                              facts, 4 if user and not agent.get("agent_attended") else 3, prog[:80],
                              ("archive", prog, of))
@@ -1429,6 +1429,31 @@ class FileChanged(HostDetector):
                 return []
             self.reported[key] = ts
         return self.emit(ts, f"A {facts['kind']} changed on the PC", facts, severity, indicator, key)
+
+
+# Host <-> network correlation (pipeline.correlate): which network rules tell the same story as each host rule, so a
+# pairing within five minutes means something. Measured 2026-10-20: with any pairing allowed, every R36-R39 safe test
+# was lifted to an alert by an unrelated dns_bypass digest item three minutes earlier (this PC has network digest items
+# most hours). Both sides are filtered with this one table. A host rule not listed pairs with nothing.
+CONTACT = frozenset({"new_domain", "beaconing", "dns_anomaly", "tls_odd", "takeover", "ioc_match", "upload_spike",
+                     "odd_port", "dns_bypass"})   # the program reached somewhere: what a first contact looks like
+PAIRS: dict[str, frozenset[str]] = {
+    **dict.fromkeys(("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig",
+                     "host_linux_connect", "host_linux_cmd"), CONTACT),
+    "host_persist": frozenset({"beaconing", "takeover", "ioc_match"}),
+    "host_destructive": frozenset({"upload_spike", "takeover", "ioc_match"}),
+    "host_recon": frozenset({"scan", "takeover", "ioc_match", "new_domain"}),
+    "host_extension": frozenset({"new_domain", "takeover", "ioc_match", "upload_spike"}),
+    "host_lsass": frozenset({"takeover", "ioc_match", "upload_spike", "new_domain"}),
+    "host_rmm": frozenset({"takeover"}),                     # R16 sees the same tool's servers
+    "host_tunnel": frozenset({"takeover"}),                  # R16's tunnel services
+    "host_staging": frozenset({"upload_spike", "takeover"}), # the upload itself, or R16's file-drop sites
+    "host_fim": frozenset(),                                 # a file change has no network side
+}
+
+
+def pairs_with(host_detector: str, network_detector: str) -> bool:
+    return network_detector in PAIRS.get(host_detector, frozenset())
 
 
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
