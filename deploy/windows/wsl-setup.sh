@@ -10,7 +10,7 @@
 #   wsl-setup.sh root <user>            as root: account, systemd, packages, docker group (then: wsl --shutdown)
 #   wsl-setup.sh linger <user>          as root: keep the user's services running with nobody signed in
 #   wsl-setup.sh app <repo-url> [branch] as the user: tapwatch (that branch, default main), init, lists, services
-#   wsl-setup.sh doctor                 as the user: the final check and a test alert
+#   wsl-setup.sh doctor [send|nosend]   as the user: the final check, with a test alert unless nosend
 #   wsl-setup.sh test-alert             as the user: send a test alert (after subscribing in the ntfy app)
 #   wsl-setup.sh ntfy-url               as the user: print the ntfy address (the installer shows it after its log closes)
 # Every stage checks what is already done, so the installer can be run again.
@@ -114,7 +114,8 @@ doctor)
     export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
     export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
     cd ~/tapwatch
-    .venv/bin/tapwatch doctor --send || true   # its problems are reported, not an installer failure
+    flags=(); [ "${2:-send}" = send ] && flags=(--send)
+    .venv/bin/tapwatch doctor "${flags[@]}" || true   # its problems are reported, not an installer failure
     ;;
 
 *)

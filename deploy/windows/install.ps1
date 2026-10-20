@@ -12,7 +12,7 @@ What it does, each step skipped when it's already done, so running it again is s
      installer is the one window you click through).
   6. Inside Ubuntu (deploy/windows/wsl-setup.sh): git, Python, Docker, tapwatch, settings, lists, services.
   7. Keeps the PC awake and tapwatch running after restarts; the osquery + Sysmon agent; the router's firewall rules.
-  8. Ends with `tapwatch doctor --send`: what works, what's left, and a test alert.
+  8. Ends with `tapwatch doctor` (what works, what's left), the ntfy address, and a test alert once subscribed.
 
 Everything it prints, the Linux steps included, goes to %LOCALAPPDATA%\tapwatch\install.log, the file to send
 for help. Secrets (the password, webhook, keys, the ntfy address) are typed hidden or shown only after the log
@@ -58,7 +58,7 @@ function Stop-Install($msg) {
     Write-Host ""
     Write-Host "Stopped: $msg" -ForegroundColor Red
     Write-Host "If you need help, send this file: $(Join-Path $StateDir 'install.log')"
-    Stop-Transcript | Out-Null
+    try { Stop-Transcript | Out-Null } catch { }   # already stopped if this comes after the end of the log
     Read-Host "Press Enter to close"
     exit 1
 }
@@ -371,8 +371,10 @@ if ($syslog -and $gateway -and $mirroredOk) {
 }
 
 # ------------------------------------------------------------------ 8. check and finish
-Say "Checking everything (and sending a test alert)"
-Invoke-Linux $linuxUser @("doctor")
+# ntfy's test alert waits until the owner has subscribed (below); Discord's channel already exists, so send it now.
+$send = if ($alerts -eq "discord") { "send" } else { "nosend" }
+Say $(if ($send -eq "send") { "Checking everything (and sending a test alert)" } else { "Checking everything" })
+Invoke-Linux $linuxUser @("doctor", $send)
 Remove-Item $Answers -ErrorAction SilentlyContinue
 
 Write-Host ""
@@ -395,7 +397,7 @@ if ($alerts -eq "ntfy") {
         while ($true) {
             $again = Read-Host "Once you've subscribed, press Enter to send a test alert (or type 'skip')"
             if ($again -eq "skip") { break }
-            Invoke-Linux $linuxUser @("test-alert") -Capture | ForEach-Object { Note $_ }
+            foreach ($line in ((Invoke-Linux $linuxUser @("test-alert") -Capture) -split "`n")) { Note $line }
             if (Ask-YesNo "Did the test alert arrive on your phone?" "y") { break }
             Note "Check the address was typed exactly (it's case-sensitive), then try again."
         }
