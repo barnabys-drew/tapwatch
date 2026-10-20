@@ -81,7 +81,8 @@ someone else can install it without help.
 **Done 2026-10-20.** Everything in it closed: Sysmon command lines, connections and DNS lookups for Windows
 cases (#15), a clean-machine Windows install (#6), the router's own events (#7, #8), and a week of real host-context
 data reviewed (#4, [results](../eval/RESULTS.md#first-week-on-a-live-network-and-host-context-4-2026-10-13-to-2026-10-20)):
-attribution holds, the intent verdicts never fired on real traffic and stay unmeasured.
+attribution named the program for 106 of 136 PC cases, consistent with the owner's review; the intent verdicts
+never fired on real traffic and stay unmeasured.
 
 **Done when:** host context has a week of real data reviewed, Windows cases carry the command line behind them,
 the Windows path installs on a clean machine from the docs alone, and the README shows the case desk.
@@ -89,7 +90,7 @@ the Windows path installs on a clean machine from the docs alone, and the README
 | Issue | What | Status |
 |---|---|---|
 | [#15](https://github.com/barnabys-drew/tapwatch/issues/15) | Windows endpoints: command lines, connections and DNS lookups from Sysmon | **done** 2026-10-15 |
-| [#4](https://github.com/barnabys-drew/tapwatch/issues/4) | Long-running test of host context on an installed osquery agent | **done** 2026-10-20: 137 PC cases explained, all noise; attribution verified, intent verdicts never fired ([results](../eval/RESULTS.md)) |
+| [#4](https://github.com/barnabys-drew/tapwatch/issues/4) | Long-running test of host context on an installed osquery agent | **done** 2026-10-20: 136 PC cases, a program named for 106, all noise; intent verdicts never fired ([results](../eval/RESULTS.md)) |
 | [#6](https://github.com/barnabys-drew/tapwatch/issues/6) | Clean-machine test of the Windows (WSL + Npcap) path | **done** 2026-10-18 on a fresh Windows 11 VM: install, Npcap capture into Zeek, and a test alert to Discord. It found the Discord 403 (urllib's default user agent, fixed in #171) and setup gaps now in the doc: WSL features (0x80370114), `docker.io` and `wsl --shutdown` for the docker group, Npcap from npcap.com with a signature check, NAT inside a VM |
 | [#7](https://github.com/barnabys-drew/tapwatch/issues/7) | Check the UniFi admin-login mapping against real events | **built** 2026-10-16 ([#88](https://github.com/barnabys-drew/tapwatch/pull/88)): verified against a real admin-access line |
 | [#8](https://github.com/barnabys-drew/tapwatch/issues/8) | Router port-forward and UPnP events enrich internet-exposure cases | **built** 2026-10-18 from real UDM Pro audit events (port forward created, changed, removed; UPnP on and off): an exposure case says whether the router has a forward for that port, changed how long before, through which interface and from where, or that UPnP is on |

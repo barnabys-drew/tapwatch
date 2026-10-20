@@ -309,8 +309,8 @@ adds Semgrep and Trivy on PRs into `main`.
   detection-rate check runs in CI; a feed-silence rule watches every log source, the router included.
 - **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement and
   host-context accuracy week by week. The first live week ([results](eval/RESULTS.md)): about 5 alerts a day,
-  nearly all noise while the baselines learn, 2 true positives (both digest items); host context named the
-  program behind all 137 PC cases, and its intent verdicts have not yet fired on real traffic.
+  nearly all noise while the baselines learn, 2 true positives (both digest items); host context answered on
+  all 136 PC cases and named the program for 106, and its intent verdicts have not yet fired on real traffic.
 
 v0.2 (evidence outside one house) and v0.2.5 (easy install) are done. Next, per the [roadmap](docs/ROADMAP.md):
 more endpoint rules (v0.3) and learning from the owner's closed cases (v0.4). macOS waits until there's a Mac to test on.

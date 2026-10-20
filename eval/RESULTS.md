@@ -45,8 +45,8 @@ with Sysmon, Linux/WSL with eBPF) running all week; every case triaged by the ow
 | 2026-W43 | 64 | 1 | 61 | 98% | 1 | 75% (20) |
 
 Host context: 137 cases on the PC, 0 corroborated. Code said agent_unconfirmed 25, other_program 107, unknown 5.
-Jev agreed with code on 74% of 136 it was asked; code's benign-or-hostile claims matched the owner's disposition
-on – of 0.
+Jev agreed with code on 74% of 136 it was asked; code made no benign-or-hostile claim, so there was nothing to
+score against the owner's disposition (the command prints "– of 0").
 
 **One day is a bug, not traffic.** 338 of W42's cases (252 of its alerts) are one detector on 2026-10-17: the
 Windows agent's log rotates in place on the Windows drive (same inode), the follower re-read it from the start,
@@ -66,17 +66,21 @@ week (2026-10-13 to 10-19) is **531 cases, 36 alerts (about 5 a day), all 531 de
 
 The two true positives both went to the digest, not an alert: a device polling one plain-HTTP server every
 10 minutes (#395, beaconing), and the Linux agent's process feed going silent for 16 minutes (#890, R22). The
-endpoint rules' 11 alerts include the live tests of R21-R29 run that week. W43's first two days had one alert.
+endpoint rules' 11 alerts include the live tests of R21-R29 run that week. Monday 10-19 had one alert.
 
-**What host context did.** 137 cases on the PC were explained with the program behind the traffic: 107 named a
-program other than the owner's coding agents, 25 found an agent but couldn't confirm it held the connection,
-5 found nothing. The owner closed all 137 as noise (119 expected, 18 false positive). The answers that make a
+**What host context did.** In the same week (to 10-19; the benchmark's 137 includes one case from 10-20), 136
+cases on the PC got a host-context answer: 106 named a program other than the owner's coding agents as the one
+holding the connection, 25 found an agent running but couldn't confirm it held the connection, 5 found nothing.
+The owner closed all 136 as noise (118 expected, 18 false positive). The answers that make a
 claim about intent, "the owner's agent did this" (benign) and "an agent was misused" (hostile), never fired on
 real traffic, so **the verdict side has no measured accuracy yet**: there is nothing to have been wrong about,
 and nothing proven right. No call was wrong, so #4 opened no issues.
 
-**What this settles for #4.** Attribution, naming the program behind a connection, is verified on real data and
-is no longer experimental (the README dropped the label on 2026-10-17). The intent verdicts stay unmeasured until
+**What this settles for #4.** Attribution, naming the program behind a connection, ran on every PC case for a week
+and named one for most of them (106 of 136). It was checked against ground truth on staged shapes (a one-second
+`curl` traced to the agent that ran it on 2026-10-16, a tampered binary's connection on 10-17); on this week's
+real cases the owner's review found nothing that contradicted a named program, but didn't check each one, so
+that is consistency, not measured accuracy. It is no longer labelled experimental (since 2026-10-17). The intent verdicts stay unmeasured until
 a real agent-driven or hostile case happens; `tapwatch benchmark` will show the first one. Jev agreed with the
 owner on 26% of decided W42 cases it categorised and 75% in W43, on small numbers (147, then 20).
 
