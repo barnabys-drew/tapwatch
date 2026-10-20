@@ -1132,5 +1132,34 @@ def test_live_run_fixes_wrappers_chains_and_lifts():
     temp = start(T0 + 10, r"C:\Users\<user>\AppData\Local\Temp\ngrok.exe", EXPLORER, cmd_tunnel="1")
     assert run(tun, temp)[0].must_alert
     (f,) = run(FileChanged(st()), fim(T0, "~/.bashrc"))
-    assert f.facts["max_route"] == "digest"
-    assert "max_route" not in run(FileChanged(st(), alert=True), fim(T0, "~/.bashrc"))[0].facts
+    assert "max_route" not in f.facts      # no code ceiling: R39 pairs with nothing, and the AI may still escalate
+
+
+
+def test_code_review_fixes_for_v03_rules():
+    """/code-review of #240: a renamed tool in Temp isn't a wrapper; one program can't hide another; feeds arrive out
+    of order."""
+    tun = TunnelOpened(st())
+    (c,) = run(tun, start(T0, r"C:\Users\<user>\AppData\Local\Temp\cmd.exe", EXPLORER, cmd_tunnel="1"))
+    assert c.must_alert and c.facts["program"] == "cmd.exe"
+    assert run(tun, lexec(T0, "/tmp/sh", tunnel=1))[0].facts["folder"] == "temp"
+    det = FilesStaged(st())
+    assert len(run(det, start(T0, r"C:\Program Files\7-Zip\7z.exe", EXPLORER, cmd_archive_pw="1"),
+                   start(T0 + 20, r"C:\Users\<user>\AppData\Local\Temp\rar.exe", EXPLORER, cmd_archive_pw="1"))) == 2
+    late = FilesStaged(st())
+    assert len(run(late, start(T0 + 900, r"C:\Program Files\7-Zip\7z.exe", EXPLORER, cmd_archive_pw="1"))) == 1
+    assert len(run(late, lexec(T0, "/usr/bin/zip", archive_pw=1))) == 1      # 15 minutes older, other OS: not chained
+
+
+def test_every_network_rule_pairs_with_a_host_rule_or_is_listed_as_never():
+    """A new network rule can't be left out of hostrules.PAIRS by accident."""
+    import re as _re
+    from pathlib import Path
+
+    from tapwatch.hostrules import NEVER_PAIRED, PAIRS
+    src = Path(__file__).resolve().parents[1].joinpath("src", "tapwatch", "detectors.py").read_text()
+    names = set(_re.findall(r'^\s+name = "([a-z_]+)"', src, _re.MULTILINE)) | set(_re.findall(r'Case\("([a-z_]+)"', src))
+    names -= {"base", "hourly"}   # an abstract class; HourlyProfile emits upload_spike, off_hours, upload_stopped
+    paired = set().union(*PAIRS.values())
+    assert names - paired - NEVER_PAIRED == set()
+    assert not paired & NEVER_PAIRED
