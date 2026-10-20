@@ -1149,6 +1149,10 @@ def test_code_review_fixes_for_v03_rules():
     late = FilesStaged(st())
     assert len(run(late, start(T0 + 900, r"C:\Program Files\7-Zip\7z.exe", EXPLORER, cmd_archive_pw="1"))) == 1
     assert len(run(late, lexec(T0, "/usr/bin/zip", archive_pw=1))) == 1      # 15 minutes older, other OS: not chained
+    again = FilesStaged(st())
+    z = r"C:\Program Files\7-Zip\7z.exe"
+    run(again, start(T0 + 1000, z, EXPLORER, cmd_archive_pw="1"), start(T0 + 900, z, EXPLORER, cmd_archive_pw="1"))
+    assert again.chain[("archive", "7z.exe", "installed", "")] == T0 + 1000   # the late row didn't wind it back
 
 
 def test_every_network_rule_pairs_with_a_host_rule_or_is_listed_as_never():

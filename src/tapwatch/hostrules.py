@@ -1249,7 +1249,7 @@ def _agent_facts(c: dict) -> dict:
 # R38 safe test raised four cases, for bash, timeout, powershell.exe and 7z.exe.
 WRAPPERS = frozenset({"bash", "sh", "dash", "zsh", "fish", "ksh", "sudo", "doas", "env", "timeout", "nohup", "nice",
                       "setsid", "xargs", "script", "strace", "watch", "su", "runuser", "flock", "stdbuf",
-                      "cmd.exe", "powershell.exe", "pwsh.exe", "wsl.exe", "wslhost.exe", "conhost.exe", "cscript.exe",
+                      "cmd.exe", "powershell.exe", "bash.exe", "sh.exe", "pwsh.exe", "wsl.exe", "wslhost.exe", "conhost.exe", "cscript.exe",
                       "wscript.exe", "runas.exe"})
 SIGNAL_CHAIN = 60   # seconds: the same program with the same signal again is one command (`sudo` runs it twice)
 
@@ -1308,7 +1308,7 @@ def _chained(chain: dict[tuple, float], key: tuple, ts: float) -> bool:
     a wrapper not in WRAPPERS can still double a case."""
     if abs(ts - chain.get(key, -1e18)) < SIGNAL_CHAIN:   # abs: the agents' feeds arrive out of order
         return True
-    chain[key] = ts
+    chain[key] = max(ts, chain.get(key, ts))   # a late row doesn't wind the window back
     if len(chain) > 200:
         for k in [k for k, t in chain.items() if ts - t >= SIGNAL_CHAIN]:
             del chain[k]
