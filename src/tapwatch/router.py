@@ -38,7 +38,8 @@ CODE_ONLY = {"new_domain",
              # "is this program normal?" is the same question as "is this domain normal?", never asked.
              "host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
              "host_destructive", "host_recon", "host_extension", "host_linux_connect",
-             "host_linux_cmd", "host_lsass", "host_rmm"}
+             "host_linux_cmd", "host_lsass", "host_rmm",
+             "host_tunnel", "host_staging"}
 
 
 def wants_ai(case: Case) -> bool:

@@ -16,6 +16,7 @@ from tapwatch.hostrules import (
     DiscoveryBurst,
     EncodedCommand,
     EndpointState,
+    FilesStaged,
     LinuxCommand,
     LinuxSuspiciousConnect,
     LolbinConnects,
@@ -23,6 +24,7 @@ from tapwatch.hostrules import (
     NewPersistence,
     RemoteAccessTool,
     TempFolderConnects,
+    TunnelOpened,
     _entry_key,
     build,
     folder_class,
@@ -970,3 +972,97 @@ def test_a_learned_tool_started_from_temp_or_by_outlook_still_reports_once():
     (c,) = run(det, start(T0 + WEEK, r"C:\Users\<user>\AppData\Local\Temp\TeamViewerQS.exe", EXPLORER))
     assert c.must_alert and c.facts["tool"] == "TeamViewer"
     assert run(det, start(T0 + WEEK + 60, tv, OUTLOOK)) == []      # one risky report per tool
+
+
+# ------------------------------------------------------------ R37 tunnels and R38 staging (#39)
+
+def _conf_query(name):
+    import re as _re
+    from pathlib import Path
+    raw = Path(__file__).resolve().parents[1].joinpath("agents", "config", "osquery.conf").read_text()
+    return json.loads(_re.sub(r"^\s*//.*$", "", raw, flags=_re.MULTILINE), strict=False)["schedule"][name]["query"]
+
+
+def test_tunnel_and_sync_signals_never_keep_the_command_line():
+    """A tunnel's token, an archive password or a repository's user:pass would land in a world-readable log."""
+    q = _conf_query("bpf_process_events")
+    keep = q[q.index("CASE WHEN lcmd_dlrun"):q.index("THEN cmdline END AS cmdline")]
+    assert "tunnel" not in keep and "sync" not in keep and "archive" not in keep
+    for name in ("bpf_process_events", "sysmon_events"):
+        q = _conf_query(name)
+        assert "AS sync_dest" in q and "AS archive_of" in q
+    assert "e.pid = x.pid" in _conf_query("bpf_process_events")   # the markers of *this* process, not any process
+
+
+def test_a_tunnel_alerts_and_an_attended_agent_session_makes_it_a_digest_item():
+    (win,) = run(TunnelOpened(st()), start(T0, r"C:\Tools\ngrok.exe", EXPLORER, cmd_tunnel="1"))
+    assert (win.detector, win.base_severity, win.must_alert, win.indicators) == ("host_tunnel", 4, False, ["ngrok.exe"])
+    no_paths(win)
+    (tmp,) = run(TunnelOpened(st()), start(T0, r"C:\Users\<user>\AppData\Local\Temp\cf.exe", EXPLORER, cmd_tunnel="1"))
+    assert tmp.must_alert and tmp.base_severity == 5
+    owner = lexec(T0, "/usr/local/bin/ngrok", tunnel=1)
+    owner["columns"].update(claude_session="s1", claude_attended="1")
+    (o,) = run(TunnelOpened(st()), owner)
+    assert (o.base_severity, o.facts["agent_attended"]) == (3, True)
+    unattended = lexec(T0, "/usr/bin/ssh", tunnel=1)
+    unattended["columns"].update(claude_session="s2", claude_attended="0")
+    (u,) = run(TunnelOpened(st()), unattended)
+    assert (u.base_severity, u.facts["agent_unattended"]) == (4, True)
+    assert "nobody was watching" in summarize(u, Assets({}))
+    assert run(TunnelOpened(st()), start(T0, r"C:\Tools\ngrok.exe", EXPLORER)) == []
+
+
+def test_new_sync_destinations_are_digest_items_after_the_learning_week():
+    det = FilesStaged(st())
+    nightly = lexec(T0, "/usr/bin/restic", sync=1)
+    nightly["columns"]["sync_dest"] = "backup.example.net"
+    assert run(det, nightly) == []                                   # learned in week one
+    again = lexec(T0 + WEEK, "/usr/bin/restic", sync=1)
+    again["columns"]["sync_dest"] = "backup.example.net"
+    assert run(det, again) == []
+    (c,) = run(det, start(T0 + WEEK, r"C:\Program Files\rclone\rclone.exe", EXPLORER, cmd_sync="1", sync_dest="drive2"))
+    assert (c.detector, c.base_severity, c.facts["tool"], c.facts["destination"], c.indicators) == \
+        ("host_staging", 3, "rclone", "drive2", ["drive2"])
+    assert run(det, start(T0 + WEEK + 60, r"C:\Program Files\rclone\rclone.exe", EXPLORER, cmd_sync="1",
+                          sync_dest="drive2")) == []
+    no_paths(c)
+    restored = FilesStaged(st())
+    restored.restore(json.loads(json.dumps(det.snapshot())))
+    assert ("rclone", "drive2") in restored.known
+
+
+def test_a_password_archive_of_documents_alerts():
+    det = FilesStaged(st())
+    (doc,) = run(det, start(T0, r"C:\Program Files\7-Zip\7z.exe", EXPLORER, cmd_archive_pw="1", archive_of="documents"))
+    assert (doc.base_severity, doc.facts["archive_of"]) == (4, "documents") and "Documents" in doc.title
+    (plain,) = run(FilesStaged(st()), lexec(T0, "/usr/bin/zip", archive_pw=1))
+    assert plain.base_severity == 3 and plain.facts["archive_of"] is None
+    assert {"host_tunnel", "host_staging"} <= set(NAMES) and {"host_tunnel", "host_staging"} <= CODE_ONLY
+
+
+def test_r37_r38_review_fixes():
+    """Review of #236: an attended session over SSH isn't the owner at the keyboard; no destination is one key."""
+    ssh = lexec(T0, "/usr/bin/ssh", tunnel=1)
+    ssh["columns"].update(claude_session="s3", claude_attended="1", via_ssh="1")
+    (c,) = run(TunnelOpened(st()), ssh)
+    assert (c.base_severity, c.facts["agent_unattended"], c.facts["via_ssh"]) == (4, True, True)
+    det = FilesStaged(st())
+    local = lexec(T0 + WEEK, "/usr/bin/restic", sync=1)
+    (r,) = run(det, lexec(T0, "/usr/bin/ls"), local)
+    assert r.facts["destination"] == "local or from the environment"
+    (a,) = run(FilesStaged(st()), start(T0, r"C:\Program Files\7-Zip\7z.exe", EXPLORER, cmd_archive_pw="1",
+                                         archive_of="desktop"))
+    assert a.base_severity == 4
+
+
+def test_the_conf_carries_exactly_the_fragments_the_pattern_source_builds():
+    """tools/r37r38_patterns.py is the source of the R37/R38 SQL; the conf must not drift from it."""
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "tools" / "r37r38_patterns.py"
+    spec = importlib.util.spec_from_file_location("r37r38_patterns", path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    assert m.linux_inner() in _conf_query("bpf_process_events")
+    assert m.linux_outer() in _conf_query("bpf_process_events")
+    assert m.windows() in _conf_query("sysmon_events")

@@ -332,6 +332,21 @@ def _endpoint(c: Case) -> str:
                 "These tools let someone else control the PC: tech-support scams talk people into installing one, and "
                 "ransomware crews use them because they are signed and trusted. If nobody here set it up, treat it as "
                 "someone getting in.")
+    if c.detector in ("host_tunnel", "host_staging"):
+        agent = (" The owner's coding agent started it in a session someone was watching." if f.get("agent_attended")
+                 else " A coding agent started it in a session nobody was watching." if f.get("agent_unattended")
+                 else "")
+        if c.detector == "host_tunnel":
+            return (f"On the PC itself, {prog} opened a tunnel: a way for anyone on the internet who knows its address to "
+                    f"reach this PC, past the router.{agent} Developers do this on purpose; an attacker does it to come "
+                    "back in.")
+        if f.get("destination"):
+            return (f"On the PC itself, {_program(f.get('tool', 'a sync tool'))} copied files to "
+                    f"{_program(f['destination'])}, a destination this PC hasn't used before.{agent} Backups and sync "
+                    "jobs do this; so does someone taking a copy of the files.")
+        of = f" of the {f['archive_of'].title()} folder" if f.get("archive_of") else ""
+        return (f"On the PC itself, {prog} made a password-protected archive{of}.{agent} People do this to send files "
+                "safely; attackers do it to pack files before taking them, so nothing can look inside on the way out.")
     if c.detector == "host_linux_cmd":
         return (f"On the PC itself (Linux), {prog} was started with a command line that means "
                 + " and ".join(f.get("signals") or ["something suspicious"]) + ". The agent read the command line on "
