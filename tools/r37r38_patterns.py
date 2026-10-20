@@ -176,8 +176,13 @@ def linux_outer() -> str:
             f", CASE WHEN lcmd_archive_pw THEN regex_match({x}, {sql_str(ARCHIVE_OF)}, 1) END AS archive_of"
             f", CASE WHEN lcmd_tunnel OR lcmd_sync THEN {env_sql('CLAUDE_CODE_SESSION_ID')} END AS claude_session"
             f", CASE WHEN lcmd_tunnel OR lcmd_sync THEN {env_sql('CLAUDE_CODE_SESSION_ATTENDED')} END AS claude_attended"
-            ", CASE WHEN lcmd_tunnel OR lcmd_sync THEN (SELECT count(*) FROM process_envs e WHERE e.pid IN "
-            "(x.pid, x.parent) AND e.key IN ('SSH_CONNECTION', 'SSH_CLIENT')) END AS via_ssh")
+            # Two single-pid lookups, never `pid IN (a, b)`: osquery can't use an IN list to read one process, so
+            # it reads every process's environment (all of /proc), about 70x slower, and a process vanishing
+            # mid-walk is the "Bad file descriptor: /proc" error that crashed the worker (2026-10-20).
+            ", CASE WHEN lcmd_tunnel OR lcmd_sync THEN "
+            "(SELECT count(*) FROM process_envs e WHERE e.pid = x.pid AND e.key IN ('SSH_CONNECTION', 'SSH_CLIENT')) + "
+            "(SELECT count(*) FROM process_envs e WHERE e.pid = x.parent AND e.key IN ('SSH_CONNECTION', 'SSH_CLIENT')) "
+            "END AS via_ssh")
 
 
 CL = "lower(json_extract(data, '$.EventData.CommandLine'))"
