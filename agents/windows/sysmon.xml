@@ -3,7 +3,7 @@
   connection?" for network alerts, plus basic process history.
 
   Logged: process starts (1), network connections (3, except loopback),
-  process ends (5), DNS queries (22), and other programs opening lsass.exe (10, R29: credential theft reads
+  process ends (5), DNS queries (22), files created in a Startup folder (11, R39), and other programs opening lsass.exe (10, R29: credential theft reads
   its memory), minus the Windows components that do so all the time. Everything else is off to keep the
   log small.
   For a fuller config see https://github.com/olafhartong/sysmon-modular.
@@ -59,6 +59,13 @@
         <GrantedAccess condition="is">0x1400</GrantedAccess>
       </ProcessAccess>
     </RuleGroup>
+    <!-- R39: a file dropped in a Startup folder runs at the next sign-in (T1547.001). Only those folders, so the
+         event stays rare; Sysmon names the program that wrote it. -->
+    <RuleGroup name="startup folder drops" groupRelation="or">
+      <FileCreate onmatch="include">
+        <TargetFilename condition="contains">\Start Menu\Programs\Startup\</TargetFilename>
+      </FileCreate>
+    </RuleGroup>
     <!-- Off: empty include rules match nothing. -->
     <RuleGroup name="off" groupRelation="or">
       <FileCreateTime onmatch="include"/>
@@ -66,7 +73,6 @@
       <ImageLoad onmatch="include"/>
       <CreateRemoteThread onmatch="include"/>
       <RawAccessRead onmatch="include"/>
-      <FileCreate onmatch="include"/>
       <RegistryEvent onmatch="include"/>
       <FileCreateStreamHash onmatch="include"/>
       <PipeEvent onmatch="include"/>

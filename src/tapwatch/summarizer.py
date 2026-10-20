@@ -322,6 +322,43 @@ def _endpoint(c: Case) -> str:
         return (f"On the PC itself, {prog} opened lsass.exe, the Windows process that holds signed-in users' credentials, "
                 f"with the right to read its memory.{started_by}{folder} That is how password and token theft tools "
                 "work (mimikatz, a MiniDump of lsass); Windows' own components were already left out.")
+    if c.detector == "host_rmm":
+        tool = _program(f.get("tool", "a remote-access tool"))
+        where = f" from {FOLDER_WORDS.get(f.get('folder'), 'a folder')}" if f.get("folder") else ""
+        parent = f" It was started by {_program(f['parent'])}." if f.get("parent") else ""
+        renamed = " Its file was renamed from the tool's own name, which hides it from a casual look." \
+            if f.get("renamed") else ""
+        return (f"On the PC itself, the remote-access tool {tool} ({prog}) started for the first time{where}.{parent}{renamed} "
+                "These tools let someone else control the PC: tech-support scams talk people into installing one, and "
+                "ransomware crews use them because they are signed and trusted. If nobody here set it up, treat it as "
+                "someone getting in.")
+    if c.detector == "host_fim":
+        file = _program(f.get("file", "a file"))
+        if f.get("os") == "windows":
+            who = f" It was written by {_program(f['program'])}." if f.get("program") else ""
+            return (f"On the PC itself, the file {file} appeared in a Startup folder ({f.get('scope') or 'per user'}), so "
+                    f"it runs at the next sign-in.{who} Installers put shortcuts there; so does malware that wants to "
+                    "come back after a restart.")
+        what = {"privilege file": "decides who may act as root or what every program loads",
+                "autostart entry": "runs when someone signs in to the desktop"}.get(f.get("kind"),
+                                                                                    "runs every time a shell starts")
+        return (f"On the PC itself (Linux), {file} was {f.get('action') or 'changed'}: a file that {what}. People edit "
+                "these on purpose; an attacker edits them to keep a way back in or gain root.")
+    if c.detector in ("host_tunnel", "host_staging"):
+        agent = (" The owner's coding agent started it in a session someone was watching." if f.get("agent_attended")
+                 else " A coding agent started it in a session nobody was watching." if f.get("agent_unattended")
+                 else "")
+        if c.detector == "host_tunnel":
+            return (f"On the PC itself, {prog} opened a tunnel: a way for anyone on the internet who knows its address to "
+                    f"reach this PC, past the router.{agent} Developers do this on purpose; an attacker does it to come "
+                    "back in.")
+        if f.get("destination"):
+            return (f"On the PC itself, {_program(f.get('tool', 'a sync tool'))} copied files to "
+                    f"{_program(f['destination'])}, a destination this PC hasn't used before.{agent} Backups and sync "
+                    "jobs do this; so does someone taking a copy of the files.")
+        of = f" of the {f['archive_of'].title()} folder" if f.get("archive_of") else ""
+        return (f"On the PC itself, {prog} made a password-protected archive{of}.{agent} People do this to send files "
+                "safely; attackers do it to pack files before taking them, so nothing can look inside on the way out.")
     if c.detector == "host_linux_cmd":
         return (f"On the PC itself (Linux), {prog} was started with a command line that means "
                 + " and ".join(f.get("signals") or ["something suspicious"]) + ". The agent read the command line on "

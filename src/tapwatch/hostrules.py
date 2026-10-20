@@ -31,7 +31,14 @@ import re
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .detectors import Detector, Warmup, is_internal, prune_reported, still_reported
+from .detectors import (
+    Detector,
+    Warmup,
+    _expected_services,
+    is_internal,
+    prune_reported,
+    still_reported,
+)
 from .hostctx import (
     ADDRS,
     BPF,
@@ -75,7 +82,8 @@ SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable b
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
          "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd",
-         "host_lsass")
+         "host_lsass", "host_rmm", "host_tunnel", "host_staging", "host_fim")
+FIM = "file_changes"   # R39: the Linux agent's inotify query over the file_paths in osquery.conf
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
@@ -1112,6 +1120,279 @@ class LsassAccess(HostDetector):
         return self.emit(ts, "A program read the memory of Windows' credential store (lsass)", facts, 5 if must else 4,
                          prog, must_alert=must)
 
+# R36: remote-access and RMM programs by file name -> (tool, its R16 service). Quick Assist is built into Windows and
+# talks to Microsoft, so it has no R16 service. File names, not paths: a portable copy has the same name.
+RMM_PROGRAMS: dict[str, tuple[str, str]] = {
+    **dict.fromkeys(("anydesk.exe", "anydesk"), ("AnyDesk", "anydesk.com")),
+    **dict.fromkeys(("teamviewer.exe", "teamviewer_service.exe", "tv_w32.exe", "tv_x64.exe", "teamviewerqs.exe",
+                     "teamviewerqs_x64.exe", "teamviewer", "teamviewerd"), ("TeamViewer", "teamviewer.com")),
+    **dict.fromkeys(("rustdesk.exe", "rustdesk"), ("RustDesk", "rustdesk.com")),
+    **dict.fromkeys(("screenconnect.clientservice.exe", "screenconnect.windowsclient.exe",
+                     "connectwisecontrol.client.exe"), ("ScreenConnect", "screenconnect.com")),
+    **dict.fromkeys(("srservice.exe", "srstreamer.exe", "srmanager.exe", "strwinclt.exe", "splashtopsos.exe"),
+                    ("Splashtop", "splashtop.com")),
+    **dict.fromkeys(("ateraagent.exe", "atera_agent.exe"), ("Atera", "atera.com")),
+    **dict.fromkeys(("logmein.exe", "lmiguardiansvc.exe", "logmeinsystray.exe", "lmi_rescue.exe"), ("LogMeIn", "logmein.com")),
+    **dict.fromkeys(("ammyy_admin.exe", "aa_v3.exe", "ammyy.exe"), ("Ammyy Admin", "ammyy.com")),
+    **dict.fromkeys(("supremo.exe", "supremoservice.exe"), ("Supremo", "supremocontrol.com")),
+    **dict.fromkeys(("remote access.exe", "simplehelp.exe", "simplegatewayservice.exe"), ("SimpleHelp", "simple-help.com")),
+    **dict.fromkeys(("meshagent.exe", "meshagent"), ("MeshCentral", "meshcentral.com")),
+    **dict.fromkeys(("getscreen.exe",), ("Getscreen", "getscreen.me")),
+    **dict.fromkeys(("remotepcservice.exe", "remotepc.exe"), ("RemotePC", "remotepc.com")),
+    **dict.fromkeys(("tacticalrmm.exe", "rmmagent"), ("Tactical RMM", "")),
+    **dict.fromkeys(("client32.exe",), ("NetSupport", "")),
+    **dict.fromkeys(("ultraviewer_desktop.exe", "ultraviewer_service.exe"), ("UltraViewer", "")),
+    **dict.fromkeys(("dwagent.exe", "dwagsvc.exe", "dwagent"), ("DWService", "")),
+    **dict.fromkeys(("zaservice.exe", "zohoassist.exe", "zohoassistagent.exe"), ("Zoho Assist", "")),
+    **dict.fromkeys(("action1_agent.exe",), ("Action1", "")),
+    **dict.fromkeys(("ninjarmmagent.exe", "ninjarmmagentpatcher.exe"), ("NinjaOne", "")),
+    **dict.fromkeys(("agentmon.exe",), ("Kaseya", "")),
+    **dict.fromkeys(("pcmonitorsrv.exe", "pcmonitormanager.exe"), ("Pulseway", "")),
+    **dict.fromkeys(("tvnserver.exe", "winvnc.exe", "vncserver.exe", "x11vnc", "vncserver", "x0vncserver"),
+                    ("VNC server", "")),
+    **dict.fromkeys(("aeroadmin.exe",), ("AeroAdmin", "")),
+    **dict.fromkeys(("rutserv.exe", "rfusclient.exe"), ("Remote Utilities", "")),
+    **dict.fromkeys(("rserver3.exe",), ("Radmin", "")),
+    **dict.fromkeys(("anyviewer.exe", "rcservice.exe"), ("AnyViewer", "")),
+    **dict.fromkeys(("remoting_host.exe",), ("Chrome Remote Desktop", "")),
+    **dict.fromkeys(("gotoassist.exe", "gotoassistcustomer.exe", "g2ax_customer.exe"), ("GoTo Resolve", "")),
+    **dict.fromkeys(("bomgar-scc.exe", "bomgar-rep.exe"), ("BeyondTrust Remote Support", "")),
+    **dict.fromkeys(("quickassist.exe",), ("Quick Assist", "")),
+}
+RMM_LEARN_DAYS = 7   # an office's own RMM, or the owner's, is learned in the rule's first week on a box
+
+
+class RemoteAccessTool(HostDetector):
+    """R36. A remote-access or RMM program starts on the PC for the first time (T1219): the PC's side of R16, which
+    sees the same tools' servers on the wire. Tech-support scams talk people into AnyDesk or Quick Assist; ransomware
+    crews install ScreenConnect, AnyDesk or Atera because they are signed and allowed out.
+
+    Reads the process starts already collected (Sysmon event 1 on Windows, eBPF exec on Linux) and matches the file
+    name or, on Windows, the original file name from the program's version resource (so a renamed copy matches)
+    against RMM_PROGRAMS. Per tool, the first start after a learning window is a case and later starts aren't: the
+    window is the rule's first RMM_LEARN_DAYS on a box (persisted), so an office's own RMM is learned, not reported
+    forever. A risky start (Temp, a shared folder or a document app) is tracked apart and never learned, even in that
+    week, so a portable or Outlook-started copy of a tool the box already uses still reports, once. Known as
+    well: `expected_tools` (tool names, `detectors.host_rmm`) and a `takeover.expected` entry for this PC and the
+    tool's R16 service. Scored by the folder: installed (Program Files, /usr, /opt) 3; a user folder or Downloads 4,
+    suppressible per tool; Temp, a shared folder, or started by a document or mail app 5, must_alert. Quick Assist
+    is 4 wherever it runs. Measured 2026-10-19/20: 11,055 Windows process starts in 29 h and 288,764 Linux execs in
+    two days, no remote-access program among them. Blind spot: a renamed copy with no version resource; R16 still
+    sees its servers.
+    """
+
+    name = "host_rmm"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "known", "since")
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7,
+                 learn_days: float = RMM_LEARN_DAYS, expected: dict[str, set[str]] | None = None,
+                 expected_tools: list[str] | None = None):
+        super().__init__(state, reported_days)
+        self.learn = learn_days * DAY
+        self.expected = expected or {}      # host -> R16 services it's expected to use (takeover.expected)
+        self.expected_tools = {t.lower() for t in expected_tools or ()}
+        self.known: set[str] = set()        # tools seen on this box
+        self.since: float | None = None     # when this rule first read a process start here
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if query == SYSMON and str(c.get("eventid")) != "1":
+            return []
+        path = str(c.get("path") or "")
+        windows = query == SYSMON
+        prog = (_basename(path) if windows else path.rsplit("/", 1)[-1]).lower()
+        if self.since is None:
+            self.since = ts
+        original = str(c.get("original_name") or "").lower() if windows else ""
+        hit = RMM_PROGRAMS.get(prog) or RMM_PROGRAMS.get(original)
+        if hit is None:
+            return []
+        tool, service = hit
+        folder = win_folder_class(path) if windows else posix_folder_class(path)
+        parent = _basename(c.get("parent_path") or "") if windows else ""
+        must = folder in ("temp", "shared") or parent_class(parent) == "document"
+        seen = f"{tool} (risky)" if must else tool    # a risky start of a known tool is still news
+        if seen in self.known or tool.lower() in self.expected_tools \
+                or (service and service in self.expected.get(self.state.host, ())):
+            return []
+        self.known.add(seen)
+        if ts - self.since < self.learn and not must:
+            return []   # learned: there before the rule, or the box's own tool in its first week
+        if must:
+            severity = 5
+        elif tool == "Quick Assist" or folder not in ("installed",):
+            severity = 4
+        else:
+            severity = 3
+        facts = {"tool": tool, "program": prog[:80], "folder": folder, "parent": parent[:80] or None,
+                 "parent_class": parent_class(parent) if parent else None, "service": service or None,
+                 "renamed": bool(original) and prog != original and prog not in RMM_PROGRAMS}
+        # The tool's name is the indicator (and the suppression handle), so a renamed copy can't slip a suppression.
+        return self.emit(ts, f"Remote-access tool started on the PC for the first time: {tool}", facts, severity,
+                         tool, (seen,), must_alert=must)
+
+
+def _agent_facts(c: dict) -> dict:
+    """R37/R38 on Linux: the Claude Code markers the agent's query read from the process (or its parent) when a tunnel
+    or sync signal fired. Attended means the owner is at the keyboard and asked for it; unattended is a session
+    nobody is watching, which a prompt injection could drive."""
+    if not c.get("claude_session"):
+        return {}
+    attended = str(c.get("claude_attended") or "")
+    ssh = str(c.get("via_ssh") or "0") not in ("", "0")   # driven over an SSH login: not the owner at the keyboard
+    return {"agent_started": True, "agent_attended": attended == "1" and not ssh,
+            "agent_unattended": attended == "0" or ssh, "via_ssh": ssh}
+
+
+def _program_and_folder(query: str, c: dict) -> tuple[str, str]:
+    path = str(c.get("path") or "")
+    if query == SYSMON:
+        return _basename(path).lower() or "unknown", win_folder_class(path)
+    return path.rsplit("/", 1)[-1] or "unknown", posix_folder_class(path)
+
+
+class TunnelOpened(HostDetector):
+    """R37. A program opens a tunnel that lets the internet in past the router (T1572): `ngrok`, `cloudflared tunnel`,
+    `code tunnel`, `devtunnel host`, `tailscale funnel`, `ssh -R`, localtunnel, bore. The agent computes the signal
+    on the PC (cmd_tunnel on Windows, lcmd_tunnel on Linux) and never keeps the command line, which carries the
+    tunnel's token. Severity 4, suppressible per program; from Temp or a shared folder 5, must_alert. On Linux, an
+    attended Claude Code session (the markers the query read) makes it 3, a digest item with `agent_started`: the
+    owner asked for it. An unattended one stays an alert: a prompt-injected agent opening a tunnel is the threat.
+    """
+
+    name = "host_tunnel"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        flag = "cmd_tunnel" if query == SYSMON else "lcmd_tunnel"
+        if str(c.get(flag, "0")) != "1" or (query == SYSMON and str(c.get("eventid")) != "1"):
+            return []
+        prog, folder = _program_and_folder(query, c)
+        agent = _agent_facts(c)
+        must = folder in ("temp", "shared")
+        severity = 5 if must else 3 if agent.get("agent_attended") else 4
+        facts = {"program": prog[:80], "folder": folder, **agent}
+        return self.emit(ts, "A tunnel into the PC was opened", facts, severity, prog[:80], (prog, folder),
+                         must_alert=must)
+
+
+STAGING_LEARN_DAYS = 7   # the box's own backups and sync jobs are learned in the rule's first week
+USER_FOLDERS = {"documents", "desktop", "pictures", "onedrive"}
+
+
+class FilesStaged(HostDetector):
+    """R38. Files copied or synced somewhere new with a trusted tool, or packed into a password-protected archive
+    (T1567, T1560): rclone, restic, MEGA, the AWS, Azure and Google cloud CLIs, WinSCP scripts; 7-Zip, RAR and zip
+    with a password. The agent never keeps the command line (it can hold an archive password or a repository's
+    user:pass); its query extracts only the destination: the rclone remote, the bucket, the storage account, the
+    restic repository's host. Per (tool, destination), new after a learning window (the rule's first week on a box,
+    persisted, so the nightly backup is learned) is a digest item; known is nothing. A password archive is a digest
+    item, an alert when it packs Documents, Desktop, Pictures or OneDrive. An upload_spike from the same device
+    within five minutes pairs with it into an alert (host <-> network correlation). Agent-started on Linux:
+    `agent_started`, stays digest. Measured 2026-10-20: a nightly restic on the Linux box (3 execs); 7-Zip twice from
+    a vendor installer, no password.
+    """
+
+    name = "host_staging"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "known", "since")
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7,
+                 learn_days: float = STAGING_LEARN_DAYS):
+        super().__init__(state, reported_days)
+        self.learn = learn_days * DAY
+        self.known: set[tuple] = set()      # (tool, destination) seen on this box
+        self.since: float | None = None
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if query == SYSMON and str(c.get("eventid")) != "1":
+            return []
+        if self.since is None:
+            self.since = ts
+        pre = "cmd_" if query == SYSMON else "lcmd_"
+        prog, folder = _program_and_folder(query, c)
+        agent = _agent_facts(c)
+        if str(c.get(pre + "sync", "0")) == "1":
+            # No destination on the command line: a restic repository from the environment, or a local one (never
+            # captured: its path holds the user name). One key for those, so a new remote repository still reports.
+            dest = str(c.get("sync_dest") or "local or from the environment").lower()[:120]
+            tool = prog.removesuffix(".exe").removesuffix(".com")
+            key = (tool, dest)
+            if key in self.known:
+                return []
+            self.known.add(key)
+            if ts - self.since < self.learn:
+                return []
+            facts = {"program": prog[:80], "tool": tool, "destination": dest, "folder": folder, **agent}
+            return self.emit(ts, "Files sent to a destination this PC hasn't used before", facts, 3, dest,
+                             ("sync",) + key)
+        if str(c.get(pre + "archive_pw", "0")) == "1":
+            of = str(c.get("archive_of") or "").lower()
+            user = of in USER_FOLDERS
+            facts = {"program": prog[:80], "archive_of": of or None, "folder": folder, **agent}
+            return self.emit(ts, "A password-protected archive was made" + (f" of {of.title()}" if user else ""),
+                             facts, 4 if user and not agent.get("agent_attended") else 3, prog[:80],
+                             ("archive", prog, of))
+        return []
+
+
+class FileChanged(HostDetector):
+    """R39. A file that gives persistence or privilege changes (T1546.004, T1574.006, T1548.003, T1547.001): on Linux,
+    `/etc/ld.so.preload` or sudoers written, a shell's start-up file, `/etc/profile.d/` or an XDG autostart entry
+    changed (the agent's `file_changes` inotify query, the home part reduced to ~ on the PC; it watches the
+    directories and picks the files, because a missing file is never watched and a save-by-rename drops a file's
+    watch: measured with osqueryd 5.23.1, a new file is CREATED and `sed -i` is MOVED_TO the real name); on Windows, a file
+    created in a Startup folder (Sysmon event 11, only the file name and per-user or all-users).
+
+    Privilege files and a Startup-folder file written by a shell, script host, LOLBin, document or mail app, or a
+    program in Temp, Downloads or a shared folder would be 4; the rest 3. Until a week's volume is measured on a dev
+    PC, where editors and coding agents touch dotfiles, every case ships as a digest item with `would_alert` set
+    (`alert: true` under detectors.host_fim lifts that). R23 still reports ld.so.preload *content* at 5 and the
+    Startup folder hourly; this one is immediate and names the program on Windows. Blind spots: which program read a
+    file (file monitoring can't say), and on WSL, Windows paths (inotify sees Linux paths only).
+    """
+
+    name = "host_fim"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, FIM)
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 1, alert: bool = False):
+        super().__init__(state, reported_days)
+        self.alert = alert
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if query == FIM:
+            f = str(c.get("file") or "")
+            if f == "/etc/ld.so.preload" or f.startswith("/etc/sudoers"):
+                kind, level = "privilege file", 4
+            elif f.startswith("~/.config/autostart/"):
+                kind, level = "autostart entry", 3
+            elif f.startswith(("~/.", "/etc/profile.d/")):
+                kind, level = "shell start-up file", 3
+            else:
+                return []
+            facts = {"file": f[:120], "kind": kind, "action": str(c.get("action") or "").lower(), "os": "linux"}
+            return self._case(ts, facts, level, f[:120], (f,))
+        if str(c.get("eventid")) != "11":
+            return []
+        name = str(c.get("file_name") or "")[:120] or "unknown"
+        path = str(c.get("path") or "")
+        prog, folder = _basename(path).lower() or "unknown", win_folder_class(path)
+        risky = prog in WIN_SHELLS or prog in WIN_LOLBINS or prog in WIN_DOC_APPS or \
+            folder in ("temp", "downloads", "shared")
+        facts = {"file": name, "kind": "Startup folder file", "scope": c.get("startup_scope"), "program": prog[:80],
+                 "folder": folder, "os": "windows"}
+        return self._case(ts, facts, 4 if risky else 3, name, (name, prog))
+
+    def _case(self, ts: float, facts: dict, level: int, indicator: str, key: tuple) -> list[Case]:
+        severity = level if self.alert else 3
+        facts["would_alert"] = level >= 4
+        if severity >= 4:   # emit's once-a-day applies below alert level only; a file is one case a day either way
+            if still_reported(self.reported, key, ts, self.ttl):
+                return []
+            self.reported[key] = ts
+        return self.emit(ts, f"A {facts['kind']} changed on the PC", facts, severity, indicator, key)
+
+
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
@@ -1133,4 +1414,9 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     rules.append(LinuxSuspiciousConnect(state, **d.get(LinuxSuspiciousConnect.name, {})))
     rules.append(LinuxCommand(state, **d.get(LinuxCommand.name, {})))
     rules.append(LsassAccess(state, **d.get(LsassAccess.name, {})))
+    rules.append(RemoteAccessTool(state, expected=_expected_services(d.get("takeover", {})),
+                                  **d.get(RemoteAccessTool.name, {})))
+    rules.append(TunnelOpened(state, **d.get(TunnelOpened.name, {})))
+    rules.append(FilesStaged(state, **d.get(FilesStaged.name, {})))
+    rules.append(FileChanged(state, **d.get(FileChanged.name, {})))
     return rules
