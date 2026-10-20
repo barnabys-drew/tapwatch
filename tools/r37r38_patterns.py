@@ -16,7 +16,8 @@ E = r'(?:\.exe|\.cmd)?"?'   # an optional Windows extension and the closing quot
 P = r'(?:^|[\\/"])'         # the program at the start of its own command line or after a path: not a word in an argument
 # rclone's last positional argument is the destination: "remote:path" there means files are going out to it (a
 # download, `rclone copy gdrive:x /local`, has the remote first and is not staging).
-RCLONE_OUT = r"\s+[^|]*?\s\"?([a-z0-9_-]{2,}):[^\s\"]*\"?(?:\s+-\S+(?:\s+[^\s/\\:-][^\s:]*)?)*\s*$"
+RCLONE_OUT = (r"\s+[^|]*?\s\"?([a-z0-9_-]{2,}):[^\s\"]*\"?(?:\s+--(?:config|log-file|[a-z]+-from|password-command)"
+              r"[\s=]\S+|\s+-\S+(?:\s+[^\s/\\:-][^\s:]*)?)*\s*$")
 TUNNEL = [
     P + r"ngrok" + E + r"\s+(?:http|tcp|tls|start|tunnel)\b",
     P + r"cloudflared" + E + r"\s+(?:[^|]*\s)?tunnel\b",
@@ -31,8 +32,8 @@ TUNNEL = [
 SYNC = [
     P + r"rclone" + E + r"\s+(?:copy|copyto|sync|move|moveto|bisync)" + RCLONE_OUT,
     P + r"restic" + E + r"\s+(?:[^|]*\s)?backup\b",
-    P + r"aws" + E + r"\s+s3\s+(?:cp|sync|mv)\s[^|]*s3://",
-    P + r"(?:gsutil|gcloud)" + E + r"\s+(?:[^|]*\s)?(?:cp|rsync|mv)\s[^|]*gs://",
+    P + r"aws" + E + r"\s+s3\s+(?:cp|sync|mv)\s+(?:-\S+\s+)*(?!\"?s3://)\"?[^\s\"-][^\s\"]*\"?\s+(?:-\S+\s+)*\"?s3://",
+    P + r"(?:gsutil|gcloud(?:\s+storage)?)" + E + r"\s+(?:-\S+\s+)*(?:cp|rsync|mv)\s+(?:-\S+\s+)*(?!\"?gs://)\"?[^\s\"-][^\s\"]*\"?\s+(?:-\S+\s+)*\"?gs://",
     P + r"azcopy" + E + r"\s+(?:copy|cp|sync)\s[^|]*\.blob\.core\.windows\.net",
     P + r"az" + E + r"\s+storage\s+blob\s+(?:upload|upload-batch|sync)\b",
     P + r"(?:mega-put|mega-sync|megaput)\b|" + P + r"megatools\s+(?:put|copy)\b",
@@ -44,13 +45,13 @@ SYNC = [
 DEST = [
     P + r"rclone" + E + r"\s+(?:copy|copyto|sync|move|moveto|bisync)" + RCLONE_OUT,
     P + r"restic" + E + r"\s+(?:[^|]*\s)?(?:-r|--repo)[\s=]+\"?(?:s3|b2|azure|gs|sftp|rest|rclone|swift):/*"
-        r"(?:https?://)?(?:[^\s\"/]*@)?([^\s/\\:\"@]+)",
+        r"(?:https?://)?(?:[^\s\"]*@)?(?!https?:)([^\s/\\:\"@]+)(?=/|:[0-9/]|\s|\"|$)",
     r"\bs3://([a-z0-9._-]+)",
     r"\bgs://([a-z0-9._-]+)",
     r"https://([a-z0-9]+)\.blob\.core\.windows\.net",
     r"--account-name[\s=]+\"?([a-z0-9]+)",
     P + r"(mega)-(?:put|sync)\b",
-    r"\bopen\s+\"?[a-z]+://(?:[^\s\"/]*@)?([^/\s:\"@]+)",
+    r"\bopen\s+\"?[a-z]+://(?:[^\s\"]*@)?([^/\s:\"@]+)(?=/|:[0-9/]|\s|\"|$)",
 ]
 ARCHIVE_PW = [
     P + r"7z[a-z]?" + E + r"\s+a\s+(?:[^|]*\s)?-p",
@@ -59,8 +60,8 @@ ARCHIVE_PW = [
 ]
 ARCHIVE_OF = r"[\\/](documents|desktop|pictures|onedrive)\b"
 # The LIKE gates: words every matching line must contain. Distinctive ones only (not "lt", "s3" or "-r" alone).
-GATE_TUNNEL = ("%ngrok%", "%cloudflared%", "%tunnel%", "%funnel%", "ssh %", "%/ssh %", "%\\ssh %", "%ssh.exe%",
-               "lt %", "%/lt %", "%bore%")
+GATE_TUNNEL = ("%ngrok%", "%cloudflared%", "%tunnel%", "%funnel%", "%ssh%", "lt %", "%/lt %", "%\\lt %", "%/lt\"%",
+               "%\\lt\"%", "%lt.cmd%", "%bore%")
 GATE_SYNC = ("%rclone%", "%restic%", "%aws%", "%gsutil%", "%gcloud%", "%azcopy%", "%storage blob%", "%mega%",
              "%winscp%")
 GATE_ARCHIVE = ("%7z%", "%rar%", "%zip%")
@@ -80,6 +81,15 @@ CASES = [  # (command line, tunnel?, sync?, archive?, expected dest or None)
     ("bore local 8000 --to bore.pub", 1, 0, 0, None),
     ("rclone copy /home/u/documents drive2:backup", 0, 1, 0, "drive2"),
     ("rclone copy /home/u/documents drive2:backup -P --transfers 8", 0, 1, 0, "drive2"),
+    ("rclone copy /home/u/docs gdrive:x --config /home/u/.rclone.conf", 0, 1, 0, "gdrive"),
+    ("rclone copy c:\\data gdrive:x --log-file c:\\logs\\r.txt", 0, 1, 0, "gdrive"),
+    ("restic -r rest:https://someone:pa/ss@example.net/repo backup /x", 0, 1, 0, "example.net"),
+    ('restic -r "rest:https://someone:pa ss@example.net/repo" backup /x', 0, 1, 0, None),
+    ("restic -r rest:https://example.net:8000/repo backup /x", 0, 1, 0, "example.net"),
+    ('winscp.com /command "open sftp://someone:p/w@example.org/" "put x"', 0, 1, 0, "example.org"),
+    ("c:\\users\\<user>\\appdata\\roaming\\npm\\lt.cmd --port 80", 1, 0, 0, None),
+    ('"/usr/bin/ssh" -R 9:localhost:9 test@192.0.2.1', 1, 0, 0, None),
+    ('"c:\\windows\\system32\\openssh\\ssh.exe" -R 9:localhost:9 test@192.0.2.1', 1, 0, 0, None),
     ('"c:\\program files\\rclone\\rclone.exe" sync "c:\\users\\<user>\\desktop" gdrive:/desk', 0, 1, 0, "gdrive"),
     ("restic -r rest:https://u:hunter2@example.net/repo backup /home", 0, 1, 0, "example.net"),
     ("restic -r rest:https://u:p@ss@example.net/repo backup /home", 0, 1, 0, "example.net"),
@@ -102,6 +112,8 @@ CASES = [  # (command line, tunnel?, sync?, archive?, expected dest or None)
     ("zip -e -r out.zip /home/u/pictures", 0, 0, 1, None),
     # harmless neighbours: none may fire
     ("rclone copy -v gdrive:photos /home/u/pictures", 0, 0, 0, None),
+    ("aws s3 cp s3://bucket/x ./local", 0, 0, 0, None),
+    ("gsutil cp gs://bucket/x .", 0, 0, 0, None),
     ("rclone copy gdrive:photos -v /home/u/pictures", 0, 0, 0, None),
     ("rclone copy gdrive:photos --transfers 4 c:\\data", 0, 0, 0, None),
     ("ssh user@host", 0, 0, 0, None),
@@ -203,7 +215,7 @@ def check() -> int:
         if res != want:
             bad += 1
             print("MISMATCH", cl, "got", res, "want", want)
-        for leak in ("secret", "hunter2", "s3cret", "pw@", "sv=", "<user>", "users", "\\", "@"):
+        for leak in ("secret", "hunter2", "s3cret", "pw@", "sv=", "<user>", "users", "\\", "@", "someone", "pa", "ss"):
             if s and r["d"] and leak in r["d"]:
                 bad += 1
                 print("LEAK IN DEST", cl, r["d"])
