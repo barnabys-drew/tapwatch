@@ -1038,3 +1038,31 @@ def test_a_password_archive_of_documents_alerts():
     (plain,) = run(FilesStaged(st()), lexec(T0, "/usr/bin/zip", archive_pw=1))
     assert plain.base_severity == 3 and plain.facts["archive_of"] is None
     assert {"host_tunnel", "host_staging"} <= set(NAMES) and {"host_tunnel", "host_staging"} <= CODE_ONLY
+
+
+def test_r37_r38_review_fixes():
+    """Review of #236: an attended session over SSH isn't the owner at the keyboard; no destination is one key."""
+    ssh = lexec(T0, "/usr/bin/ssh", tunnel=1)
+    ssh["columns"].update(claude_session="s3", claude_attended="1", via_ssh="1")
+    (c,) = run(TunnelOpened(st()), ssh)
+    assert (c.base_severity, c.facts["agent_unattended"], c.facts["via_ssh"]) == (4, True, True)
+    det = FilesStaged(st())
+    local = lexec(T0 + WEEK, "/usr/bin/restic", sync=1)
+    (r,) = run(det, lexec(T0, "/usr/bin/ls"), local)
+    assert r.facts["destination"] == "local or from the environment"
+    (a,) = run(FilesStaged(st()), start(T0, r"C:\Program Files\7-Zip\7z.exe", EXPLORER, cmd_archive_pw="1",
+                                         archive_of="desktop"))
+    assert a.base_severity == 4
+
+
+def test_the_conf_carries_exactly_the_fragments_the_pattern_source_builds():
+    """tools/r37r38_patterns.py is the source of the R37/R38 SQL; the conf must not drift from it."""
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[1] / "tools" / "r37r38_patterns.py"
+    spec = importlib.util.spec_from_file_location("r37r38_patterns", path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    assert m.linux_inner() in _conf_query("bpf_process_events")
+    assert m.linux_outer() in _conf_query("bpf_process_events")
+    assert m.windows() in _conf_query("sysmon_events")

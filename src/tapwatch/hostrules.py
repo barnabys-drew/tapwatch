@@ -1238,7 +1238,9 @@ def _agent_facts(c: dict) -> dict:
     if not c.get("claude_session"):
         return {}
     attended = str(c.get("claude_attended") or "")
-    return {"agent_started": True, "agent_attended": attended == "1", "agent_unattended": attended == "0"}
+    ssh = str(c.get("via_ssh") or "0") not in ("", "0")   # driven over an SSH login: not the owner at the keyboard
+    return {"agent_started": True, "agent_attended": attended == "1" and not ssh,
+            "agent_unattended": attended == "0" or ssh, "via_ssh": ssh}
 
 
 def _program_and_folder(query: str, c: dict) -> tuple[str, str]:
@@ -1310,7 +1312,9 @@ class FilesStaged(HostDetector):
         prog, folder = _program_and_folder(query, c)
         agent = _agent_facts(c)
         if str(c.get(pre + "sync", "0")) == "1":
-            dest = str(c.get("sync_dest") or "unnamed").lower()[:120]
+            # No destination on the command line: a restic repository from the environment, or a local one (never
+            # captured: its path holds the user name). One key for those, so a new remote repository still reports.
+            dest = str(c.get("sync_dest") or "local or from the environment").lower()[:120]
             tool = prog.removesuffix(".exe").removesuffix(".com")
             key = (tool, dest)
             if key in self.known:
