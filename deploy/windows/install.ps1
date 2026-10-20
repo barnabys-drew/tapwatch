@@ -12,7 +12,7 @@ What it does, each step skipped when it's already done, so running it again is s
      installer is the one window you click through).
   6. Inside Ubuntu (deploy/windows/wsl-setup.sh): git, Python, Docker, tapwatch, settings, lists, services.
   7. Keeps the PC awake and tapwatch running after restarts; the osquery + Sysmon agent; the router's firewall rules.
-  8. Ends with `tapwatch doctor --send`: what works, what's left, and a test alert.
+  8. Ends with `tapwatch doctor` (what works, what's left), the ntfy address, and a test alert once subscribed.
 
 Everything it prints, the Linux steps included, goes to %LOCALAPPDATA%\tapwatch\install.log, the file to send
 for help. Secrets (the password, webhook, keys, the ntfy address) are typed hidden or shown only after the log
@@ -58,7 +58,7 @@ function Stop-Install($msg) {
     Write-Host ""
     Write-Host "Stopped: $msg" -ForegroundColor Red
     Write-Host "If you need help, send this file: $(Join-Path $StateDir 'install.log')"
-    Stop-Transcript | Out-Null
+    try { Stop-Transcript | Out-Null } catch { }   # already stopped if this comes after the end of the log
     Read-Host "Press Enter to close"
     exit 1
 }
@@ -96,7 +96,7 @@ function Distro-Installed {
 }
 
 # Every Linux command runs with `wsl.exe -e`, never `--`: `--` hands the line to the Linux shell, which ate the
-# backslashes of a Windows path (C:\Users\... became C:Users...) and would split a path with a space in it.
+# backslashes of a Windows path (C:\x\y became C:xy) and would split a path with a space in it.
 
 # Linux steps: wsl-setup.sh from this folder, as root or as the tapwatch user. Values in $vars reach the
 # script as environment variables through WSLENV, so they never appear on a command line. Its output goes
@@ -111,7 +111,10 @@ function Invoke-Linux($user, [string[]]$stageArgs, [hashtable]$vars = @{}, [swit
     $ErrorActionPreference = "Continue"
     try {
         if ($Capture) { return ((& wsl.exe -d $Distro -u $user -e bash $script @stageArgs 2>$null) -join "`n") }
-        & wsl.exe -d $Distro -u $user -e bash $script @stageArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
+        # One line at a time: apt's output can arrive as one block with bare line feeds, which the console draws
+        # as a staircase.
+        & wsl.exe -d $Distro -u $user -e bash $script @stageArgs 2>&1 |
+            ForEach-Object { foreach ($line in ("$_" -split "`r?`n")) { if ($line.Trim()) { Write-Host "    $($line.TrimEnd("`r"))" } } }
         if ($LASTEXITCODE -ne 0) { throw "the Linux step '$($stageArgs[0])' failed (exit $LASTEXITCODE); the lines above say why" }
     } finally {
         $ErrorActionPreference = $old
@@ -300,8 +303,10 @@ if (-not $needSettings) {
     }
     Write-Host ""
     Note "Optional AI keys. Press Enter to skip either one; tapwatch works without them."
-    $typesafeKey = Ask-Secret "TypeSafe key (an AI reads unclear cases and helps decide what's worth interrupting you for)"
-    $anthropicKey = Ask-Secret "Anthropic key (names the kind of website when tapwatch's list doesn't know it)"
+    Note "TypeSafe: an AI reads unclear cases and helps decide what's worth interrupting you for."
+    $typesafeKey = Ask-Secret "TypeSafe key, or just press Enter to skip"
+    Note "Anthropic: names the kind of website when tapwatch's list doesn't know it."
+    $anthropicKey = Ask-Secret "Anthropic key, or just press Enter to skip"
 }
 
 # ------------------------------------------------------------------ 5. Wireshark + Npcap
@@ -366,8 +371,10 @@ if ($syslog -and $gateway -and $mirroredOk) {
 }
 
 # ------------------------------------------------------------------ 8. check and finish
-Say "Checking everything (and sending a test alert)"
-Invoke-Linux $linuxUser @("doctor")
+# ntfy's test alert waits until the owner has subscribed (below); Discord's channel already exists, so send it now.
+$send = if ($alerts -eq "discord") { "send" } else { "nosend" }
+Say $(if ($send -eq "send") { "Checking everything (and sending a test alert)" } else { "Checking everything" })
+Invoke-Linux $linuxUser @("doctor", $send)
 Remove-Item $Answers -ErrorAction SilentlyContinue
 
 Write-Host ""
@@ -380,9 +387,20 @@ if ($alerts -eq "ntfy") {
     $ntfy = Invoke-Linux $linuxUser @("ntfy-url") -Capture
     if ($ntfy) {
         Write-Host ""
-        Write-Host "Phone alerts: in the ntfy app, tap + and subscribe to this address:" -ForegroundColor Green
-        Write-Host "    $ntfy"
+        Write-Host "Last step: phone alerts." -ForegroundColor Green
+        Note "1. Open the ntfy app on your phone and tap +"
+        Note "2. Type this address exactly, then Subscribe:"
+        Write-Host ""
+        Write-Host "       $ntfy" -ForegroundColor Yellow
+        Write-Host ""
         Note "Keep it private: anyone who has it can read your alerts. (It's also in Ubuntu: ~/tapwatch/.env)"
+        while ($true) {
+            $again = Read-Host "Once you've subscribed, press Enter to send a test alert (or type 'skip')"
+            if ($again -eq "skip") { break }
+            foreach ($line in ((Invoke-Linux $linuxUser @("test-alert") -Capture) -split "`n")) { Note $line }
+            if (Ask-YesNo "Did the test alert arrive on your phone?" "y") { break }
+            Note "Check the address was typed exactly (it's case-sensitive), then try again."
+        }
     }
 }
-Read-Host "Press Enter to close"
+Read-Host "All done. Press Enter to close"

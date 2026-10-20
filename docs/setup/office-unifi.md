@@ -77,7 +77,8 @@ UniFi versions; if you can't find Mirroring, search the settings for "mirror".
 5. It restarts the PC once. Sign back in and the installer window comes back by itself and carries on.
 6. One installer you click through yourself: **Npcap**. Click **I Agree**, leave the ticked options,
    **Install**, then **Finish**.
-7. At the end it checks everything, sends a test alert, and shows the ntfy address to subscribe to.
+7. At the end it checks everything, then shows the ntfy address to subscribe to (step 5 below) and sends a test
+   alert once you have.
 
 If it stops with an error, it says what went wrong and where its log file is. Send that file to
 whoever is helping you: it has no passwords or keys in it.
@@ -85,8 +86,10 @@ whoever is helping you: it has no passwords or keys in it.
 ## 5. Get alerts on your phone
 
 1. Open the ntfy app and tap **+**.
-2. Type the address the installer showed (it starts with `https://ntfy.sh/tapwatch-`), then **Subscribe**.
-3. The test alert should arrive within a minute.
+2. Type the address the installer showed in yellow (it starts with `https://ntfy.sh/tapwatch-`), then **Subscribe**.
+3. Back on the PC, press Enter: the installer sends a test alert, which should arrive within a minute.
+
+Missed the address? Open Ubuntu and type `grep NTFY ~/tapwatch/.env`.
 
 Treat that address like a password: anyone who has it can read your alerts.
 
