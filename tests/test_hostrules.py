@@ -919,7 +919,7 @@ def test_a_portable_remote_access_tool_is_scored_by_its_folder_and_parent():
         det = RemoteAccessTool(st())
         return run(det, start(T0, EXPLORER, EXPLORER), start(T0 + WEEK, path, parent))
     (dl,) = first(r"C:\Users\<user>\Downloads\AnyDesk.exe")
-    assert (dl.base_severity, dl.must_alert, dl.indicators) == (4, False, ["anydesk.exe"])
+    assert (dl.base_severity, dl.must_alert, dl.indicators, dl.facts["program"]) == (4, False, ["AnyDesk"], "anydesk.exe")
     (tmp,) = first(r"C:\Users\<user>\AppData\Local\Temp\AnyDesk.exe")
     assert (tmp.base_severity, tmp.must_alert, tmp.facts["folder"]) == (5, True, "temp")
     (doc,) = first(r"C:\Program Files\AnyDesk\AnyDesk.exe", OUTLOOK)
@@ -955,6 +955,18 @@ def test_risky_remote_access_starts_are_never_learned_and_renamed_copies_match()
     assert c.must_alert
     renamed = start(T0 + WEEK, r"C:\Users\<user>\Downloads\invoice_viewer.exe", EXPLORER, original_name="rustdesk.exe")
     (r,) = run(det, renamed)
-    assert (r.facts["tool"], r.facts["renamed"], r.indicators) == ("RustDesk", True, ["invoice_viewer.exe"])
+    assert (r.facts["tool"], r.facts["renamed"], r.indicators, r.facts["program"]) == \
+        ("RustDesk", True, ["RustDesk"], "invoice_viewer.exe")
+    assert "renamed" in summarize(r, Assets({}))
     quiet = RemoteAccessTool(st(), expected_tools=["NinjaOne", "quick assist"])
     assert run(quiet, start(T0, EXPLORER, EXPLORER), start(T0 + WEEK, r"C:\Windows\System32\quickassist.exe", EXPLORER)) == []
+
+
+def test_a_learned_tool_started_from_temp_or_by_outlook_still_reports_once():
+    """Review of #235: the owner's TeamViewer learned in week one; a portable copy in Temp later is the scam shape."""
+    det = RemoteAccessTool(st())
+    tv = r"C:\Program Files\TeamViewer\TeamViewer.exe"
+    assert run(det, start(T0, tv, EXPLORER)) == []
+    (c,) = run(det, start(T0 + WEEK, r"C:\Users\<user>\AppData\Local\Temp\TeamViewerQS.exe", EXPLORER))
+    assert c.must_alert and c.facts["tool"] == "TeamViewer"
+    assert run(det, start(T0 + WEEK + 60, tv, OUTLOOK)) == []      # one risky report per tool

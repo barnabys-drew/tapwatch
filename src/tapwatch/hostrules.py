@@ -1123,12 +1123,13 @@ class LsassAccess(HostDetector):
 # talks to Microsoft, so it has no R16 service. File names, not paths: a portable copy has the same name.
 RMM_PROGRAMS: dict[str, tuple[str, str]] = {
     **dict.fromkeys(("anydesk.exe", "anydesk"), ("AnyDesk", "anydesk.com")),
-    **dict.fromkeys(("teamviewer.exe", "teamviewer_service.exe", "tv_w32.exe", "tv_x64.exe", "teamviewer",
-                     "teamviewerd"), ("TeamViewer", "teamviewer.com")),
+    **dict.fromkeys(("teamviewer.exe", "teamviewer_service.exe", "tv_w32.exe", "tv_x64.exe", "teamviewerqs.exe",
+                     "teamviewerqs_x64.exe", "teamviewer", "teamviewerd"), ("TeamViewer", "teamviewer.com")),
     **dict.fromkeys(("rustdesk.exe", "rustdesk"), ("RustDesk", "rustdesk.com")),
     **dict.fromkeys(("screenconnect.clientservice.exe", "screenconnect.windowsclient.exe",
                      "connectwisecontrol.client.exe"), ("ScreenConnect", "screenconnect.com")),
-    **dict.fromkeys(("srservice.exe", "srstreamer.exe", "srmanager.exe", "splashtop.exe"), ("Splashtop", "splashtop.com")),
+    **dict.fromkeys(("srservice.exe", "srstreamer.exe", "srmanager.exe", "strwinclt.exe", "splashtopsos.exe"),
+                    ("Splashtop", "splashtop.com")),
     **dict.fromkeys(("ateraagent.exe", "atera_agent.exe"), ("Atera", "atera.com")),
     **dict.fromkeys(("logmein.exe", "lmiguardiansvc.exe", "logmeinsystray.exe", "lmi_rescue.exe"), ("LogMeIn", "logmein.com")),
     **dict.fromkeys(("ammyy_admin.exe", "aa_v3.exe", "ammyy.exe"), ("Ammyy Admin", "ammyy.com")),
@@ -1139,14 +1140,22 @@ RMM_PROGRAMS: dict[str, tuple[str, str]] = {
     **dict.fromkeys(("remotepcservice.exe", "remotepc.exe"), ("RemotePC", "remotepc.com")),
     **dict.fromkeys(("tacticalrmm.exe", "rmmagent"), ("Tactical RMM", "")),
     **dict.fromkeys(("client32.exe",), ("NetSupport", "")),
-    **dict.fromkeys(("ultraviewer.exe", "ultraviewer_service.exe"), ("UltraViewer", "")),
+    **dict.fromkeys(("ultraviewer_desktop.exe", "ultraviewer_service.exe"), ("UltraViewer", "")),
     **dict.fromkeys(("dwagent.exe", "dwagsvc.exe", "dwagent"), ("DWService", "")),
     **dict.fromkeys(("zaservice.exe", "zohoassist.exe", "zohoassistagent.exe"), ("Zoho Assist", "")),
     **dict.fromkeys(("action1_agent.exe",), ("Action1", "")),
     **dict.fromkeys(("ninjarmmagent.exe", "ninjarmmagentpatcher.exe"), ("NinjaOne", "")),
     **dict.fromkeys(("agentmon.exe",), ("Kaseya", "")),
     **dict.fromkeys(("pcmonitorsrv.exe", "pcmonitormanager.exe"), ("Pulseway", "")),
-    **dict.fromkeys(("tvnserver.exe", "winvnc.exe", "x11vnc", "vncserver", "x0vncserver"), ("VNC server", "")),
+    **dict.fromkeys(("tvnserver.exe", "winvnc.exe", "vncserver.exe", "x11vnc", "vncserver", "x0vncserver"),
+                    ("VNC server", "")),
+    **dict.fromkeys(("aeroadmin.exe",), ("AeroAdmin", "")),
+    **dict.fromkeys(("rutserv.exe", "rfusclient.exe"), ("Remote Utilities", "")),
+    **dict.fromkeys(("rserver3.exe",), ("Radmin", "")),
+    **dict.fromkeys(("anyviewer.exe", "rcservice.exe"), ("AnyViewer", "")),
+    **dict.fromkeys(("remoting_host.exe",), ("Chrome Remote Desktop", "")),
+    **dict.fromkeys(("gotoassist.exe", "gotoassistcustomer.exe", "g2ax_customer.exe"), ("GoTo Resolve", "")),
+    **dict.fromkeys(("bomgar-scc.exe", "bomgar-rep.exe"), ("BeyondTrust Remote Support", "")),
     **dict.fromkeys(("quickassist.exe",), ("Quick Assist", "")),
 }
 RMM_LEARN_DAYS = 7   # an office's own RMM, or the owner's, is learned in the rule's first week on a box
@@ -1161,7 +1170,8 @@ class RemoteAccessTool(HostDetector):
     name or, on Windows, the original file name from the program's version resource (so a renamed copy matches)
     against RMM_PROGRAMS. Per tool, the first start after a learning window is a case and later starts aren't: the
     window is the rule's first RMM_LEARN_DAYS on a box (persisted), so an office's own RMM is learned, not reported
-    forever. A start from Temp, a shared folder or a document app is never learned, even in that week. Known as
+    forever. A risky start (Temp, a shared folder or a document app) is tracked apart and never learned, even in that
+    week, so a portable or Outlook-started copy of a tool the box already uses still reports, once. Known as
     well: `expected_tools` (tool names, `detectors.host_rmm`) and a `takeover.expected` entry for this PC and the
     tool's R16 service. Scored by the folder: installed (Program Files, /usr, /opt) 3; a user folder or Downloads 4,
     suppressible per tool; Temp, a shared folder, or started by a document or mail app 5, must_alert. Quick Assist
@@ -1200,10 +1210,11 @@ class RemoteAccessTool(HostDetector):
         folder = win_folder_class(path) if windows else posix_folder_class(path)
         parent = _basename(c.get("parent_path") or "") if windows else ""
         must = folder in ("temp", "shared") or parent_class(parent) == "document"
-        if tool in self.known or tool.lower() in self.expected_tools \
+        seen = f"{tool} (risky)" if must else tool    # a risky start of a known tool is still news
+        if seen in self.known or tool.lower() in self.expected_tools \
                 or (service and service in self.expected.get(self.state.host, ())):
             return []
-        self.known.add(tool)
+        self.known.add(seen)
         if ts - self.since < self.learn and not must:
             return []   # learned: there before the rule, or the box's own tool in its first week
         if must:
@@ -1215,8 +1226,9 @@ class RemoteAccessTool(HostDetector):
         facts = {"tool": tool, "program": prog[:80], "folder": folder, "parent": parent[:80] or None,
                  "parent_class": parent_class(parent) if parent else None, "service": service or None,
                  "renamed": bool(original) and prog != original and prog not in RMM_PROGRAMS}
+        # The tool's name is the indicator (and the suppression handle), so a renamed copy can't slip a suppression.
         return self.emit(ts, f"Remote-access tool started on the PC for the first time: {tool}", facts, severity,
-                         prog[:80], (tool,), must_alert=must)
+                         tool, (seen,), must_alert=must)
 
 
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:

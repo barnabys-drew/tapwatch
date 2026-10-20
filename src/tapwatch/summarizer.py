@@ -326,7 +326,9 @@ def _endpoint(c: Case) -> str:
         tool = _program(f.get("tool", "a remote-access tool"))
         where = f" from {FOLDER_WORDS.get(f.get('folder'), 'a folder')}" if f.get("folder") else ""
         parent = f" It was started by {_program(f['parent'])}." if f.get("parent") else ""
-        return (f"On the PC itself, the remote-access tool {tool} ({prog}) started for the first time{where}.{parent} "
+        renamed = " Its file was renamed from the tool's own name, which hides it from a casual look." \
+            if f.get("renamed") else ""
+        return (f"On the PC itself, the remote-access tool {tool} ({prog}) started for the first time{where}.{parent}{renamed} "
                 "These tools let someone else control the PC: tech-support scams talk people into installing one, and "
                 "ransomware crews use them because they are signed and trusted. If nobody here set it up, treat it as "
                 "someone getting in.")
