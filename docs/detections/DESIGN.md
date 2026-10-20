@@ -369,6 +369,12 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Baseline:** 3-day warmup. Measured: **~150 first-seen pairs/h** on an active evening after
   warmup. Only **7 of 167** base domains were off the Tranco list, and 124 were single-device.
 - **Dedupe:** `new_domain|host|base_domain`; window-grouped as now.
+- **Popular-only windows (implemented 2026-10-19):** a window in which every name is on the
+  Tranco list and none looks random opens no case; the names are still learned. Measured on the
+  home install the week before: 285 of 342 `new_domain` cases were all-popular browsing (shopping,
+  news, app telemetry), none ever a threat, and they were most of the triage queue. tapwatch looks
+  for threats, not content: a site's kind never opens a case. `new_domain: {report_popular: true}`
+  restores the old behaviour.
 - **Category:** each name is looked up in the offline UT1 category list (`categories.py`, from
   `update-feeds`): the case carries the distinct kinds found (advertising, media, remote control,
   ...) as a fact for the summary. A fact only, not routing: measured first (2026-10-16, the day's
