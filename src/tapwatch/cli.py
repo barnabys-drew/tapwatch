@@ -238,7 +238,14 @@ def cmd_init(args, cfg) -> int:
     facts = wizard.detect()
     print(f"Detected: gateway {facts.gateway or '?'}, this machine {facts.this_ip or '?'}, "
           f"timezone {facts.timezone or '?'}, Npcap capture {'yes' if facts.windows_capture else 'no'}")
-    ask = (lambda q, d, c=None: d) if args.yes else wizard.prompt
+    if args.answers:
+        try:
+            ask = wizard.from_answers(sys.stdin.read() if args.answers == "-" else Path(args.answers).read_text())
+        except (OSError, ValueError, TypeError) as e:
+            print(f"answers: {e}", file=sys.stderr)
+            return 2
+    else:
+        ask = (lambda q, d, c=None, key="": d) if args.yes else wizard.prompt
     conf, assets, env, notes = wizard.build(facts, ask)
     try:
         written = wizard.write(args.dir, conf, assets, env, force=args.force)
@@ -249,7 +256,7 @@ def cmd_init(args, cfg) -> int:
     # The popular-domains list is what keeps the first day quiet (config.missing_feeds), so offer it
     # here rather than leave it to a note. --yes skips the download: it may be running offline.
     if not args.yes and ask("Download the public lists now (popular domains, MAC vendors, IP-to-network)?",
-                            "yes", ["yes", "no"]) == "yes":
+                            "yes", ["yes", "no"], key="download_feeds") == "yes":
         from . import feeds
 
         report = feeds.update(str(Path(args.dir) / conf.get("feeds_dir", "feeds")))
@@ -327,6 +334,23 @@ def cmd_notify(args, cfg) -> int:
     return 0
 
 
+def cmd_doctor(args, cfg) -> int:
+    from . import doctor
+
+    zeek_dir = args.zeek_dir or doctor.zeek_dir_from_units() or "logs/zeek"
+    results = doctor.run_all(cfg, args.config, zeek_dir)
+    if args.send and any(r.part == "Alerts" and r.level == doctor.OK for r in results):
+        try:
+            sent = config.notifier(cfg).send("tapwatch test alert", [{"heading": "This is a test - no action needed",
+                                                                      "facts": {"Why": "tapwatch doctor --send"}}])
+            results.append(doctor.Result(doctor.OK, "Test alert", "sent via " + ", ".join(sent)))
+        except Exception as e:  # noqa: BLE001 -- any channel failure is a line in the report, not a traceback
+            results.append(doctor.Result(doctor.FAIL, "Test alert", f"not delivered: {e}",
+                                         "check the address in .env, then: tapwatch test-alert"))
+    print(doctor.report(results))
+    return 1 if any(r.level == doctor.FAIL for r in results) else 0
+
+
 def cmd_test_alert(args, cfg) -> int:
     if args.herdr:
         h = config.herdr(cfg)
@@ -368,8 +392,11 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("init", help="set up: detect the network, ask a few questions, write config, assets and .env")
     s.add_argument("--dir", default=".", help="where to write config.yaml, assets.yaml and .env")
-    s.add_argument("--yes", action="store_true", help="accept every detected default (no questions)")
+    how = s.add_mutually_exclusive_group()
+    how.add_argument("--yes", action="store_true", help="accept every detected default (no questions)")
     s.add_argument("--force", action="store_true", help="replace an existing config.yaml / assets.yaml")
+    how.add_argument("--answers", metavar="FILE", help="answer from a JSON object keyed by question (wizard.ANSWER_KEYS); "
+                   "'-' reads stdin, so secrets need not touch the disk")
     s.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("syslog", help="receive the router's CEF syslog (UniFi SIEM) into udm.log for `run`")
@@ -420,6 +447,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("case_id", type=int)
     s.add_argument("label", choices=["fp", "tp"])
     s.set_defaults(fn=cmd_mark)
+
+    s = sub.add_parser("doctor", help="check every part of the install and say how to fix what isn't working")
+    s.add_argument("--zeek-dir", help="the log dir `run` watches (default: the one `service install` used)")
+    s.add_argument("--send", action="store_true", help="also send a test alert")
+    s.set_defaults(fn=cmd_doctor)
 
     s = sub.add_parser("test-alert", help="send a sample alert")
     s.add_argument("--herdr", action="store_true", help="pop a test notification in Herdr instead")

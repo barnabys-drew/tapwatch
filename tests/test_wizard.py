@@ -13,9 +13,9 @@ FACTS = wizard.Facts(gateway="192.168.50.1", this_ip="192.168.50.10", timezone="
 
 
 def answers(**overrides):
-    def ask(question, default, choices=None):
-        for key, val in overrides.items():
-            if key in question.lower():
+    def ask(question, default, choices=None, key=""):
+        for word, val in overrides.items():
+            if word in question.lower():
                 return val
         return default
     return ask
@@ -62,7 +62,60 @@ def test_existing_files_need_force_and_env_keeps_other_keys(tmp_path):
 def test_windows_capture_path_is_offered_when_npcap_is_there():
     f = wizard.Facts(gateway="192.168.50.1", windows_capture=True)
     _, _, _, notes = wizard.build(f, answers())
-    assert any("capture_mirror.sh" in n and "'Ethernet'" in n for n in notes)
+    assert any("--capture-iface 'Ethernet'" in n for n in notes)
+    assert wizard.build(wizard.Facts(this_ip="192.168.50.10", windows_capture=True), answers())[0]["host_context"] \
+        == {"host": "192.168.50.10"}
+    assert "host_context" not in wizard.build(FACTS, answers())[0]
+
+
+def test_anthropic_key_turns_on_site_categories():
+    cfg, _, env, _ = wizard.build(FACTS, answers(anthropic="sk-ant-x"))
+    assert cfg["categories"]["ai"] and env["ANTHROPIC_API_KEY"] == "sk-ant-x"
+    assert "categories" not in wizard.build(FACTS, answers())[0]
+
+
+def test_answers_file_answers_by_key_and_refuses_typos():
+    ask = wizard.from_answers('{"alerts": "discord", "discord_url": "https://discord.com/api/webhooks/1/x", '
+                              '"typesafe_key": "ts"}')
+    cfg, _, env, _ = wizard.build(FACTS, ask)
+    assert env["TAPWATCH_DISCORD_URL"].endswith("/1/x") and env["TYPESAFE_API_KEY"] == "ts"
+    assert cfg["network"]["gateways"] == ["192.168.50.1"]          # unanswered: the detected default
+    with pytest.raises(ValueError, match="alert"):
+        wizard.from_answers('{"alert": "ntfy"}')
+    with pytest.raises(ValueError, match="one of"):
+        wizard.from_answers('{"alerts": "pager"}')
+    with pytest.raises(ValueError, match="one of"):
+        wizard.from_answers('{"download_feeds": "maybe"}')          # checked before anything is written
+    with pytest.raises(TypeError):
+        wizard.from_answers('{"typesafe_key": 5}')
+    with pytest.raises(ValueError, match="one line"):
+        wizard.from_answers('{"discord_url": "https://x\\nTYPESAFE_API_KEY=evil"}')
+    cfg, _, env, _ = wizard.build(FACTS, wizard.from_answers('{"anthropic_key": null}'))   # null: unanswered
+    assert "ANTHROPIC_API_KEY" not in env and "categories" not in cfg
+
+
+def test_init_reads_answers_from_stdin(tmp_path, monkeypatch, capsys):
+    import io
+
+    from tapwatch import cli
+    monkeypatch.setattr(wizard, "detect", lambda: FACTS)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"alerts": "none", "download_feeds": "no"}'))
+    assert cli.main(["init", "--dir", str(tmp_path), "--answers", "-"]) == 0
+    assert (tmp_path / "config.yaml").exists() and "TAPWATCH_NTFY_URL" not in (tmp_path / ".env").read_text()
+
+
+def test_init_refuses_bad_answers_cleanly_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    import io
+
+    from tapwatch import cli
+    monkeypatch.setattr(wizard, "detect", lambda: FACTS)
+    for bad in ('{"download_feeds": "maybe"}', '[1]', '{not json', '{"alert": "ntfy"}'):
+        monkeypatch.setattr("sys.stdin", io.StringIO(bad))
+        assert cli.main(["init", "--dir", str(tmp_path), "--answers", "-"]) == 2
+        assert "Traceback" not in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
+    with pytest.raises(SystemExit):                                 # --yes and --answers can't be combined
+        cli.main(["init", "--yes", "--answers", "-"])
 
 
 # ------------------------------------------------------------ systemd user services
