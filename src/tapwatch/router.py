@@ -39,7 +39,7 @@ CODE_ONLY = {"new_domain",
              "host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
              "host_destructive", "host_recon", "host_extension", "host_linux_connect",
              "host_linux_cmd", "host_lsass", "host_rmm",
-             "host_tunnel", "host_staging"}
+             "host_tunnel", "host_staging", "host_fim"}
 
 
 def wants_ai(case: Case) -> bool:
