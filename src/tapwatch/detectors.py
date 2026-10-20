@@ -1169,6 +1169,13 @@ class NewExternalDomain(Detector):
     name. Failed lookups (NXDOMAIN etc.) are skipped: those are SuspiciousDNS's job, and a
     name that never resolved was never contacted. Each case carries facts computed here,
     because "first contact with a domain" on its own gives the AI nothing to judge.
+
+    A window whose every name is on the popular list and none looks random opens no case (R08:
+    "not in Tranco"). Measured 2026-10-19 on the home install: 285 of 342 new_domain cases in a
+    week were all-popular browsing (shopping, news, app telemetry) and none was ever a threat.
+    The names are still learned, so the per-device and household first-seen sets stay whole.
+    `report_popular: true` restores the old behaviour; with no popular list loaded every window
+    is reported, since nothing can be judged popular.
     """
 
     name = "new_domain"
@@ -1176,8 +1183,9 @@ class NewExternalDomain(Detector):
     DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("known",)
 
     def __init__(self, warmup: Warmup, window: float = 300, popular: set[str] | None = None,
-                 dev: DevProfile | None = None):
+                 dev: DevProfile | None = None, report_popular: bool = False):
         self.warmup, self.window, self.popular, self.dev = warmup, window, popular or set(), dev or DevProfile()
+        self.report_popular = report_popular
         self.known: dict[str, set[str]] = defaultdict(set)       # host -> base domains it has used
         self.users: dict[str, set[str]] = defaultdict(set)       # base domain -> hosts that used it
         self.pending: dict[str, dict] = {}                       # host -> open window
@@ -1214,10 +1222,19 @@ class NewExternalDomain(Detector):
 
     def _close_due(self, now: float) -> list[Case]:
         due = [h for h, w in self.pending.items() if now - w["start"] >= self.window]
-        return [self._case(h, self.pending.pop(h)) for h in due]
+        return self._cases([(h, self.pending.pop(h)) for h in due])
 
     def flush(self) -> list[Case]:
-        return [self._case(h, self.pending.pop(h)) for h in list(self.pending)]
+        return self._cases([(h, self.pending.pop(h)) for h in list(self.pending)])
+
+    def _cases(self, closed: list[tuple[str, dict]]) -> list[Case]:
+        return [self._case(h, w) for h, w in closed if self._worth_a_case(w["items"])]
+
+    def _worth_a_case(self, items: list[dict]) -> bool:
+        """Something in the window is off the popular list or random-looking (see the class docstring)."""
+        if self.report_popular or not self.popular:
+            return True
+        return any(i["random"] or not i["popular"] for i in items)
 
     def _case(self, host: str, win: dict) -> Case:
         items = win["items"]

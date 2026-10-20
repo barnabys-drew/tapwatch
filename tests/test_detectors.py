@@ -1184,6 +1184,30 @@ def test_new_domain_random_only_off_popular_and_no_bare_hostnames():
     assert c.facts["count"] == 2 and c.facts["random"] == 1 and c.indicators[0] == "q8z3kx0vw7p2mr.example.net"
 
 
+def test_new_domain_all_popular_window_opens_no_case():
+    """R08 'not in Tranco': a burst of popular, readable names is browsing, not a case (2026-10-19)."""
+    nd = NewExternalDomain(Warmup(0), popular={"target.com", "adobedtm.com"})
+    run(nd, [dns(T0, "api.target.com"), dns(T0 + 1, "assets.adobedtm.com")])
+    assert nd.flush() == []
+    assert any("target.com" in seen for seen in nd.known.values())  # still learned: a later visit is not new again
+
+
+def test_new_domain_one_unpopular_name_reports_the_whole_window():
+    nd = NewExternalDomain(Warmup(0), popular={"target.com"})
+    run(nd, [dns(T0, "api.target.com"), dns(T0 + 1, "rea.example")])
+    c = nd.flush()[0]
+    assert c.facts["count"] == 2 and c.facts["popular"] == 1 and "rea.example" in c.indicators
+
+
+def test_new_domain_report_popular_and_no_list_keep_every_window():
+    on = NewExternalDomain(Warmup(0), popular={"target.com"}, report_popular=True)
+    run(on, [dns(T0, "api.target.com")])
+    assert len(on.flush()) == 1
+    no_list = NewExternalDomain(Warmup(0))
+    run(no_list, [dns(T0, "api.target.com")])
+    assert len(no_list.flush()) == 1
+
+
 def test_upload_spike_to_a_sync_service_is_capped_at_digest():
     det = HourlyProfile()
     lookup = dict(dns(T0, "onedriveclubprodbn1.blob.core.windows.net"), answers=["203.0.113.40"])
