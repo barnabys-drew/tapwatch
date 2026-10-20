@@ -33,6 +33,53 @@ into alerts, without adding false alerts at home. It did not reduce the number o
 The eval's GO rule says so: Jev must cut noise *or* alert on more real threats, add no false
 alerts, and lose no malicious host.
 
+## First week on a live network, and host context (#4): 2026-10-13 to 2026-10-20
+
+One home network (a UniFi gateway, about 20 devices seen on the mirror), the alerter, router syslog and both endpoint agents (Windows
+with Sysmon, Linux/WSL with eBPF) running all week; every case triaged by the owner. `tapwatch benchmark` on
+2026-10-20:
+
+| week | cases | alerts | decided | noise rate | true positives | Jev agreement |
+|---|---|---|---|---|---|---|
+| 2026-W42 | 868 | 337 | 868 | 100% | 2 | 26% (147) |
+| 2026-W43 | 64 | 1 | 61 | 98% | 1 | 75% (20) |
+
+Host context: 137 cases on the PC, 0 corroborated. Code said agent_unconfirmed 25, other_program 107, unknown 5.
+Jev agreed with code on 74% of 136 it was asked; code's benign-or-hostile claims matched the owner's disposition
+on – of 0.
+
+**One day is a bug, not traffic.** 338 of W42's cases (252 of its alerts) are one detector on 2026-10-17: the
+Windows agent's log rotates in place on the Windows drive (same inode), the follower re-read it from the start,
+and every encoded PowerShell command already seen came back as new. Fixed the same day. Without it, the
+week (2026-10-13 to 10-19) is **531 cases, 36 alerts (about 5 a day), all 531 decided: 529 noise, 2 true positives**:
+
+| | cases | alerts |
+|---|---|---|
+| new_domain | 346 | 6 |
+| beaconing | 62 | 5 |
+| dns_anomaly | 22 | 2 |
+| scan | 20 | 3 |
+| tls_odd | 14 | 0 |
+| upload_spike | 10 | 4 |
+| endpoint rules (R17-R29: persistence 21, LOLBins, temp-folder and encoded commands, the Linux rules, a signature) | 34 | 11 |
+| everything else (new device, cleartext login, DNS bypass, management access, router admin, takeover, feed silence) | 23 | 5 |
+
+The two true positives both went to the digest, not an alert: a device polling one plain-HTTP server every
+10 minutes (#395, beaconing), and the Linux agent's process feed going silent for 16 minutes (#890, R22). The
+endpoint rules' 11 alerts include the live tests of R21-R29 run that week. W43's first two days had one alert.
+
+**What host context did.** 137 cases on the PC were explained with the program behind the traffic: 107 named a
+program other than the owner's coding agents, 25 found an agent but couldn't confirm it held the connection,
+5 found nothing. The owner closed all 137 as noise (119 expected, 18 false positive). The answers that make a
+claim about intent, "the owner's agent did this" (benign) and "an agent was misused" (hostile), never fired on
+real traffic, so **the verdict side has no measured accuracy yet**: there is nothing to have been wrong about,
+and nothing proven right. No call was wrong, so #4 opened no issues.
+
+**What this settles for #4.** Attribution, naming the program behind a connection, is verified on real data and
+is no longer experimental (the README dropped the label on 2026-10-17). The intent verdicts stay unmeasured until
+a real agent-driven or hostile case happens; `tapwatch benchmark` will show the first one. Jev agreed with the
+owner on 26% of decided W42 cases it categorised and 75% in W43, on small numbers (147, then 20).
+
 ## Re-run 2026-10-15, after the noise review
 
 Same captures, same home night, same model, after the day's detector changes (per-VLAN DHCP learning,

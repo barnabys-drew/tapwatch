@@ -298,20 +298,22 @@ adds Semgrep and Trivy on PRs into `main`.
 
 ## Status
 
-**v0.1.1**, running on a real home network since 2026-10-13, so expect rough edges.
+**v0.2.0**, running on a real home network since 2026-10-13, so expect rough edges.
 
 - **Installs verified from scratch:** the Linux paths (a bare container and the Compose stack, 2026-10-15)
   and the Windows path on a clean Windows 11 machine (2026-10-18: capture into Zeek and an alert to
   Discord, which found and fixed a Discord 403). The one-step Windows installer (`install-windows.cmd`)
-  and `tapwatch doctor` are new and are next to be run on a clean machine.
+  and `tapwatch doctor` passed a clean Windows 11 machine on 2026-10-19.
 - **Detection:** the network rules, the router's syslog (verified against a live UniFi gateway), and
   the endpoint rules R17–R29 on Windows and Linux (the Linux set verified live on 2026-10-18). A scripted
   detection-rate check runs in CI; a feed-silence rule watches every log source, the router included.
 - **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement and
-  host-context accuracy week by week. The first full week of host-context numbers closes v0.2 on 2026-10-20.
+  host-context accuracy week by week. The first live week ([results](eval/RESULTS.md)): about 5 alerts a day,
+  nearly all noise while the baselines learn, 2 true positives (both digest items); host context named the
+  program behind all 137 PC cases, and its intent verdicts have not yet fired on real traffic.
 
-Next, per the [roadmap](docs/ROADMAP.md): the easy-install milestone (v0.2.5), then more endpoint rules
-(v0.3) and learning from the owner's closed cases (v0.4). macOS waits until there's a Mac to test on.
+v0.2 (evidence outside one house) and v0.2.5 (easy install) are done. Next, per the [roadmap](docs/ROADMAP.md):
+more endpoint rules (v0.3) and learning from the owner's closed cases (v0.4). macOS waits until there's a Mac to test on.
 
 ## License
 
