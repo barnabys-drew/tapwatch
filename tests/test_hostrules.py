@@ -1167,3 +1167,18 @@ def test_every_network_rule_pairs_with_a_host_rule_or_is_listed_as_never():
     paired = set().union(*PAIRS.values())
     assert names - paired - NEVER_PAIRED == set()
     assert not paired & NEVER_PAIRED
+
+
+
+def test_agent_queries_read_one_process_at_a_time_and_the_ebpf_feeds_are_never_denylisted():
+    """2026-10-20: the agent installer restarted osquery while bpf_connections was running; the watchdog marked it
+    "may have failed" and skipped it for a day. It was running most of the time: two marker lookups used
+    `e.pid IN (b.pid, b.parent)`, which osquery can't use to read one process, so each row read every process's
+    environment (all of /proc; 5.2 s vs 0.5 s for 300 rows). Any deploy can restart mid-query, so the feeds the
+    rules read are never denylisted."""
+    import re as _re
+    from pathlib import Path
+    raw = Path(__file__).resolve().parents[1].joinpath("agents", "config", "osquery.conf").read_text()
+    sched = json.loads(_re.sub(r"^\s*//.*$", "", raw, flags=_re.MULTILINE), strict=False)["schedule"]
+    assert not [n for n, q in sched.items() if _re.search(r"pid IN \(", q["query"])]
+    assert sched["bpf_connections"]["denylist"] is False and sched["bpf_process_events"]["denylist"] is False
