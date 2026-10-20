@@ -189,10 +189,9 @@ class Store:
         return {r["agent"]: dict(r) for r in self.db.execute("SELECT * FROM agents")}
 
     def software(self, agent: str | None = None) -> list[sqlite3.Row]:
-        q, args = "SELECT * FROM software", ()
         if agent:
-            q, args = q + " WHERE agent=?", (agent,)
-        return self.db.execute(q + " ORDER BY agent, kind, name", args).fetchall()
+            return self.db.execute("SELECT * FROM software WHERE agent=? ORDER BY kind, name", (agent,)).fetchall()
+        return self.db.execute("SELECT * FROM software ORDER BY agent, kind, name").fetchall()
 
     def ecosystems(self) -> dict[str, set[str]]:
         """Ecosystem -> the source packages installed in it, across agents: what update-feeds fetches for."""
