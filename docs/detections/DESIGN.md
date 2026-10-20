@@ -1188,6 +1188,16 @@ come from files and tool output.
   per (device, port). Overnight replay with those two changes: 0 cases from either rule.
 - `tapwatch update-feeds` downloads Tranco top-100k, the IEEE OUI registry and iptoasn's IPv4 table
   into `feeds_dir` over https. Unset list settings default to it.
+- Vulnerability data for the agents' software inventory (#224/#225; `inventory.py`, `vulns.py`): `kev.json`
+  (CISA KEV, 1,754 CVEs on 2026-10-20), `osv-<release>.tsv.gz` (OSV's dump for each Linux release an agent
+  reports, filtered to that exact ecosystem, since Ubuntu 24.04's dump also carried 14.04 entries, and cut to the
+  installed source packages: 142 MB zip to 5,252 ranges, 33 KB, in 7.6 s) and `nvd-ranges.json` (NVD version
+  ranges for the KEV CVEs on the Windows products `inventory.WINDOWS_PRODUCTS` maps, at most 60 new records a
+  run at NVD's public 5-per-30-s limit, kept 90 days). Debian versions compare with dpkg's ordering
+  (`inventory.dpkg_compare`, checked against `dpkg --compare-versions` on 134 real pairs). A range with no
+  fixed version yet is not a match: R48 needs something to upgrade to. Windows itself (patched by build through
+  Windows Update) and Microsoft Office (Click-to-Run builds) are not covered; Edge is under-reported, because
+  NVD files Chromium bugs against google:chrome and only sometimes against edge_chromium.
 - `ioc_match` also reads the AdFection / Candiru indicators (The Citizen Lab's "Exposing AdFection",
   2026-10-15, with Confiant, Recorded Future and older Candiru reporting), as curated with a tier per
   line by the zero-breach project (CC0). `update-feeds` takes one pinned release and writes it only if

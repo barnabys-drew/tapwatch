@@ -297,10 +297,49 @@ def cmd_explain(args, cfg) -> int:
 def cmd_update_feeds(args, cfg) -> int:
     from . import feeds
 
-    report = feeds.update(args.dir or cfg.get("feeds_dir", "feeds"))
+    db = cfg.get("db_path", "tapwatch.db")
+    ecosystems = Store(db).ecosystems() if Path(db).exists() else {}
+    report = feeds.update(args.dir or cfg.get("feeds_dir", "feeds"), ecosystems=ecosystems)
     for name, result in report.items():
         print(f"{name:20s} {result}")
     return 0 if all(r.startswith("ok") for r in report.values()) else 1
+
+
+def cmd_software(args, cfg) -> int:
+    """The agents' latest software snapshots (#224), and with --vulns what the downloaded feeds match."""
+    from . import inventory, vulns
+
+    store = Store(cfg.get("db_path", "tapwatch.db"))
+    agents = store.agents()
+    rows = store.software()
+    if not rows:
+        print("no software inventory yet: the agents snapshot it once a day (agents/config/osquery.conf software_*)")
+        return 1
+    index = vulns.VulnIndex.load(cfg.get("feeds_dir", "feeds")) if args.vulns else None
+    by_agent: dict[str, list] = {}
+    for r in rows:
+        by_agent.setdefault(r["agent"], []).append(r)
+    for agent, rs in by_agent.items():
+        a = agents.get(agent) or {}
+        os_row = {"name": a.get("os_name", ""), "version": a.get("os_version", "")} if a else None
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(max(r["seen_ts"] for r in rs)))
+        print(f"{a.get('os_name') or 'unknown OS'} {a.get('os_version', '')}  agent {agent[:8]}  "
+              f"{len(rs)} packages, snapshot {when}")
+        for r in rs:
+            if args.all or r["product"]:
+                print(f"  {r['name'][:50]:50s} {r['version']}")
+        if index is not None:
+            hits = 0
+            for r in rs:
+                found = index.match(inventory.ecosystem(r["kind"], os_row), dict(r))
+                kev = [h for h in found if h.kev]
+                hits += bool(found)
+                if kev or (args.all and found):
+                    print(f"  ! {r['name'][:40]} {r['version']}: {len(found)} CVEs with a fix, {len(kev)} known "
+                          f"exploited ({', '.join(h.cve for h in kev[:3])})")
+            print(f"  {hits} packages with a fixed vulnerability in the feeds"
+                  + ("" if index.kev else "  (no kev.json: run tapwatch update-feeds)"))
+    return 0
 
 
 def cmd_mark(args, cfg) -> int:
@@ -413,9 +452,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--apply", action="store_true", help="create the suggested suppressions and close those cases")
     s.set_defaults(fn=cmd_explain)
 
-    s = sub.add_parser("update-feeds", help="download Tranco, IEEE MAC vendors, IP-to-ASN, UT1 site-category and AdFection IOC lists (no data sent)")
+    s = sub.add_parser("update-feeds", help="download Tranco, IEEE MAC vendors, IP-to-ASN, UT1 site-category, AdFection IOC and vulnerability (KEV, OSV, NVD) lists (no data sent)")
     s.add_argument("--dir", help="where to save them (default: feeds_dir, or ./feeds)")
     s.set_defaults(fn=cmd_update_feeds)
+    s = sub.add_parser("software", help="the endpoint agents' installed software (daily snapshot), and known vulnerabilities in it")
+    s.add_argument("--all", action="store_true", help="list every package, not just the products the check knows")
+    s.add_argument("--vulns", action="store_true", help="match against the downloaded KEV/OSV/NVD feeds")
+    s.set_defaults(fn=cmd_software)
 
     s = sub.add_parser("who", help="ask the PC (osquery + Claude Code transcripts) who made a case's traffic")
     s.add_argument("case_id", type=int)

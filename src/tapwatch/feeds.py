@@ -8,6 +8,8 @@ and renamed into place, so a failed download never leaves a half-written list be
   ip2asn-v4.tsv.gz   iptoasn.com IP range -> network (ASN) and country, for IoT drift (R02)
   public_suffix_list.dat  the Public Suffix List, for registrable domains (bbc.co.uk, not co.uk)
   iocs-adfection.tsv  AdFection / Candiru spyware indicators, tiered, for ioc_match
+  kev.json, osv-*.tsv.gz, nvd-ranges.json   known-exploited and distro vulnerability data for the software
+                     inventory (vulns.py), fetched only for what the agents report installed
 """
 
 from __future__ import annotations
@@ -17,10 +19,13 @@ import gzip
 import hashlib
 import io
 import ipaddress
+import json
 import tarfile
 import urllib.request
 import zipfile
 from pathlib import Path
+
+from . import inventory, vulns
 
 SOURCES = {
     "top-100k.csv": "https://tranco-list.eu/top-1m.csv.zip",
@@ -115,8 +120,58 @@ def categories_feed(fetch=_fetch, existing: Path | None = None) -> tuple[bytes, 
     return (head + body).encode(), note
 
 
-def update(directory: str, fetch=_fetch) -> dict[str, str]:
-    """Download every list into `directory`. Returns {file: "ok, N bytes" | "failed: reason"}."""
+def vuln_feeds(d: Path, ecosystems: dict[str, set[str]], fetch=_fetch, sleep=None) -> dict[str, str]:
+    """KEV always (it is small and says what to look for); an OSV index per Linux release the agents run, cut to
+    their packages; NVD ranges for the KEV CVEs on the Windows products they have. Nothing about the house is
+    sent: the OSV dump is the whole release's, and NVD is asked by CVE id."""
+    report: dict[str, str] = {}
+    kev: dict = {}
+    try:
+        data = fetch(vulns.KEV_URL)
+        kev = vulns.parse_kev(data)
+        _write(d / vulns.KEV_FILE, data)
+        report[vulns.KEV_FILE] = f"ok, {len(kev):,} known-exploited CVEs"
+    except Exception as e:  # noqa: BLE001 - report it, keep the old file
+        report[vulns.KEV_FILE] = f"failed: {e}"
+        try:
+            kev = vulns.parse_kev((d / vulns.KEV_FILE).read_bytes())
+        except (OSError, ValueError, KeyError):
+            kev = {}
+    for eco, packages in sorted(ecosystems.items()):
+        if eco == "windows":
+            continue
+        name = vulns.osv_file(eco)
+        try:
+            archive = fetch(vulns.OSV_URL.format(eco), vulns.OSV_TIMEOUT) if fetch is _fetch \
+                else fetch(vulns.OSV_URL.format(eco))
+            data, rows = vulns.build_osv_index(archive, eco, packages)
+            _write(d / name, data)
+            report[name] = f"ok, {rows:,} ranges over {len(packages):,} packages ({len(archive) // 1_000_000} MB read)"
+        except Exception as e:  # noqa: BLE001 - as above
+            report[name] = f"failed: {e}"
+    products = ecosystems.get("windows", set())
+    if products and kev:
+        by_product = vulns.kev_for_products(kev)
+        wanted = {cve: set(p.cpes) for p in inventory.WINDOWS_PRODUCTS if p.key in products
+                  for cve in by_product.get(p.key, ())}
+        try:
+            cache = json.loads((d / vulns.NVD_FILE).read_text())
+        except (OSError, ValueError):
+            cache = {}
+        try:
+            kw = {"sleep": sleep} if sleep else {}
+            cache, note = vulns.update_nvd(cache, wanted, lambda url: fetch(url), **kw)
+            _write(d / vulns.NVD_FILE, json.dumps(cache, separators=(",", ":")).encode())
+            report[vulns.NVD_FILE] = note
+        except Exception as e:  # noqa: BLE001 - as above
+            report[vulns.NVD_FILE] = f"failed: {e}"
+    return report
+
+
+def update(directory: str, fetch=_fetch, ecosystems: dict[str, set[str]] | None = None,
+           sleep=None) -> dict[str, str]:
+    """Download every list into `directory`. Returns {file: "ok, N bytes" | "failed: reason"}. `ecosystems`
+    (Store.ecosystems: the agents' software) decides which vulnerability data to fetch."""
     d = Path(directory)
     d.mkdir(parents=True, exist_ok=True)
     report = {}
@@ -147,6 +202,7 @@ def update(directory: str, fetch=_fetch) -> dict[str, str]:
             report[name] = f"ok, {rows} indicators"
         except Exception as e:  # noqa: BLE001 - as above
             report[name] = f"failed: {e}"
+    report.update(vuln_feeds(d, ecosystems or {}, fetch, sleep))
     return report
 
 
