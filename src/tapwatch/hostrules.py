@@ -82,7 +82,7 @@ SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable b
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
          "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd",
-         "host_lsass", "host_rmm")
+         "host_lsass", "host_rmm", "host_tunnel", "host_staging")
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
@@ -1231,6 +1231,106 @@ class RemoteAccessTool(HostDetector):
                          tool, (seen,), must_alert=must)
 
 
+def _agent_facts(c: dict) -> dict:
+    """R37/R38 on Linux: the Claude Code markers the agent's query read from the process (or its parent) when a tunnel
+    or sync signal fired. Attended means the owner is at the keyboard and asked for it; unattended is a session
+    nobody is watching, which a prompt injection could drive."""
+    if not c.get("claude_session"):
+        return {}
+    attended = str(c.get("claude_attended") or "")
+    return {"agent_started": True, "agent_attended": attended == "1", "agent_unattended": attended == "0"}
+
+
+def _program_and_folder(query: str, c: dict) -> tuple[str, str]:
+    path = str(c.get("path") or "")
+    if query == SYSMON:
+        return _basename(path).lower() or "unknown", win_folder_class(path)
+    return path.rsplit("/", 1)[-1] or "unknown", posix_folder_class(path)
+
+
+class TunnelOpened(HostDetector):
+    """R37. A program opens a tunnel that lets the internet in past the router (T1572): `ngrok`, `cloudflared tunnel`,
+    `code tunnel`, `devtunnel host`, `tailscale funnel`, `ssh -R`, localtunnel, bore. The agent computes the signal
+    on the PC (cmd_tunnel on Windows, lcmd_tunnel on Linux) and never keeps the command line, which carries the
+    tunnel's token. Severity 4, suppressible per program; from Temp or a shared folder 5, must_alert. On Linux, an
+    attended Claude Code session (the markers the query read) makes it 3, a digest item with `agent_started`: the
+    owner asked for it. An unattended one stays an alert: a prompt-injected agent opening a tunnel is the threat.
+    """
+
+    name = "host_tunnel"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        flag = "cmd_tunnel" if query == SYSMON else "lcmd_tunnel"
+        if str(c.get(flag, "0")) != "1" or (query == SYSMON and str(c.get("eventid")) != "1"):
+            return []
+        prog, folder = _program_and_folder(query, c)
+        agent = _agent_facts(c)
+        must = folder in ("temp", "shared")
+        severity = 5 if must else 3 if agent.get("agent_attended") else 4
+        facts = {"program": prog[:80], "folder": folder, **agent}
+        return self.emit(ts, "A tunnel into the PC was opened", facts, severity, prog[:80], (prog, folder),
+                         must_alert=must)
+
+
+STAGING_LEARN_DAYS = 7   # the box's own backups and sync jobs are learned in the rule's first week
+USER_FOLDERS = {"documents", "desktop", "pictures", "onedrive"}
+
+
+class FilesStaged(HostDetector):
+    """R38. Files copied or synced somewhere new with a trusted tool, or packed into a password-protected archive
+    (T1567, T1560): rclone, restic, MEGA, the AWS, Azure and Google cloud CLIs, WinSCP scripts; 7-Zip, RAR and zip
+    with a password. The agent never keeps the command line (it can hold an archive password or a repository's
+    user:pass); its query extracts only the destination: the rclone remote, the bucket, the storage account, the
+    restic repository's host. Per (tool, destination), new after a learning window (the rule's first week on a box,
+    persisted, so the nightly backup is learned) is a digest item; known is nothing. A password archive is a digest
+    item, an alert when it packs Documents, Desktop, Pictures or OneDrive. An upload_spike from the same device
+    within five minutes pairs with it into an alert (host <-> network correlation). Agent-started on Linux:
+    `agent_started`, stays digest. Measured 2026-10-20: a nightly restic on the Linux box (3 execs); 7-Zip twice from
+    a vendor installer, no password.
+    """
+
+    name = "host_staging"
+    QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "known", "since")
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7,
+                 learn_days: float = STAGING_LEARN_DAYS):
+        super().__init__(state, reported_days)
+        self.learn = learn_days * DAY
+        self.known: set[tuple] = set()      # (tool, destination) seen on this box
+        self.since: float | None = None
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        if query == SYSMON and str(c.get("eventid")) != "1":
+            return []
+        if self.since is None:
+            self.since = ts
+        pre = "cmd_" if query == SYSMON else "lcmd_"
+        prog, folder = _program_and_folder(query, c)
+        agent = _agent_facts(c)
+        if str(c.get(pre + "sync", "0")) == "1":
+            dest = str(c.get("sync_dest") or "unnamed").lower()[:120]
+            tool = prog.removesuffix(".exe").removesuffix(".com")
+            key = (tool, dest)
+            if key in self.known:
+                return []
+            self.known.add(key)
+            if ts - self.since < self.learn:
+                return []
+            facts = {"program": prog[:80], "tool": tool, "destination": dest, "folder": folder, **agent}
+            return self.emit(ts, "Files sent to a destination this PC hasn't used before", facts, 3, dest,
+                             ("sync",) + key)
+        if str(c.get(pre + "archive_pw", "0")) == "1":
+            of = str(c.get("archive_of") or "").lower()
+            user = of in USER_FOLDERS
+            facts = {"program": prog[:80], "archive_of": of or None, "folder": folder, **agent}
+            return self.emit(ts, "A password-protected archive was made" + (f" of {of.title()}" if user else ""),
+                             facts, 4 if user and not agent.get("agent_attended") else 3, prog[:80],
+                             ("archive", prog, of))
+        return []
+
+
 def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
@@ -1254,4 +1354,6 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     rules.append(LsassAccess(state, **d.get(LsassAccess.name, {})))
     rules.append(RemoteAccessTool(state, expected=_expected_services(d.get("takeover", {})),
                                   **d.get(RemoteAccessTool.name, {})))
+    rules.append(TunnelOpened(state, **d.get(TunnelOpened.name, {})))
+    rules.append(FilesStaged(state, **d.get(FilesStaged.name, {})))
     return rules
