@@ -136,8 +136,9 @@ agent's log locked down.
 |---|---|---|
 | [#26](https://github.com/barnabys-drew/tapwatch/issues/26) | Framework: osquery process events, host detectors, network correlation | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): the agent's osquery logs are a log source and `hostrules.py` raises host cases. Host ↔ network correlation built 2026-10-17 (five-minute window, measured on the live history); persistence snapshots are R23. Left: a locked-down results log |
 | [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): R17–R21, 0 cases on 34.5 h of the main PC's agent log. Pass 2 started 2026-10-17 with R23, new persistence entries (tasks, services, startup items, cron, launchd), measured on 40 h: 6 digest items, 0 alerts. R24 the same day: backups, logs, Defender or accounts changed, 0 such starts in 40 h. 2026-10-18: R25 discovery bursts, R26 browser extensions, WMI subscriptions in R23. Left: LSASS access (needs Sysmon event 10) |
-| [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | **started** 2026-10-18: R27 (temp, memory or shell connections) and R23 reading SSH keys and systemd units; R28 (download-and-run, reverse shells, base64 into a shell, history tampering, temp chmod, miners) from command-line signals the agent computes, baseline pending; R23 pass 2: SUID programs, kernel modules, ld.so.preload, privileged containers, bind shells. Left: credential-file reads (#167) |
-| [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools, drivers) | planned |
+| [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | **done** 2026-10-18 ([#148](https://github.com/barnabys-drew/tapwatch/pull/148), [#155](https://github.com/barnabys-drew/tapwatch/pull/155), [#169](https://github.com/barnabys-drew/tapwatch/pull/169)): R27, R28, and R23 on Linux (SSH keys, systemd units, SUID programs, kernel modules, ld.so.preload, privileged containers, bind shells); baselines measured 2026-10-19 |
+| [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools, drivers) | **next** |
+| [#167](https://github.com/barnabys-drew/tapwatch/issues/167) | File-change monitoring for persistence and credential paths (osquery file_events) | planned |
 
 ## Later ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/2))
 
@@ -182,8 +183,11 @@ true positives auto-closed.
 
 | Issue | What | Status |
 |---|---|---|
-| [#52](https://github.com/barnabys-drew/tapwatch/issues/52) | Long-horizon behavioral detections: 30 days of per-device history | planned |
-| [#37](https://github.com/barnabys-drew/tapwatch/issues/37) | Learned judge: automate tier-1 triage from the owner's closed cases | planned |
+| [#52](https://github.com/barnabys-drew/tapwatch/issues/52) | Long-horizon behavioral detections: 30 days of per-device history | designed 2026-10-20: daily summaries (#193), then R30–R35 (#194–#199) |
+| [#37](https://github.com/barnabys-drew/tapwatch/issues/37) | Learned judge: automate tier-1 triage from the owner's closed cases | designed 2026-10-20: training set, guardrails, shadow judge, scorecard, auto-close, drift back-off (#200–#205) |
+
+Each design issue is a sub-issue of its parent, with what it reads, the logic, expected false positives, a safe
+test and what it depends on. Open question on #204: the default keeps alert-routed cases out of auto-close.
 
 ## v0.5: home XDR ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/5))
 
@@ -194,12 +198,15 @@ shown before it runs, recorded, and undoable.
 
 | Issue | What | Status |
 |---|---|---|
-| [#53](https://github.com/barnabys-drew/tapwatch/issues/53) | Email: correlate phishing in the mailbox with clicks on the network (read-only, no mail gateway) | planned |
-| [#54](https://github.com/barnabys-drew/tapwatch/issues/54) | DNS resolver logs and blocking (AdGuard Home or Pi-hole), for devices that can't run agents | planned |
-| [#55](https://github.com/barnabys-drew/tapwatch/issues/55) | Response actions: one-tap quarantine and block, always owner-approved | planned |
-| [#56](https://github.com/barnabys-drew/tapwatch/issues/56) | Canary tokens: fake credentials and files that alert when touched | planned |
-| [#57](https://github.com/barnabys-drew/tapwatch/issues/57) | Identity signals: account sign-ins from new devices or places | planned |
-| [#58](https://github.com/barnabys-drew/tapwatch/issues/58) | Vulnerable software: installed programs checked against known vulnerabilities | planned |
+| [#53](https://github.com/barnabys-drew/tapwatch/issues/53) | Email: correlate phishing in the mailbox with clicks on the network (read-only, no mail gateway) | designed 2026-10-20 (#206–#208) |
+| [#54](https://github.com/barnabys-drew/tapwatch/issues/54) | DNS resolver logs and blocking (AdGuard Home or Pi-hole), for devices that can't run agents | designed 2026-10-20 (#209–#213) |
+| [#55](https://github.com/barnabys-drew/tapwatch/issues/55) | Response actions: one-tap quarantine and block, always owner-approved | designed 2026-10-20 (#214–#217) |
+| [#56](https://github.com/barnabys-drew/tapwatch/issues/56) | Canary tokens: fake credentials and files that alert when touched | designed 2026-10-20 (#218–#220) |
+| [#57](https://github.com/barnabys-drew/tapwatch/issues/57) | Identity signals: account sign-ins from new devices or places | designed 2026-10-20 (#221–#223) |
+| [#58](https://github.com/barnabys-drew/tapwatch/issues/58) | Vulnerable software: installed programs checked against known vulnerabilities | designed 2026-10-20 (#224–#227) |
+
+The v0.5 designs are sub-issues of each row above. Rule numbers: R30–R35 are v0.4, R40–R48 v0.5, and R36–R39
+are kept for v0.3's remaining rules (#39, #167).
 
 ## Not planned
 

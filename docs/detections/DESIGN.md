@@ -898,7 +898,7 @@ once and R23 learns as an inventory. Any batch osquery marks as a query's first 
 whatever its size, so a machine with one or two existing keys does not alert on them. The same key added to a
 second account is not seen again (the key identity has no account).
 
-### R28 Suspicious command on Linux (`host_linux_cmd`) — **built**, baseline pending
+### R28 Suspicious command on Linux (`host_linux_cmd`) — **built**, baseline measured
 - **Threat:** download-and-run (`curl … | sh`), reverse shells (`/dev/tcp/`, `nc -e`, `socat exec:`,
   `bash -i >&`, Python or Perl socket one-liners), base64 decoded into a shell, shell history switched off or
   cleared, a file in /tmp, /dev/shm or /var/tmp made executable (T1059.004, T1105, T1027, T1070.003).
@@ -908,8 +908,10 @@ second account is not seen again (the key identity has no account).
   patterns. The rule never reads the command line.
 - **Logic:** `hostrules.LinuxCommand`. Any signal → severity 4, suppressible per program; the temp-folder chmod
   alone → 3. The same signals within a minute are one case (`sudo bash -c "…"` starts two processes with one line).
-- **Baseline:** none yet. Command lines were never collected before 2026-10-18; the first day of flags after the
-  agent's config is updated is the measurement, and a pattern that fires on the owner's normal work is demoted.
+- **Baseline:** measured 2026-10-20 over the first two days with command lines on (from 2026-10-18), from the case
+  store: two cases. One was the safe test below; the other a file in a temporary folder made executable during
+  normal work (digest, closed as expected). That signal already routes to the digest on its own, so it stays
+  there; nothing demoted. The four alert-level signals fired on nothing but the test.
   Each pattern was checked against matches and harmless neighbours (`curl -o`, `nc -zv`, `nc -l`, `base64 -d
   file`, `chmod 644 /tmp/…`, `grep -e`, `docker exec`), and the shipped SQL was run in osquery.
 - **FPs (expected):** installers the owner or a coding agent runs with `curl … | sh` on request; netcat tests.
@@ -920,7 +922,7 @@ second account is not seen again (the key identity has no account).
   `unset HISTFILE` typed there are builtins: R28 sees `bash -c "…"` / `sh -c "…"` strings (scripts, cron, coding
   agents). The kept command line can hold a token and lands in a 0644 log, the same trade-off as Windows.
 
-### R29 A program reads lsass memory (`host_lsass`) — **built**, baseline pending
+### R29 A program reads lsass memory (`host_lsass`) — **built**, baseline measured
 - **Threat:** credential dumping from lsass.exe (mimikatz `sekurlsa`, `rundll32 comsvcs.dll, MiniDump`,
   `procdump -ma lsass`), T1003.001.
 - **Data:** Sysmon event 10 (process access), now on in `agents/windows/sysmon.xml` for lsass.exe as the target,
@@ -929,10 +931,10 @@ second account is not seen again (the key identity has no account).
 - **Logic:** `hostrules.LsassAccess`. An access mask with PROCESS_VM_READ (0x10) → severity 4, suppressible per
   program (an EDR, a password manager); from a temp, Downloads or shared folder, or started by a document or mail
   app → severity 5, must_alert. Query-only masks (0x1000, 0x1400: Task Manager, monitors) → nothing.
-- **Baseline:** none yet; event 10 was off before 2026-10-18 (0 events), so the volume could not be measured. The
-  first day after `Sysmon64 -c sysmon.xml` is the measurement. Likely openers with VM_READ to check for then:
-  WerFault, Process Explorer, GPU and RGB utilities and anti-cheat that list modules (0x1410), Task Manager. One
-  that turns up on the owner's PC is added to the Sysmon exclusions (by folder, never by name alone) or suppressed.
+- **Baseline:** measured 2026-10-19 (6 hours of event 10): 8,823 lsass opens, every one query-only (0x1000):
+  powershell.exe 8,731, GamingServices 72, osqueryd 14, Edge's updater 6. None with VM_READ, so no case. The
+  query-only masks are now dropped in `sysmon.xml` itself (about 35k rows a day of log volume, #183); a VM_READ
+  opener that turns up later is added to the exclusions by folder, never by name alone, or suppressed.
 - **Route:** ALERT, code-only. **Safe test:** in an admin PowerShell, `(Get-Process lsass).Modules | Select -First 1`
   lists one module of lsass (it opens lsass with VM_READ and reads nothing secret) → one severity-4 case for
   powershell.exe.
@@ -1014,8 +1016,8 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R25 Burst of discovery commands (built) | osquery + Sysmon | alert (shell: digest) | code-only |
 | — | R26 New browser extension with sensitive access (built) | osquery differential | digest / alert | code-only |
 | — | R27 Linux temp, memory or shell connection (built) | osquery eBPF | alert | code-only |
-| — | R28 Suspicious command on Linux (built) | osquery eBPF exec + command-line signals | alert (temp chmod: digest) | code-only |
-| — | R29 A program reads lsass memory (built) | osquery + Sysmon event 10 | alert (must for temp/document) | code-only |
+| — | R28 Suspicious command on Linux (built, baselined) | osquery eBPF exec + command-line signals | alert (temp chmod: digest) | code-only |
+| — | R29 A program reads lsass memory (built, baselined) | osquery + Sysmon event 10 | alert (must for temp/document) | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 
