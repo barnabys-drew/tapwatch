@@ -2464,8 +2464,9 @@ class FeedSilence(Detector):
     silent before is nine minutes silent after, and waking does not fire every feed at once. The last-seen
     times, the last tick and the feeds already reported are saved with the learned state, so a restart is
     time away too: measured 2026-10-20, the Linux connection feed went silent at 06:03, the alerter restarted
-    at 06:40 for a deploy, and the reset gave the dead feed a fresh hour. A reboot is time away like any other,
-    which this rule therefore cannot report: tapwatch restarts with the box.
+    at 06:40 for a deploy, and the reset gave the dead feed a fresh hour. A feed reported silent stays reported
+    across a restart until a row arrives, even if its case was closed meanwhile. A reboot is time away like any
+    other, which this rule therefore cannot report: tapwatch restarts with the box.
 
     Limits, from the gaps measured over 2026-10-15..17 (two days): Zeek's conn and dns rows never paused
     over 0.1 min at the 99.9th percentile (the one long gap, 34 min, was the reboot). The Windows socket
@@ -2542,7 +2543,8 @@ class FeedSilence(Detector):
             if self.started <= self._last_tick:   # a restart already set `started` after the gap: leave it
                 self.started += shift
             for key in self.last:
-                self.last[key] += shift
+                if self.last[key] <= self._last_tick:   # rows that arrived after the gap (a restart's first minute) stay put
+                    self.last[key] += shift
         self._last_tick = now
         gone: dict[str, list[tuple]] = {}  # source tag -> (name, severity, since, never seen, limit, source words)
         for key, (limit, severity) in self.expected.items():

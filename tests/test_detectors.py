@@ -1680,3 +1680,25 @@ def test_feed_silence_keeps_counting_across_a_restart_and_shifts_out_downtime():
     rebooted.restore(saved)                     # down for hours with 37 min of silence saved: the downtime is shifted out
     fired = [m for m in range(30) if rebooted.tick(T0 + 10 * 3600 + 60 * m)]   # ticking every minute, as live
     assert fired == [22]   # 38 min resumed (one tick of the gap counts as watched) + 22: the hour, not at start
+
+
+
+def test_feed_silence_does_not_shift_rows_that_arrived_after_a_restart():
+    """Review of #246: rows in the first minute after a long restart were shifted by the whole downtime, so a feed that
+    then died was reported hours late."""
+    import json
+
+    from tapwatch.detectors import FeedSilence
+    key = "/var/log/osquery|bpf_connections"
+    t = [T0]
+    first = FeedSilence({key: (1200, 3)}, started=T0, clock=lambda: t[0])
+    first.feed({"_type": "osquery", "_log": "/var/log/osquery", "name": "bpf_connections"})
+    first.tick(T0 + 60)
+    saved = json.loads(json.dumps(first.snapshot()))
+    back = T0 + 8 * 3600                         # eight hours down
+    t[0] = back + 10
+    again = FeedSilence({key: (1200, 3)}, started=back, clock=lambda: t[0])
+    again.restore(saved)
+    again.feed({"_type": "osquery", "_log": "/var/log/osquery", "name": "bpf_connections"})   # a row right after start
+    fired = [m for m in range(1, 40) if again.tick(back + 60 * m)]
+    assert fired == [21]   # the first tick 20 min after that row (it came 10 s in), not 20 min + eight hours
