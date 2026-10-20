@@ -20,11 +20,14 @@ RCLONE_OUT = (r"\s+[^|]*?\s\"?([a-z0-9_-]{2,}):[^\s\"]*\"?(?:\s+--(?:config|log-
               r"[\s=]\S+|\s+-\S+(?:\s+[^\s/\\:-][^\s:]*)?)*\s*$")
 TUNNEL = [
     P + r"ngrok" + E + r"\s+(?:http|tcp|tls|start|tunnel)\b",
-    P + r"cloudflared" + E + r"\s+(?:[^|]*\s)?tunnel\b",
-    P + r"code(?:-insiders)?" + E + r"\s+tunnel\b",
+    # Opening only: `cloudflared tunnel list/info/delete`, `code tunnel status/kill`, `tailscale funnel status/reset`
+    # look at or tear down a tunnel (measured 2026-10-20: two alerts from tailscale funnel commands).
+    # (?!\s) after \s+ stops a double space from backtracking past the exclusion (review of #250).
+    P + r"cloudflared" + E + r"\s+(?:[^|]*\s)?tunnel(?:\s+(?!\s)(?!(?:list|info|delete|cleanup|route|token|login|create|vnet|ingress|diag)\b)|\s*$)",
+    P + r"code(?:-insiders)?" + E + r"\s+tunnel(?:\s+(?!\s)(?!status|kill|prune|unregister|user|rename|restart)|$)",
     P + r"code-tunnel" + E + r"(?:\s|$)",
     P + r"devtunnel" + E + r"\s+host\b",
-    P + r"tailscale" + E + r"\s+funnel\b",
+    P + r"tailscale" + E + r"\s+funnel\s+(?!\s)(?!status|reset|--help|-h\b)(?![^|]*\soff\b)",
     P + r"ssh" + E + r"\s+(?:[^|]*\s)?-[a-z]*r\s*[0-9]",
     P + r"lt(?:\.js)?" + E + r"\s+(?:--port|-p)\b",   # npm's lt; on Windows the work runs as node.exe ...\lt.js
     P + r"bore" + E + r"\s+local\b",
@@ -74,6 +77,12 @@ CASES = [  # (command line, tunnel?, sync?, archive?, expected dest or None)
     ("code tunnel --accept-server-license-terms", 1, 0, 0, None),
     ("devtunnel host -p 3000", 1, 0, 0, None),
     ("tailscale funnel 443 on", 1, 0, 0, None),
+    ("tailscale funnel --bg 3000", 1, 0, 0, None),
+    ("code tunnel", 1, 0, 0, None),
+    ("code tunnel service install", 1, 0, 0, None),
+    ("cloudflared tunnel", 1, 0, 0, None),
+    ("cloudflared tunnel --config c.yml", 1, 0, 0, None),
+    ("cloudflared tunnel --config c.yml run", 1, 0, 0, None),
     ("ssh -nnt -R 80:localhost:3000 localhost.run", 1, 0, 0, None),
     ("ssh -o batchmode=yes -R 9:localhost:9 test@192.0.2.1", 1, 0, 0, None),
     ("/usr/bin/ssh -NR 2222:localhost:22 test@192.0.2.1", 1, 0, 0, None),
@@ -126,6 +135,17 @@ CASES = [  # (command line, tunnel?, sync?, archive?, expected dest or None)
     ("aws s3 ls s3://bucket", 0, 0, 0, None),
     ("code --install-extension ms-python.python", 0, 0, 0, None),
     ("tailscale status", 0, 0, 0, None),
+    ("tailscale funnel status", 0, 0, 0, None),
+    ("tailscale funnel status --json", 0, 0, 0, None),
+    ("tailscale funnel 443 off", 0, 0, 0, None),
+    ("tailscale funnel reset", 0, 0, 0, None),
+    ("cloudflared tunnel list", 0, 0, 0, None),
+    ("cloudflared tunnel info mytunnel", 0, 0, 0, None),
+    ("code tunnel status", 0, 0, 0, None),
+    ("code tunnel kill", 0, 0, 0, None),
+    ("tailscale funnel  status", 0, 0, 0, None),
+    ("code tunnel  status", 0, 0, 0, None),
+    ("cloudflared tunnel  list", 0, 0, 0, None),
     ("cloudflared --version", 0, 0, 0, None),
     ("7z a out.7z folder", 0, 0, 0, None),
     ("7z x -pS3cret in.7z", 0, 0, 0, None),

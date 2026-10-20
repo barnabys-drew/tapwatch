@@ -105,7 +105,10 @@ SYSMON = "sysmon_events"   # Windows: Sysmon process starts (1), connections (3)
 # reach the results log, which every local account can read. Raw text is logged only when a suspicious one fires.
 CMD_SUSPICIOUS = {"enc": "an encoded payload", "b64": "base64 decoding", "dl": "a download-and-run",
                   "iex": "Invoke-Expression"}
-CMD_UNUSUAL = {"hidden": "a hidden window", "bypass": "an execution-policy bypass"}
+CMD_UNUSUAL = {"hidden": "a hidden window", "bypass": "an execution-policy bypass",
+               # rundll32/regsvr32 naming a DLL outside the system folders (a user folder, ProgramData, Windows\Temp, a
+               # share) or a script: protocol. Keeps R20's Windows-service downgrade off a malicious scheduled task.
+               "dllpath": "a DLL from outside the system folders"}
 # R24: what ransomware and an intruder covering tracks run, as the agent flags them (hostrules.DestructiveCommand)
 CMD_DESTRUCTIVE = {"shadow": "shadow copies or backups removed", "recovery": "Windows recovery turned off",
                    "logclear": "event logs cleared", "defender": "Defender turned off or given an exclusion",

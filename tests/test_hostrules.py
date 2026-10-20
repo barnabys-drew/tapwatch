@@ -1212,3 +1212,41 @@ def test_correlation_filters_device_and_pairable_rules_before_the_limit():
     rows = store.nearby(staged, 300, {"upload_spike", "takeover"})
     assert [r["detector"] for r in rows] == ["upload_spike"]
     assert store.nearby(staged, 300, set()) == []
+
+
+
+def test_noise_cut_windows_scheduled_lolbin_and_a_two_adapter_pc():
+    """2026-10-20 noise review: rundll32 started by svchost from System32 connected out daily (one case had 3,454
+    hits); the PC's second adapter moved the host and filed the same events twice."""
+    svc = r"C:\Windows\System32\svchost.exe"
+    rundll = r"C:\Windows\System32\rundll32.exe"
+    (c,) = run(LolbinConnects(st()), start(T0, rundll, svc, guid="{r1}"), connect(T0 + 5, rundll, guid="{r1}"))
+    assert (c.base_severity, c.facts["windows_service"]) == (3, True)
+    (loud,) = run(LolbinConnects(st()), start(T0, rundll, svc, guid="{r2}", cmd_url="1"), connect(T0 + 5, rundll, guid="{r2}"))
+    assert loud.base_severity == 4                       # a URL on the command line: still an alert
+    (other,) = run(LolbinConnects(st()), start(T0, rundll, EXPLORER, guid="{r3}"), connect(T0 + 5, rundll, guid="{r3}"))
+    assert other.base_severity == 4
+    state = EndpointState(PC)
+    state.update_addresses([{"address": PC}, {"address": "192.168.50.81"}], T0)
+    state.update_addresses([{"address": "192.168.50.81"}], T0 + 300)     # the other adapter's snapshot alone
+    assert state.host == PC
+    state.update_addresses([{"address": "192.168.50.81"}], T0 + 2 * 3600)  # the configured one gone for an hour: move
+    assert state.host == "192.168.50.81"
+
+
+
+def test_noise_cut_review_dll_location_keeps_the_alert_and_the_hold_covers_a_restart():
+    """Review of #250: a scheduled task (svchost) running rundll32 with a DLL in a user folder must still alert, and
+    Windows' own weekly digest item must not hide it; right after a start the first snapshot can't move the host."""
+    svc = r"C:\Windows\System32\svchost.exe"
+    rundll = r"C:\Windows\System32\rundll32.exe"
+    det = LolbinConnects(st())
+    (own,) = run(det, start(T0, rundll, svc, guid="{d1}"), connect(T0 + 5, rundll, guid="{d1}"))
+    (bad,) = run(det, start(T0 + 60, rundll, svc, guid="{d2}", cmd_dllpath="1"), connect(T0 + 65, rundll, guid="{d2}"))
+    assert (own.base_severity, bad.base_severity, bad.facts["windows_service"]) == (3, 4, False)
+    assert "a DLL from outside the system folders" in bad.facts["unusual"]
+    fresh = EndpointState(PC)
+    fresh.update_addresses([{"address": "192.168.50.81"}], T0)              # first snapshot after a start: other adapter
+    assert fresh.host == PC
+    q = _conf_query("sysmon_events")
+    assert "AS cmd_dllpath" in q
