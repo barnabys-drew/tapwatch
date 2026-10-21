@@ -590,3 +590,48 @@ def test_pipeline_stamps_cases_with_the_device_identity_and_alerts_use_it(fake_j
     assert note.items[0]["facts"]["Device"] == "accounting laptop (192.168.50.10)"   # not "dock": the hostname wins
     assert alert_item(c, None, "r", Assets(), cid)["facts"]["Device"] == "192.168.50.10 (192.168.50.10)"
     assert "device_name" in json.loads(p.store.get(cid)["facts"])
+
+
+# ------------------------------------------------------------------ R16 session partner
+
+def _session_pipeline(table):
+    from tapwatch.detectors import OddPort, TakeoverChannel
+    tv = TakeoverChannel(expected=[{"host": "192.168.50.22", "services": ["teamviewer.com"],
+                                    "hours": "Mon-Fri 08:00-18:00"}], timezone="UTC")
+    return Pipeline([tv], Assets(table), Store(":memory:"), notifier=RecordingNotifier()), OddPort
+
+
+def _session(p, partner="192.168.50.25"):
+    ts = 1792537777.0   # a Tuesday, 23:09 UTC: outside the expected hours
+    leg = dict(conn(ts, src="192.168.50.22", dst="203.0.113.80", port=5938, orig_bytes=30_000_000),
+               duration=3600, resp_bytes=300_000)
+    out = p.process(dict(dns(ts - 60, "router7.teamviewer.com", src="192.168.50.22"), answers=["203.0.113.80"]))
+    out += p.process(dict(leg, **{"id.orig_h": partner, "id.resp_p": 443}))
+    return out + p.process(leg)
+
+
+def test_a_session_between_two_labelled_devices_goes_to_the_digest():
+    p, _ = _session_pipeline({"192.168.50.22": {"name": "work laptop"}, "192.168.50.25": {"name": "family PC"}})
+    [(case_id, case, _, r)] = _session(p)
+    assert r is Route.DIGEST and case.facts["partner"]["known"]
+    assert "likely family PC" in p.store.get(case_id)["state"] and not p.notifier.sent
+
+
+def test_a_session_with_an_unlabelled_partner_still_alerts():
+    p, _ = _session_pipeline({"192.168.50.22": {"name": "work laptop"}})
+    [(case_id, case, _, r)] = _session(p)
+    assert r is Route.ALERT and "known" not in case.facts["partner"]
+    assert "likely an unlabelled device" in p.store.get(case_id)["state"]
+
+
+def test_the_long_connection_case_learns_the_partner():
+    p, _ = _session_pipeline({})
+    odd = Case("odd_port", "192.168.50.22", 1792537777.0, "Unusually long connection",
+               {"proto": "tcp", "port": 5938, "service": "unknown", "dests": ["203.0.113.80"], "new_for_house": False,
+                "minutes": 60, "mb_out": 30.0, "mb_in": 0.3, "learn_days": 7, "dedupe": "tcp/5938"},
+               [], base_severity=3)
+    odd_id = p.handle(odd)[0]
+    [(case_id, *_)] = _session(p)
+    notes = [n["text"] for n in p.store.notes(odd_id)]
+    assert notes == [f"#{case_id} (takeover) checked this session: the other end is likely an unlabelled device on "
+                     + "the office network"]

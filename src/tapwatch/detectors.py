@@ -16,6 +16,7 @@ import statistics
 import time
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterable
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
@@ -2217,10 +2218,19 @@ class TakeoverChannel(Detector):
     `hours`, a live session still alerts: at least `session_bytes` to the service's servers
     within 10 minutes. An entry with a `mac` stops applying when a DHCP lease shows that address
     given to a different device. Callback and file-drop services can't be marked expected.
+
+    A session case also says whether the other end is likely another device in the house. Relayed
+    remote control (TeamViewer, AnyDesk) runs both ends through one relay server, so a second LAN
+    device holding a busy connection to the same relay address at the same time is the likely
+    partner. The port can differ (measured 2026-10-20: the laptop on tcp/5938, the other PC on
+    tcp/443, same relay, both starting in the same second), so the match is by address and time.
+    Zeek logs a connection when it ends, so the partner's record can come in either order: the
+    case waits up to PARTNER_HOLD minute ticks for it, then says no partner was seen yet: a partner
+    whose connection stays open longer is only logged when it closes, after the case went out.
     """
 
     name = "takeover"
-    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "leases")
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "leases", "relay_ips", "relay_conns", "held")
     CHANNELS: ClassVar[dict[str, frozenset[str]]] = {
         "callback": frozenset({
             "webhook.site", "requestbin.net", "requestcatcher.com", "pipedream.net", "beeceptor.com",
@@ -2242,6 +2252,14 @@ class TakeoverChannel(Detector):
     SESSION_PORTS: ClassVar[dict[str, set[int]]] = {"teamviewer.com": {5938}, "anydesk.com": {7070},
                                                     "rustdesk.com": {21115, 21116, 21117, 21118, 21119}}
     SESSION_WINDOW = 600
+    SESSION_PORT_SET: ClassVar[frozenset[int]] = frozenset().union(*SESSION_PORTS.values())
+    # A partner's connection must carry at least this many bytes a minute over its life. An idle client's keep-alive
+    # to its server is about 2 KB a minute (20 KB per 10 min); the partner leg of the 2026-10-20 session averaged
+    # 24 KB a minute across a 10-hour connection and 100 KB a minute across the first 3.6 hours.
+    PARTNER_RATE = 10_000
+    PARTNER_BYTES = 1_000_000   # and at least this much in all: a 2-second reconnect of an idle client passes the rate
+    PARTNER_OVERLAP = 300       # seconds the two must overlap (or half the session leg, if that is shorter)
+    PARTNER_HOLD = 5  # minute ticks a session case waits for its partner's record
 
     def __init__(self, extra: dict[str, list[str]] | None = None, expected: list[dict] | None = None,
                  session_bytes: int = 2_000_000, timezone: str | None = None):
@@ -2263,8 +2281,13 @@ class TakeoverChannel(Detector):
         self.leases: dict[str, str] = {}                 # ip -> MAC from the latest DHCP lease
         self.lookups: dict[str, tuple] = {}              # host -> (ts, service, name, answers) of its last remote-control lookup
         self.service_ips: dict[tuple, set[str]] = defaultdict(set)   # (host, service) -> server IPs
-        self.traffic: dict[tuple, deque] = defaultdict(deque)        # (host, service) -> (ts, bytes)
+        self.traffic: dict[tuple, deque] = defaultdict(deque)        # (host, service) -> (ts, bytes, dst, end)
         self.reported: set[tuple] = set()
+        self.relay_ips: set[str] = set()      # remote-control server addresses, from any device's lookups
+        # (start, end, host, dst, port, bytes out, bytes in) of LAN connections to those servers or session ports.
+        # Persisted although it is a window: a session's partner can have connected hours before a restart.
+        self.relay_conns: deque = deque(maxlen=2000)
+        self.held: dict[tuple, dict] = {}     # (host, service, day) -> a session case waiting for its partner
 
     def feed(self, rec: dict) -> list[Case]:
         kind = rec["_type"]
@@ -2272,7 +2295,7 @@ class TakeoverChannel(Detector):
             self.leases[rec["assigned_addr"]] = rec["mac"].lower()
             return []
         if kind == "conn":
-            return self._followed_lookup(rec) + self._session(rec)
+            return self._followed_lookup(rec) + self._relay(rec) + self._session(rec)
         if kind == "dns" and rec.get("rcode_name") == "NOERROR":
             name, via = rec.get("query"), "DNS"
         elif kind == "ssl":
@@ -2290,6 +2313,13 @@ class TakeoverChannel(Detector):
                 break
         else:
             return []
+        if channel == "remote_control" and name.lower().rstrip(".") not in (hit, "www." + hit):
+            # Where its servers are, for any device: a session's partner can be anyone's. Not the bare domain or
+            # www: those are the vendor's website, on shared CDN addresses half the house may be streaming from.
+            if len(self.relay_ips) > 10_000:
+                self.relay_ips.clear()
+            self.relay_ips.update(a for a in ((rec.get("answers") or []) if kind == "dns" else [rec.get("id.resp_h", "")])
+                                  if _is_ip(a) and not is_internal(a))
         if self._expected(host, hit):
             ips = self.service_ips[(host, hit)]  # learn where the tool's servers are, to measure sessions
             ips.update(a for a in (rec.get("answers") or []) if _is_ip(a))
@@ -2344,20 +2374,88 @@ class TakeoverChannel(Detector):
             if e is None or e["hours"] is None:
                 return []
             win = self.traffic[(h, svc)]
-            win.append((ts, int(rec.get("orig_bytes") or 0) + int(rec.get("resp_bytes") or 0)))
+            win.append((ts, int(rec.get("orig_bytes") or 0) + int(rec.get("resp_bytes") or 0), dst,
+                        ts + float(rec.get("duration") or 0)))
             while win and ts - win[0][0] > self.SESSION_WINDOW:
                 win.popleft()
-            total = sum(b for _, b in win)
+            total = sum(b for _, b, *_ in win)
             when = datetime.fromtimestamp(ts, self.tz)
             day = when.date().isoformat()
             if total < self.session_bytes or in_hours(when, e["hours"]) or (h, svc, day) in self.reported:
                 return []
             self.reported.add((h, svc, day))
-            return [Case(self.name, h, ts, "Remote-control session outside expected hours",
-                         {"channel": "remote_control", "via": "traffic", "session": True,
-                          "mb": round(total / 1e6, 1), "expected_hours": e["spec"], "dedupe": f"{svc}|{day}"},
-                         [svc], base_severity=4)]
+            legs = sorted({(d, s, end) for s, _, d, end in win if d})
+            case = Case(self.name, h, ts, "Remote-control session outside expected hours",
+                        {"channel": "remote_control", "via": "traffic", "session": True,
+                         "mb": round(total / 1e6, 1), "expected_hours": e["spec"], "dedupe": f"{svc}|{day}",
+                         **dests(*(d for d, _, _ in legs))},
+                        [svc], base_severity=4)
+            partner = self._partner(h, legs, self.relay_conns)
+            if partner:
+                return self._release({"case": asdict(case)}, partner)
+            self.held[(h, svc, day)] = {"ticks": self.PARTNER_HOLD, "legs": legs, "case": asdict(case)}
+            return []
         return []
+
+    def _relay(self, rec: dict) -> list[Case]:
+        """Remember a LAN device's connection to a remote-control server (or on a session port), and release a held
+        session case whose partner this is."""
+        host, dst, port = rec.get("id.orig_h", ""), rec.get("id.resp_h", ""), rec.get("id.resp_p")
+        if not is_unicast_lan(host) or (dst not in self.relay_ips and port not in self.SESSION_PORT_SET):
+            return []
+        conn = (rec["ts"], rec["ts"] + float(rec.get("duration") or 0), host, dst, port,
+                int(rec.get("orig_bytes") or 0), int(rec.get("resp_bytes") or 0))
+        self.relay_conns.append(conn)
+        out = []
+        for key, held in list(self.held.items()):
+            partner = self._partner(key[0], held["legs"], [conn])
+            if partner:
+                del self.held[key]
+                out += self._release(held, partner)
+        return out
+
+    def _partner(self, host: str, legs, conns) -> dict | None:
+        """The other LAN device on the same relay address while the session ran, busier than a keep-alive: the
+        one overlapping the session longest."""
+        best = None
+        for start, end, other, dst, port, out_b, in_b in conns:
+            if other == host or out_b + in_b < self.PARTNER_BYTES \
+                    or (out_b + in_b) * 60 / max(end - start, 60) < self.PARTNER_RATE:
+                continue
+            for leg_dst, leg_start, leg_end in legs:
+                overlap = min(end, leg_end) - max(start, leg_start)
+                need = min(self.PARTNER_OVERLAP, (leg_end - leg_start) / 2)
+                if dst == leg_dst and overlap > 0 and overlap >= need and (best is None or overlap > best[0]):
+                    best = (overlap, {"ip": other, "port": port, "start_gap_s": round(abs(start - leg_start)),
+                                      "overlap_min": max(1, round(overlap / 60)),
+                                      "mb_out": round(out_b / 1e6, 1), "mb_in": round(in_b / 1e6, 1)})
+        return best[1] if best else None
+
+    @staticmethod
+    def _release(held: dict, partner: dict | None) -> list[Case]:
+        try:
+            case = Case(**held["case"])
+        except TypeError as e:  # saved by a version whose Case had other fields: drop it rather than stop the loop
+            log.warning("takeover: dropping a held session case that no longer loads: %s", e)
+            return []
+        case.facts["partner_in_house"] = partner is not None
+        if partner:
+            case.facts["partner"] = partner
+        return [case]
+
+    def tick(self, now: float) -> list[Case]:
+        out = []
+        for key, held in list(self.held.items()):
+            held["ticks"] -= 1
+            if held["ticks"] <= 0:
+                del self.held[key]
+                out += self._release(held, None)
+        return out
+
+    def flush(self) -> list[Case]:
+        out = [c for h in self.held.values() for c in self._release(h, None)]
+        self.held.clear()
+        return out
 
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
