@@ -1716,3 +1716,24 @@ def test_feed_silence_does_not_shift_rows_that_arrived_after_a_restart():
     again.feed({"_type": "osquery", "_log": "/var/log/osquery", "name": "bpf_connections"})   # a row right after start
     fired = [m for m in range(1, 40) if again.tick(back + 60 * m)]
     assert fired == [21]   # the first tick 20 min after that row (it came 10 s in), not 20 min + eight hours
+
+
+
+def test_a_long_connection_counts_only_its_share_of_the_hour():
+    """2026-10-20: an EDR agent's 25.3-hour session (1.56 GB up, ~60 MB an hour) arrived when it closed and was counted
+    as 1.56 GB in one hour: a 254x upload_spike (#987). Bytes are spread over the connection's life now."""
+    det = HourlyProfile()
+    h = int(T0 // 3600) + 30
+    for k in range(h - 24, h):                     # a quiet baseline for the device
+        det.feed(conn(k * 3600 + 10, orig_bytes=5_000_000))
+    edr = conn(h * 3600 - 24 * 3600 + 600, orig_bytes=1_560_000_000)
+    edr["duration"] = 25.3 * 3600                  # opened yesterday, closes in this hour
+    det.feed(conn(h * 3600 + 30, orig_bytes=1000))   # the hour opens
+    det.feed(edr)
+    up = det.current[det.dev_key("192.168.50.10")][1]
+    assert 100e6 < up < 160e6                      # about 2/25.3 of it: this hour and the last, not all 25
+    short = conn(h * 3600 + 60, orig_bytes=700_000_000)
+    short["duration"] = 1800
+    det.feed(short)
+    assert det.current[det.dev_key("192.168.50.10")][1] > 800e6   # a real half-hour upload counts in full
+    assert det._share_now({"ts": h * 3600 - 3600, "duration": 3700}) == 1.0   # just over an hour, all within the window
