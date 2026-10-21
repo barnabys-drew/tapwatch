@@ -45,6 +45,7 @@ NEW_CASE_COLUMNS = {
     "status": "TEXT NOT NULL DEFAULT 'new'",
     "disposition": "TEXT",
     "updated_ts": "REAL",
+    "base_severity": "INTEGER",   # the rule's own 1..5 (added 2026-10-20 for #227's benchmark); NULL before
 }
 NEW_TABLES = """
 CREATE TABLE IF NOT EXISTS detector_state (  -- learned baselines, so a restart doesn't start from zero
@@ -240,10 +241,10 @@ class Store:
     def add(self, case: Case, state: str, verdict: Verdict | None, route: Route, reason: str) -> int:
         cur = self.db.execute(
             "INSERT INTO cases (key, first_ts, last_ts, detector, host, title, facts, indicators, must_alert,"
-            " state, verdict, route, reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " state, verdict, route, reason, base_severity) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (case.key, case.ts, case.ts, case.detector, case.host, case.title, json.dumps(case.facts),
              json.dumps(case.indicators), int(case.must_alert), state,
-             json.dumps(asdict(verdict)) if verdict else None, route.value, reason))
+             json.dumps(asdict(verdict)) if verdict else None, route.value, reason, case.base_severity))
         self.db.commit()
         return cur.lastrowid
 

@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from . import config
+from . import config, vulns
 from .models import Case
 from .router import RANK, Route, Thresholds, route
 
@@ -108,6 +108,23 @@ def _recon():
 def _extension():
     return [persistence(T0, "chrome_extensions", username="u", name="tapwatch-selfcheck", identifier="a" * 32,
                         version="1.0", permissions="storage, debugger"), tick(T0 + 130)]
+
+
+def _inventory(chrome_version):
+    """R48 (#226): the Windows agent's daily software snapshot after its os_version, with a Chrome build. The vuln
+    data is the fixture below (no download): one KEV-listed Chrome bug fixed in 152."""
+    def snapshot(name, rows):
+        return {"_type": "osquery", "_log": WIN, "name": name, "hostIdentifier": "selfcheck-agent", "unixTime": int(T0),
+                "ts": T0, "action": "snapshot", "snapshot": rows}
+    return [snapshot("os_version", [{"name": "Microsoft Windows 11 Pro", "version": "10.0.26200", "platform": "windows"}]),
+            snapshot("software_programs", [{"name": "Google Chrome", "version": chrome_version, "publisher": "Google LLC"}])]
+
+
+_KEV = {"CVE-2026-0001": {"vendor": "Google", "product": "Chromium V8", "added": "2026-09-01", "ransomware": False}}
+VULN_FIXTURE = {"_vuln_index": vulns.VulnIndex(
+    kev=_KEV, kev_by_product=vulns.kev_for_products(_KEV),
+    nvd={"CVE-2026-0001": {"fetched": T0, "ranges": [{"cpe": "google:chrome", "exact": "",
+                                                       "versionEndExcluding": "152.0.7977.82"}]}})}
 
 
 def bpf_conn(ts, path, parent="bash", remote=DST, port=443):
@@ -260,6 +277,9 @@ SCENARIOS: list[Scenario] = [
              "host_fim", Route.DIGEST),
     Scenario("R23 /etc/ld.so.preload gains a library (Linux rootkit)",
              [persistence(T0, "ld_preload", path="/etc/ld.so.preload", size="24"), tick(T0 + 130)], "host_persist", Route.ALERT),
+    Scenario("R48 a browser build with a known-exploited bug (digest: patching, not an incident)",
+             _inventory("150.0.7000.1"), "vuln_kev", Route.DIGEST, config=VULN_FIXTURE),
+    Scenario("quiet: R48 the same browser, patched", _inventory("155.0.8059.85"), "vuln_kev", None, config=VULN_FIXTURE),
     Scenario("R22 the Zeek conn feed stops for 21 minutes", [conn(T0)] + [tick(T0 + 60 * i) for i in range(1, 22)],
              "feed_silence", Route.ALERT, config={"detectors": {"feed_silence": {"enabled": True}}}),
     Scenario("quiet: a 15-minute UDP voice call split into minute records (#63)", _video_call(), "beaconing", None),

@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass
 from typing import ClassVar
 
+from . import vulnkev
 from .detectors import (
     Detector,
     Warmup,
@@ -84,7 +85,7 @@ SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable b
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
          "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd",
-         "host_lsass", "host_rmm", "host_tunnel", "host_staging", "host_fim")
+         "host_lsass", "host_rmm", "host_tunnel", "host_staging", "host_fim", "vuln_kev")
 FIM = "file_changes"   # R39: the Linux agent's inotify query over the file_paths in osquery.conf
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
@@ -1480,6 +1481,8 @@ PAIRS: dict[str, frozenset[str]] = {
     "host_tunnel": frozenset({"takeover", "ids_alert", "udm_ips", "exposure"}),
     "host_staging": frozenset({"upload_spike", "takeover", "ids_alert", "udm_ips"}),  # the upload, or file-drop sites
     "host_fim": frozenset(),                                 # a file change has no network side
+    # R48 is a daily inventory fact, not an event; #227 (vulnkev.DeviceKev) raises the device's other cases instead
+    "vuln_kev": frozenset(),
 }
 
 
@@ -1519,4 +1522,9 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     rules.append(TunnelOpened(state, **d.get(TunnelOpened.name, {})))
     rules.append(FilesStaged(state, **d.get(FilesStaged.name, {})))
     rules.append(FileChanged(state, **d.get(FileChanged.name, {})))
+    if (d.get(vulnkev.NAME) or {}).get("enabled", True):
+        # `_vuln_index`: an in-memory index (selfcheck's fixture) instead of the feeds directory
+        opts = {k: v for k, v in (d.get(vulnkev.NAME) or {}).items() if k != "enabled"}
+        rules.append(vulnkev.VulnKev(state, feeds_dir=cfg.get("feeds_dir", "feeds"), index=cfg.get("_vuln_index"),
+                                     **opts))
     return rules

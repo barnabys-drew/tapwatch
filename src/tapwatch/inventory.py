@@ -38,32 +38,38 @@ class Product:
     cpes: tuple[str, ...]          # NVD CPE vendor:product pairs whose version ranges apply
     kev_vendor: str                # regex over KEV vendorProject
     kev_product: str               # regex over KEV product
+    exes: tuple[str, ...] = ()     # its executables (lower case), for "the vulnerable program itself did this" (#227)
 
 
 # The products KEV keeps listing that a home PC runs. Order matters only for readability; names are anchored so
 # "Google Chrome" does not also match "Google Chrome Remote Desktop Host". Edge: Chromium bugs are filed against
 # google:chrome in NVD, and only some name edge_chromium too, so an old Edge is under-reported (it updates itself).
 WINDOWS_PRODUCTS: tuple[Product, ...] = (
-    Product("chrome", "Google Chrome", r"^google chrome$", ("google:chrome",), r"^google$", r"chrom"),
+    Product("chrome", "Google Chrome", r"^google chrome$", ("google:chrome",), r"^google$", r"chrom", ("chrome.exe",)),
     Product("edge", "Microsoft Edge", r"^microsoft edge$", ("microsoft:edge_chromium", "microsoft:edge"),
-            r"^microsoft$", r"\bedge\b"),
-    Product("firefox", "Mozilla Firefox", r"^mozilla firefox\b", ("mozilla:firefox",), r"^mozilla$", r"firefox"),
+            r"^microsoft$", r"\bedge\b", ("msedge.exe",)),
+    Product("firefox", "Mozilla Firefox", r"^mozilla firefox\b", ("mozilla:firefox",), r"^mozilla$", r"firefox", ("firefox.exe",)),
     Product("acrobat", "Adobe Acrobat / Reader", r"^adobe acrobat|^adobe reader|acrobat reader",
             ("adobe:acrobat_reader_dc", "adobe:acrobat_dc", "adobe:acrobat_reader", "adobe:acrobat"),
-            r"^adobe$", r"acrobat|reader"),
+            r"^adobe$", r"acrobat|reader", ("acrord32.exe", "acrobat.exe")),
     Product("java", "Oracle Java", r"^java( \d+)?( update \d+)?|^java\(tm\)|^java se", ("oracle:jre", "oracle:jdk"),
-            r"^oracle$", r"java|jre|jdk"),
-    Product("7zip", "7-Zip", r"^7-zip\b", ("7-zip:7-zip",), r"^7-zip$", r"7-zip"),
-    Product("winrar", "WinRAR", r"^winrar\b", ("rarlab:winrar",), r"^rarlab$", r"winrar"),
+            r"^oracle$", r"java|jre|jdk", ("java.exe", "javaw.exe", "javaws.exe")),
+    Product("7zip", "7-Zip", r"^7-zip\b", ("7-zip:7-zip",), r"^7-zip$", r"7-zip", ("7z.exe", "7zfm.exe", "7zg.exe")),
+    Product("winrar", "WinRAR", r"^winrar\b", ("rarlab:winrar",), r"^rarlab$", r"winrar", ("winrar.exe", "rar.exe", "unrar.exe")),
     Product("zoom", "Zoom", r"^zoom( workplace| meetings)?$|^zoom$",
-            ("zoom:zoom", "zoom:meetings", "zoom:workplace_desktop", "zoom:workplace"), r"^zoom", r"."),
-    Product("vlc", "VLC media player", r"^vlc media player", ("videolan:vlc_media_player",), r"^videolan$", r"vlc"),
-    Product("notepadpp", "Notepad++", r"^notepad\+\+", ("notepad-plus-plus:notepad\\+\\+",), r"notepad", r"notepad"),
-    Product("putty", "PuTTY", r"^putty\b", ("putty:putty", "simon_tatham:putty"), r"putty|tatham", r"putty"),
-    Product("teams", "Microsoft Teams", r"^microsoft teams\b", ("microsoft:teams",), r"^microsoft$", r"\bteams\b"),
-    Product("nodejs", "Node.js", r"^node\.js$", ("nodejs:node.js",), r"node", r"node"),
+            ("zoom:zoom", "zoom:meetings", "zoom:workplace_desktop", "zoom:workplace"), r"^zoom", r".", ("zoom.exe",)),
+    Product("vlc", "VLC media player", r"^vlc media player", ("videolan:vlc_media_player",), r"^videolan$", r"vlc", ("vlc.exe",)),
+    Product("notepadpp", "Notepad++", r"^notepad\+\+", ("notepad-plus-plus:notepad\\+\\+",), r"notepad", r"notepad",
+            ("notepad++.exe",)),
+    Product("putty", "PuTTY", r"^putty\b", ("putty:putty", "simon_tatham:putty"), r"putty|tatham", r"putty",
+            ("putty.exe",)),
+    Product("teams", "Microsoft Teams", r"^microsoft teams\b", ("microsoft:teams",), r"^microsoft$", r"\bteams\b", ("ms-teams.exe", "teams.exe")),
+    Product("nodejs", "Node.js", r"^node\.js$", ("nodejs:node.js",), r"node", r"node", ("node.exe",)),
 )
 _PROGRAM_RES = [(p, re.compile(p.program, re.IGNORECASE)) for p in WINDOWS_PRODUCTS]
+
+
+PRODUCTS = {p.key: p for p in WINDOWS_PRODUCTS}
 
 
 def product_of(program_name: str) -> Product | None:

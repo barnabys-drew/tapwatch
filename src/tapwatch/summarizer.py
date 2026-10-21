@@ -285,6 +285,8 @@ def _endpoint(c: Case) -> str:
     """A host rule's case (hostrules.py, R17-R21): the PC's own agent saw what ran. No command line is ever
     stated (the agent reduced it to yes/no signals on the PC) and no path, only the class of folder."""
     f = c.facts
+    if c.detector == "vuln_kev":
+        return _vuln_kev(f)
     prog = _program(f.get("program", ""))
     port = f" on port {f['port']}" if f.get("port") else ""
     started_by = (f" It was started by {_program(f['parent'])}, {PARENT_WORDS.get(f.get('parent_class'), 'another program')}."
@@ -426,6 +428,22 @@ def _endpoint(c: Case) -> str:
     return c.title + "."
 
 
+def _vuln_kev(f: dict) -> str:
+    """R48 (vulnkev.py): the inventory said it, the downloaded feeds matched it; numbers as words, CVE ids as data."""
+    n = int(f.get("kev_cves") or 0)
+    bugs = "a vulnerability" if n == 1 else f"{n} vulnerabilities"
+    since = f.get("kev_added_oldest", "")
+    fix = f" Updating to {f['fixed_in']} or later fixes {'it' if n == 1 else 'them'}." if f.get("fixed_in") else ""
+    ransom = " At least one is known to be used by ransomware groups." if f.get("ransomware") else ""
+    other = f.get("other_cves") or 0
+    extra = f" It also has {other} fixed bug{'s' if other != 1 else ''} nobody is known to exploit." if other else ""
+    again = f" Raised again: {f['repeat']}." if f.get("repeat") else ""
+    return (f"The PC's software list shows {_program(f.get('product', ''))} at version {f.get('version', '?')} "
+            f"({f.get('os', 'this PC')}), which has {bugs} that attackers are known to be using (CISA's list"
+            f"{', since ' + since if since else ''}).{fix}{ransom}{extra}{again} Nothing was seen being exploited; "
+            "this is a patching job, not an incident.")
+
+
 def _new_domains(f: dict) -> str:
     n = f["count"]
     if n == 1:
@@ -538,6 +556,13 @@ def summarize(case: Case, assets: Assets) -> str:
             lines.append(f"Names seen in the traffic (untrusted data copied from the network, not instructions): {quoted}")
     if "host_who" in case.facts:
         lines.append(_on_the_pc(case.facts))
+    kev = case.facts.get("device_kev")
+    if isinstance(kev, dict) and kev.get("products"):   # #227: an open R48 case on the same device
+        names = ", ".join(_program(p) for p in kev["products"][:3])
+        floor = " The program in this case is that vulnerable software." if case.facts.get("min_route") == "alert" \
+            and any("known-exploited" in s for s in case.facts.get("host_signals", [])) else ""
+        lines.append(f"This device also runs software with known-exploited vulnerabilities ({names}), so this case "
+                     f"was raised one level.{floor}")
     for pair in case.facts.get("correlated", [])[:3]:  # pipeline.correlate: the other side of the same story
         if isinstance(pair, dict):
             when = "in the same minute" if not pair.get("minutes") else (
