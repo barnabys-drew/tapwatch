@@ -98,6 +98,41 @@ def host_context(db: sqlite3.Connection) -> dict:
     return out
 
 
+def kev_what_if(db: sqlite3.Connection) -> dict:
+    """#227: how past cases would have routed had their device carried an open R48 case (base severity + 1).
+
+    Only rules-routed cases can move: with no AI verdict the route follows severity (2-3 digest, 4+ alert, 1 log),
+    so a 3 becomes an alert (a 2 stays a digest item, and log-level cases are not raised). Cases Jev routed, suppressed, capped, always-alert or routed by host
+    context keep their route (the +1 changes none of those paths). Cases stored before `base_severity` was recorded
+    (2026-10-20) are told apart by their reason where it says the level ("high/low severity"); a plain "rules-only"
+    digest from then is 2 or 3 (the rules emit both) and counts as `maybe`. The "program is the vulnerable product" alert floor depends
+    on which product a device runs and is not counted."""
+    cur = db.cursor()
+    cur.row_factory = sqlite3.Row
+    out = {"cases": 0, "rules_routed": 0, "up": 0, "maybe": 0, "by_detector": {}}
+    rows = cur.execute("SELECT * FROM cases")
+    has_sev = "base_severity" in {d[0] for d in rows.description}
+    for r in rows:
+        out["cases"] += 1
+        if r["verdict"] or r["must_alert"]:
+            continue
+        reason, sev = r["reason"] or "", (r["base_severity"] if has_sev else None)
+        if not reason.startswith("rules-only"):
+            continue
+        out["rules_routed"] += 1
+        moved = None
+        if sev is not None:
+            moved = sev == 3
+        elif reason == "rules-only":
+            moved = "maybe"     # a 2 or a 3
+        if moved is True:
+            out["up"] += 1
+            out["by_detector"][r["detector"]] = out["by_detector"].get(r["detector"], 0) + 1
+        elif moved == "maybe":
+            out["maybe"] += 1
+    return out
+
+
 def _pct(v) -> str:
     return f"{v:.0%}" if isinstance(v, (int, float)) else "–"
 
@@ -114,4 +149,10 @@ def markdown(db: sqlite3.Connection, now: float | None = None) -> str:
               + (", ".join(f"{k} {v}" for k, v in sorted(h["who"].items())) or "nothing") + ". "
               f"Jev agreed with code on {_pct(h['jev_agreement'])} of {h['jev_asked']} it was asked; code's benign-or-hostile "
               f"claims matched the owner's disposition on {_pct(h['accuracy'])} of {h['claims']}."]
+    k = kev_what_if(db)
+    top = ", ".join(f"{d} {n}" for d, n in sorted(k["by_detector"].items(), key=lambda x: -x[1])[:5])
+    lines += ["", f"Known-exploited what-if (#227): had every device carried an open R48 case, {k['up']} of "
+              f"{k['cases']} cases would have routed one step louder" + (f" ({top})" if top else "")
+              + (f", and up to {k['maybe']} more stored before their rule's severity was recorded" if k["maybe"] else "")
+              + f"; the other {k['cases'] - k['rules_routed']} were routed by Jev, a suppression or a fixed rule."]
     return "\n".join(lines)
