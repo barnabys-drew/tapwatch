@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from . import detectors as det
-from . import evidence, hostrules, inventory
+from . import evidence, hostrules, inventory, vulnkev
 from .hostctx import HostContext
 from .models import Case, Route, Verdict
 from .notifiers import HerdrNotifier, Notifier
@@ -61,6 +61,8 @@ class Pipeline:
         self.input_tokens = 0
         self._pc_base: dict[int, set] = {}   # "this PC" address sets as configured, before follow_this_pc
         self._pc_warned: str | None = None
+        self.vuln = next((d for d in detectors if isinstance(d, vulnkev.VulnKev)), None)
+        self.device_kev = vulnkev.DeviceKev(store)   # #227
 
     def process(self, rec: dict) -> list[tuple[int, Case, Verdict | None, Route]]:
         """One record through every detector; a `{"_type": "tick", "ts": now}` record is the minute tick instead."""
@@ -73,6 +75,8 @@ class Pipeline:
                 handled = self.handle(case)
                 if handled:
                     out.append(handled)
+        if self.vuln is not None and self.vuln.resolved:
+            vulnkev.close_resolved(self.store, self.vuln)   # R48: patched since its case, so the case closes
         return out
 
     def record_inventory(self, rec: dict) -> None:
@@ -102,6 +106,7 @@ class Pipeline:
         if self.identity is not None:
             case.facts.update(self.identity.facts_for(case.host))  # device_mac, device_name
         self.add_host_context(case)
+        self.device_kev.apply(case)   # #227: an open R48 case on the device raises this one
         partners = self.correlate(case)
         state = summarize(case, self.assets)
         if "host_who" in case.facts and self.client and hasattr(self.client, "who"):

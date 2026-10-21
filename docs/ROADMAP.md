@@ -203,7 +203,7 @@ shown before it runs, recorded, and undoable.
 | [#55](https://github.com/barnabys-drew/tapwatch/issues/55) | Response actions: one-tap quarantine and block, always owner-approved | designed 2026-10-20 (#214–#217) |
 | [#56](https://github.com/barnabys-drew/tapwatch/issues/56) | Canary tokens: fake credentials and files that alert when touched | designed 2026-10-20 (#218–#220) |
 | [#57](https://github.com/barnabys-drew/tapwatch/issues/57) | Identity signals: account sign-ins from new devices or places | designed 2026-10-20 (#221–#223) |
-| [#58](https://github.com/barnabys-drew/tapwatch/issues/58) | Vulnerable software: installed programs checked against known vulnerabilities | designed 2026-10-20 (#224–#227) |
+| [#58](https://github.com/barnabys-drew/tapwatch/issues/58) | Vulnerable software: installed programs checked against known vulnerabilities | built 2026-10-20 (#224–#227): inventory, KEV/OSV/NVD feeds, R48 `vuln_kev`, other cases raised on the device |
 
 The v0.5 designs are sub-issues of each row above. Rule numbers: R30–R35 are v0.4, R40–R48 v0.5, and R36–R39
 are kept for v0.3's remaining rules (#39, #167).

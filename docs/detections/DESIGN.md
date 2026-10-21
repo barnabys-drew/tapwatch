@@ -1044,6 +1044,36 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   program that doesn't own it" stays out (a later step, with an eBPF file-open query). WSL's inotify sees only
   Linux paths.
 
+### R48 Device runs software with a known-exploited vulnerability (`vuln_kev`) — **built** (#226, #227)
+- **Threat:** an outdated browser, PDF reader, Java, archiver or distro package with a bug attackers are known to be
+  using (CISA KEV). Not an event: a standing condition that makes every other case on the device more likely real.
+- **Data:** the agents' daily software snapshots (#224, `inventory.py`) against `kev.json`, the OSV index for the
+  agent's distro release and the NVD ranges for mapped Windows products (#225, `vulns.py`), all downloaded; nothing
+  about the house is sent and Jev is never asked (`router.CODE_ONLY`).
+- **Logic (`vulnkev.py`):** a product (mapped Windows program, or Linux source package) with a KEV-listed CVE inside
+  a range that has a fixed version → one case per (agent, product), severity 3, digest: patching is not a 2 a.m.
+  task. Facts: product, installed version, KEV CVE count and the newest five, oldest and newest KEV date added, the
+  version that fixes them all, ransomware use, the agent's OS, and the agent's OSV-only count (fixed bugs nobody is
+  known to exploit: a fact, never a case). Raised again only for a KEV CVE it did not list, or after 14 days still
+  unpatched. When a later snapshot shows the product outside every range (patched or uninstalled) the pipeline
+  closes the open case as a true positive with a note saying which version the inventory now shows, audited as
+  `tapwatch`. An empty snapshot (a failed table read) resolves nothing. Suppressible per (device, product) with the
+  existing `device_indicator` scope: the product is the indicator.
+- **#227, the device's other cases (`vulnkev.DeviceKev`, in `Pipeline.handle` before routing):** an open, unsuppressed
+  R48 case on the same device adds `device_kev` (products, CVE count) and one summary sentence, and raises a
+  digest-level case (severity 2 or more) by one, to at most 5. Log-level cases stay where they are: measured on
+  the live store (987 cases, 2026-10-13..20), 358 were `new_domain` at severity 1, and a flat +1 would have put
+  every one in the digest. A host case whose program *is* the vulnerable product's executable
+  (`inventory.Product.exes`) gets `min_route: alert`. Never lowers anything and never touches `must_alert`.
+- **Baseline (2026-10-20):** on the main PC (1,081 WSL packages, 248 Windows programs; Chrome 155, Edge 155,
+  Zoom, Node.js and Teams mapped) with the day's feeds: **0 cases**, 0 OSV-only matches, consistent with
+  unattended-upgrades and the browsers' own updaters having run that morning. `tapwatch benchmark`'s what-if: had
+  every device carried an open R48 case, 0 of the 987 cases would have routed louder for certain and up to 57 might
+  have (rules-routed digest items stored before cases recorded `base_severity`, which they now do).
+- **Expected false positives:** range errors in the data; a portable or leftover copy that is installed but never
+  run; a browser updated in memory before the day's snapshot (the next snapshot closes it). Windows itself and
+  Office are not covered, and Edge is under-reported (#225).
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
