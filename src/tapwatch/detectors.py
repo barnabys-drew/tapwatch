@@ -1084,7 +1084,11 @@ class HourlyProfile(Detector):
         agent held one session for 25.3 h (1.56 GB up, about 60 MB an hour) and it was counted as 1.56 GB in the hour
         it closed, a 254x "spike" that read as an hour's upload (#987). Bytes are spread evenly over the connection's
         life, and the share in the current and the previous hour is counted (the previous one too, so a short
-        connection logged a minute after the hour turned still counts in full); the earlier hours are closed."""
+        connection logged a minute after the hour turned still counts in full); the earlier hours are closed.
+        Two hours, not one: a 2-hour 4 GB backup that closes just after the hour turns still counts about half
+        (one hour would count a few percent and miss it), at the cost of a long session showing twice its hourly
+        rate. The blind spot this opens: a slow upload over one long connection (1.5 GB over a day) no longer
+        reaches upload_spike; that shape is R31's (low-and-slow over weeks, #195)."""
         duration = float(rec.get("duration") or 0)
         if duration <= 3600:
             return 1.0
