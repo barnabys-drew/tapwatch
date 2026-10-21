@@ -2225,7 +2225,8 @@ class TakeoverChannel(Detector):
     partner. The port can differ (measured 2026-10-20: the laptop on tcp/5938, the other PC on
     tcp/443, same relay, both starting in the same second), so the match is by address and time.
     Zeek logs a connection when it ends, so the partner's record can come in either order: the
-    case waits up to PARTNER_HOLD minute ticks for it, then says no partner was seen.
+    case waits up to PARTNER_HOLD minute ticks for it, then says no partner was seen yet: a partner
+    whose connection stays open longer is only logged when it closes, after the case went out.
     """
 
     name = "takeover"
@@ -2256,6 +2257,8 @@ class TakeoverChannel(Detector):
     # to its server is about 2 KB a minute (20 KB per 10 min); the partner leg of the 2026-10-20 session averaged
     # 24 KB a minute across a 10-hour connection and 100 KB a minute across the first 3.6 hours.
     PARTNER_RATE = 10_000
+    PARTNER_BYTES = 1_000_000   # and at least this much in all: a 2-second reconnect of an idle client passes the rate
+    PARTNER_OVERLAP = 300       # seconds the two must overlap (or half the session leg, if that is shorter)
     PARTNER_HOLD = 5  # minute ticks a session case waits for its partner's record
 
     def __init__(self, extra: dict[str, list[str]] | None = None, expected: list[dict] | None = None,
@@ -2280,8 +2283,9 @@ class TakeoverChannel(Detector):
         self.service_ips: dict[tuple, set[str]] = defaultdict(set)   # (host, service) -> server IPs
         self.traffic: dict[tuple, deque] = defaultdict(deque)        # (host, service) -> (ts, bytes, dst, end)
         self.reported: set[tuple] = set()
-        self.relay_ips: dict[str, str] = {}   # remote-control server address -> service, from any device's lookups
-        # (start, end, host, dst, port, bytes out, bytes in) of LAN connections to those servers or session ports
+        self.relay_ips: set[str] = set()      # remote-control server addresses, from any device's lookups
+        # (start, end, host, dst, port, bytes out, bytes in) of LAN connections to those servers or session ports.
+        # Persisted although it is a window: a session's partner can have connected hours before a restart.
         self.relay_conns: deque = deque(maxlen=2000)
         self.held: dict[tuple, dict] = {}     # (host, service, day) -> a session case waiting for its partner
 
@@ -2309,12 +2313,13 @@ class TakeoverChannel(Detector):
                 break
         else:
             return []
-        if channel == "remote_control":  # where its servers are, for any device: a session's partner can be anyone's
+        if channel == "remote_control" and name.lower().rstrip(".") not in (hit, "www." + hit):
+            # Where its servers are, for any device: a session's partner can be anyone's. Not the bare domain or
+            # www: those are the vendor's website, on shared CDN addresses half the house may be streaming from.
             if len(self.relay_ips) > 10_000:
                 self.relay_ips.clear()
-            for a in ((rec.get("answers") or []) if kind == "dns" else [rec.get("id.resp_h", "")]):
-                if _is_ip(a) and not is_internal(a):
-                    self.relay_ips[a] = hit
+            self.relay_ips.update(a for a in ((rec.get("answers") or []) if kind == "dns" else [rec.get("id.resp_h", "")])
+                                  if _is_ip(a) and not is_internal(a))
         if self._expected(host, hit):
             ips = self.service_ips[(host, hit)]  # learn where the tool's servers are, to measure sessions
             ips.update(a for a in (rec.get("answers") or []) if _is_ip(a))
@@ -2387,7 +2392,7 @@ class TakeoverChannel(Detector):
                         [svc], base_severity=4)
             partner = self._partner(h, legs, self.relay_conns)
             if partner:
-                return [self._with_partner(case, partner)]
+                return self._release({"case": asdict(case)}, partner)
             self.held[(h, svc, day)] = {"ticks": self.PARTNER_HOLD, "legs": legs, "case": asdict(case)}
             return []
         return []
@@ -2406,7 +2411,7 @@ class TakeoverChannel(Detector):
             partner = self._partner(key[0], held["legs"], [conn])
             if partner:
                 del self.held[key]
-                out.append(self._with_partner(Case(**held["case"]), partner))
+                out += self._release(held, partner)
         return out
 
     def _partner(self, host: str, legs, conns) -> dict | None:
@@ -2414,22 +2419,29 @@ class TakeoverChannel(Detector):
         one overlapping the session longest."""
         best = None
         for start, end, other, dst, port, out_b, in_b in conns:
-            if other == host or (out_b + in_b) * 60 / max(end - start, 60) < self.PARTNER_RATE:
+            if other == host or out_b + in_b < self.PARTNER_BYTES \
+                    or (out_b + in_b) * 60 / max(end - start, 60) < self.PARTNER_RATE:
                 continue
             for leg_dst, leg_start, leg_end in legs:
                 overlap = min(end, leg_end) - max(start, leg_start)
-                if dst == leg_dst and overlap > 0 and (best is None or overlap > best[0]):
+                need = min(self.PARTNER_OVERLAP, (leg_end - leg_start) / 2)
+                if dst == leg_dst and overlap > 0 and overlap >= need and (best is None or overlap > best[0]):
                     best = (overlap, {"ip": other, "port": port, "start_gap_s": round(abs(start - leg_start)),
                                       "overlap_min": max(1, round(overlap / 60)),
                                       "mb_out": round(out_b / 1e6, 1), "mb_in": round(in_b / 1e6, 1)})
         return best[1] if best else None
 
     @staticmethod
-    def _with_partner(case: Case, partner: dict | None) -> Case:
+    def _release(held: dict, partner: dict | None) -> list[Case]:
+        try:
+            case = Case(**held["case"])
+        except TypeError as e:  # saved by a version whose Case had other fields: drop it rather than stop the loop
+            log.warning("takeover: dropping a held session case that no longer loads: %s", e)
+            return []
         case.facts["partner_in_house"] = partner is not None
         if partner:
             case.facts["partner"] = partner
-        return case
+        return [case]
 
     def tick(self, now: float) -> list[Case]:
         out = []
@@ -2437,11 +2449,11 @@ class TakeoverChannel(Detector):
             held["ticks"] -= 1
             if held["ticks"] <= 0:
                 del self.held[key]
-                out.append(self._with_partner(Case(**held["case"]), None))
+                out += self._release(held, None)
         return out
 
     def flush(self) -> list[Case]:
-        out = [self._with_partner(Case(**h["case"]), None) for h in self.held.values()]
+        out = [c for h in self.held.values() for c in self._release(h, None)]
         self.held.clear()
         return out
 

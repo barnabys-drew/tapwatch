@@ -902,8 +902,24 @@ def test_idle_clients_and_other_relays_are_not_partners():
     idle = session_leg(MON_21 - 600, src=OTHER, port=443, out=40_000, seconds=7200)      # keep-alive, 2 hours
     elsewhere = session_leg(MON_21, src="192.168.50.12", port=443, dst="198.51.100.9")   # busy, another relay
     before = session_leg(MON_21 - 7200, src="192.168.50.13", seconds=3000)              # ended before it began
-    run(det, [idle, elsewhere, before, session_leg(MON_21)])
+    blip = session_leg(MON_21 + 1800, src="192.168.50.14", out=14_000, seconds=2)       # an idle client reconnecting
+    brief = session_leg(MON_21 + 3500, src="192.168.50.15", out=2_000_000, seconds=200)  # busy, 100 s of overlap
+    run(det, [idle, elsewhere, before, blip, brief, session_leg(MON_21)])
     assert det.flush()[0].facts["partner_in_house"] is False
+
+
+def test_the_vendor_website_is_not_a_relay():
+    det = laptop_takeover()
+    run(det, [dict(dns(MON_21 - 60, "www.teamviewer.com", src=OTHER), answers=["198.51.100.20"]),
+              ssl(MON_21 - 50, "teamviewer.com", src=OTHER, dst="198.51.100.21"), partner_tls(MON_21)])
+    assert det.relay_ips == {RELAY}
+
+
+def test_a_held_case_that_no_longer_loads_is_dropped():
+    det = laptop_takeover()
+    run(det, [tv_lookup(MON_21 - 60, RELAY), session_leg(MON_21)])
+    next(iter(det.held.values()))["case"]["gone_field"] = 1
+    assert det.flush() == [] and det.held == {}
 
 
 def test_a_held_session_survives_a_restart():

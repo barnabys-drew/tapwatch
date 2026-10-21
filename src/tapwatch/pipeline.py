@@ -165,14 +165,14 @@ class Pipeline:
         p["device"] = self.assets.describe(p["ip"], ident)
         if self.assets.entry(case.host, case.facts) and self.assets.entry(p["ip"], ident):
             p["known"] = True
-            case.facts["max_route"] = "digest"
+            case.facts.setdefault("max_route", "digest")  # never loosen a stricter ceiling
 
     def note_partner(self, case: Case, case_id: int, r: Route) -> None:
         """The long-connection (odd_port) case for the same session learns what R16 found about the other end."""
         relays = set(case.facts.get("dests") or ())
         p = case.facts.get("partner")
         found = (f"the other end is likely {p.get('device', 'another device in the house')}" if isinstance(p, dict)
-                 else "no other device in the house was on the same relay")
+                 else "no other device in the house was on the same relay so far")
         for row in self.store.nearby(case, det.TakeoverChannel.SESSION_WINDOW, {"odd_port"}):
             if relays & set(json.loads(row["facts"] or "{}").get("dests") or ()):
                 self.store.link_cases(row["id"], case_id,
