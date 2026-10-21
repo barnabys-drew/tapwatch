@@ -106,6 +106,7 @@ class Pipeline:
         if self.identity is not None:
             case.facts.update(self.identity.facts_for(case.host))  # device_mac, device_name
         self.add_host_context(case)
+        self.name_partner(case)
         self.device_kev.apply(case)   # #227: an open R48 case on the device raises this one
         partners = self.correlate(case)
         state = summarize(case, self.assets)
@@ -124,6 +125,8 @@ class Pipeline:
                 log.warning("AI triage failed, using rules only: %s", e)
         r, reason = route(case, verdict, self.thresholds, suppression, self.learning_label(case.ts))
         case_id = self.store.add(case, state, verdict, r, reason)
+        if "partner_in_house" in case.facts:
+            self.note_partner(case, case_id, r)
         for other in partners:  # the other case learns about this one too, with a note on its page
             minutes = round((case.ts - other["first_ts"]) / 60)
             when = "in the same minute" if not minutes else f"{abs(minutes)} min {'later' if minutes > 0 else 'earlier'}"
@@ -150,6 +153,32 @@ class Pipeline:
             except RuntimeError as e:
                 log.error("could not deliver alert #%s: %s", case_id, e)
         return case_id, case, verdict, r
+
+    def name_partner(self, case: Case) -> None:
+        """R16 found the likely other end of a remote-control session on another house device: name it from
+        assets.yaml. When both ends are labelled devices, the session is someone in the house helping, so the case
+        is held to the digest; an unlabelled partner or none at all keeps the alert."""
+        p = case.facts.get("partner")
+        if case.detector != "takeover" or not isinstance(p, dict) or not p.get("ip"):
+            return
+        ident = self.identity.facts_for(p["ip"]) if self.identity is not None else {}
+        p["device"] = self.assets.describe(p["ip"], ident)
+        if self.assets.entry(case.host, case.facts) and self.assets.entry(p["ip"], ident):
+            p["known"] = True
+            case.facts["max_route"] = "digest"
+
+    def note_partner(self, case: Case, case_id: int, r: Route) -> None:
+        """The long-connection (odd_port) case for the same session learns what R16 found about the other end."""
+        relays = set(case.facts.get("dests") or ())
+        p = case.facts.get("partner")
+        found = (f"the other end is likely {p.get('device', 'another device in the house')}" if isinstance(p, dict)
+                 else "no other device in the house was on the same relay")
+        for row in self.store.nearby(case, det.TakeoverChannel.SESSION_WINDOW, {"odd_port"}):
+            if relays & set(json.loads(row["facts"] or "{}").get("dests") or ()):
+                self.store.link_cases(row["id"], case_id,
+                                      {"id": case_id, "detector": case.detector, "title": case.title, "route": r.value,
+                                       "minutes": round((case.ts - row["first_ts"]) / 60)},
+                                      f"#{case_id} (takeover) checked this session: {found}")
 
     def _warmup(self) -> det.Warmup | None:
         return next((d.warmup for d in self.detectors if isinstance(getattr(d, "warmup", None), det.Warmup)), None)

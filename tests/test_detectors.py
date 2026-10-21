@@ -838,15 +838,81 @@ def test_expected_tool_session_alerts_only_outside_hours_once_per_day():
     run(det, [tv_lookup(MON_10 - 60)])
     assert run(det, [tv_traffic(MON_10 + i * 30, 1_000_000) for i in range(5)]) == []   # 5 MB in hours
     run(det, [tv_lookup(MON_21 - 60)])
-    cases = run(det, [tv_traffic(MON_21 + i * 30, 1_000_000) for i in range(5)])
+    cases = run(det, [tv_traffic(MON_21 + i * 30, 1_000_000) for i in range(5)]) + det.flush()
     assert len(cases) == 1
     c = cases[0]
     assert c.facts["session"] and c.facts["mb"] >= 2 and c.base_severity == 4 and not c.must_alert
     assert c.indicators == ["teamviewer.com"]
     assert run(det, [tv_traffic(MON_21 + 900 + i * 30, 1_000_000) for i in range(5)]) == []  # same night
     assert len(run(det, [tv_traffic(SAT_10 + i * 30, 1_000_000, dst="198.51.100.1", port=5938)
-                         for i in range(3)])) == 1                    # weekend, direct TeamViewer port
+                         for i in range(3)]) + det.flush()) == 1      # weekend, direct TeamViewer port
 
+
+
+# The 2026-10-20 session, sanitised: the laptop on tcp/5938 and another PC on tcp/443 to one relay, same second.
+RELAY = "203.0.113.80"
+
+
+def session_leg(ts, src=LAPTOP, port=5938, out=30_000_000, seconds=3600, dst=RELAY):
+    return dict(conn(ts, src=src, dst=dst, port=port, orig_bytes=out), duration=seconds, resp_bytes=300_000)
+
+
+def partner_tls(ts, src=OTHER):
+    return ssl(ts, "r003.router.teamviewer.com", src=src, dst=RELAY)
+
+
+def sessions(cases):
+    return [c for c in cases if c.facts.get("session")]
+
+
+def test_session_names_the_partner_seen_before_it():
+    det = laptop_takeover()
+    run(det, [tv_lookup(MON_21 - 60, RELAY), partner_tls(MON_21)])
+    assert run(det, [session_leg(MON_21, src=OTHER, port=443, out=20_000_000)]) == []
+    [c] = sessions(run(det, [session_leg(MON_21)]))
+    assert c.facts["partner_in_house"] is True and c.facts["dests"] == [RELAY]
+    assert c.facts["partner"] == {"ip": OTHER, "port": 443, "start_gap_s": 0, "overlap_min": 60,
+                                  "mb_out": 20.0, "mb_in": 0.3}
+
+
+def test_session_waits_for_a_partner_logged_after_it():
+    det = laptop_takeover()
+    run(det, [tv_lookup(MON_21 - 60, RELAY), partner_tls(MON_21 + 2)])
+    assert sessions(run(det, [session_leg(MON_21)])) == []          # held
+    assert det.tick(MON_21 + 3700) == []                              # one minute in: still waiting
+    [c] = run(det, [session_leg(MON_21 + 2, src=OTHER, port=443, seconds=3500)])
+    assert c.facts["partner"]["ip"] == OTHER and c.facts["partner"]["start_gap_s"] == 2
+    assert det.held == {} and det.flush() == []
+
+
+def test_session_with_no_partner_is_released_after_the_hold():
+    det = laptop_takeover()
+    run(det, [tv_lookup(MON_21 - 60, RELAY)])
+    assert run(det, [session_leg(MON_21)]) == []
+    ticks = [det.tick(MON_21 + 3600 + 60 * i) for i in range(1, TakeoverChannel.PARTNER_HOLD + 1)]
+    assert ticks[:-1] == [[]] * (TakeoverChannel.PARTNER_HOLD - 1)
+    [c] = ticks[-1]
+    assert c.facts["partner_in_house"] is False and "partner" not in c.facts
+
+
+def test_idle_clients_and_other_relays_are_not_partners():
+    det = laptop_takeover()
+    run(det, [tv_lookup(MON_21 - 60, RELAY), partner_tls(MON_21), ssl(MON_21, "router9.teamviewer.com",
+                                                                       src="192.168.50.12", dst="198.51.100.9")])
+    idle = session_leg(MON_21 - 600, src=OTHER, port=443, out=40_000, seconds=7200)      # keep-alive, 2 hours
+    elsewhere = session_leg(MON_21, src="192.168.50.12", port=443, dst="198.51.100.9")   # busy, another relay
+    before = session_leg(MON_21 - 7200, src="192.168.50.13", seconds=3000)              # ended before it began
+    run(det, [idle, elsewhere, before, session_leg(MON_21)])
+    assert det.flush()[0].facts["partner_in_house"] is False
+
+
+def test_a_held_session_survives_a_restart():
+    det = laptop_takeover()
+    run(det, [tv_lookup(MON_21 - 60, RELAY), partner_tls(MON_21), session_leg(MON_21)])
+    again = laptop_takeover()
+    again.restore(det.snapshot())
+    [c] = run(again, [session_leg(MON_21, src=OTHER, port=443)])
+    assert c.title == "Remote-control session outside expected hours" and c.facts["partner"]["ip"] == OTHER
 
 def test_expected_entry_stops_applying_when_the_address_changes_hands():
     det = laptop_takeover(mac="aa:bb:cc:dd:ee:ff")
