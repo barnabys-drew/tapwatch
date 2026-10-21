@@ -561,6 +561,21 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   (≥ 2 MB to the service's servers or its own port within 10 min) alerts once per day. If a DHCP lease
   gives the address to a different MAC, the entry stops applying. Callback and file-drop services
   can't be marked expected.
+- **Session partner:** relayed remote control runs both ends through one relay server, so a session case
+  looks for another LAN device with a busy connection (≥ 1 MB, and ≥ 10 KB a minute over its life; idle
+  keep-alive is ~2 KB) to the same relay address, overlapping the session by 5 minutes or half of it.
+  Relay addresses come from any device's lookups and TLS names under the service, except the bare domain
+  and www (the vendor's website, on shared CDN addresses). The port can differ: on 2026-10-20 the work
+  laptop used tcp/5938 and the other PC tcp/443 to the same relay, both starting in the same second, and
+  the two PCs used different STUN servers, so the match is by relay address and time, not port. Zeek logs
+  a connection when it ends, so the partner's record can arrive after the session's: the case waits up to
+  5 minutes for it, then says none was seen so far. Blind spot: a partner whose connection outlives the
+  session by more than that is logged only when it closes, after the case went out, so "none so far" is
+  not proof the other end is outside. Both ends labelled in `assets.yaml` → capped at the digest
+  (someone in the house helping); an unlabelled partner or none → the alert stands. A long-connection
+  (`odd_port`) case for the same relay gets a note with what was found. The partner is "likely": two
+  devices idling on the same relay are filtered by the rate, but two separate sessions through one relay
+  would still match. Which TeamViewer ID was on the other end needs the endpoint agent on that PC.
 - **Jev:** none. The service's identity is the verdict, and judging domains is Jev's weak spot.
 - **Safe test:** `nslookup webhook.site` from the PC (a lookup only, nothing is posted), or
   `ssh -R` to `localhost.run` with no local service behind it, then close it.

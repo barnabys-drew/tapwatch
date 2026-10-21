@@ -229,9 +229,22 @@ def _observed(c: Case, words: dict) -> str:
                 "from before. The router controls the whole network.")
     if c.detector == "takeover":
         if f.get("session"):
-            return (f"A remote-control session appears to be running outside the hours it is expected "
+            text = (f"A remote-control session appears to be running outside the hours it is expected "
                     f"({f['expected_hours']}): about {f['mb']} MB moved in 10 minutes. "
                     "Someone may be operating this device remotely.")
+            p = f.get("partner")
+            if isinstance(p, dict):
+                gap = round(p.get("start_gap_s", 0) / 60)
+                when = "in the same minute" if not gap else f"{gap} minute{'s' * (gap != 1)} apart"
+                minutes = f"{p['overlap_min']} minute{'s' * (p['overlap_min'] != 1)}"
+                text += (f" The other end is likely {p.get('device', 'another device in the house')}: it held a busy "
+                         f"connection to the same relay server for {minutes} of this session, the two starting {when}.")
+                if p.get("known"):
+                    text += " Both ends are labelled devices here, so this looks like someone in the house helping."
+            elif f.get("partner_in_house") is False:
+                text += (" No other device the sensor sees was on the same relay server so far. Either the other end "
+                         "is outside the house, or it is still connected: a connection is only logged when it ends.")
+            return text
         what = {"callback": "a webhook or callback-catcher service, where stolen tokens or injected-agent output get posted",
                 "file_drop": "a paste or file-drop service, often used to exfiltrate data",
                 "tunnel": "a tunnelling service that can open a way into this device from the internet",
