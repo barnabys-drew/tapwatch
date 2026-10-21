@@ -1010,9 +1010,9 @@ class HourlyProfile(Detector):
     Managed devices: a device whose assets.yaml role says it is employer-managed or carries a
     security agent (MANAGED_ROLE_WORDS) has its upload_spike capped at digest whatever the
     destination, with the role in `managed_device`. Measured at home: the work laptop (employer-
-    managed, runs an EDR agent) uploads ~1 GB to plain AWS addresses most mornings (#139, #325,
-    closed as the EDR agent's telemetry) and 1.5 GB to a Google Meet address on
-    2026-10-16 (#371, a video call). Neither destination is a sync service or a vendor domain,
+    managed, runs an EDR agent) seemed to upload ~1 GB to plain AWS addresses most mornings (#139, #325,
+    closed as the EDR agent's telemetry): those were overnight EDR sessions counted in the hour they closed,
+    fixed by _share_now (2026-10-21) - and 1.5 GB to a Google Meet address on 2026-10-16 (#371, a video call). Neither destination is a sync service or a vendor domain,
     so the destination caps never applied and Jev scored them as exfiltration. Digest, not log:
     the device stays visible in the daily digest; its employer's tooling is what watches it, and a
     home monitor should not page the owner for a managed laptop's telemetry.
@@ -1069,12 +1069,29 @@ class HourlyProfile(Detector):
             cur = self.current.setdefault(src, [0, 0, 0])
             if len(cur) < 3:
                 cur.append(0)  # state saved before downloads were counted
+            share = self._share_now(rec)
+            up, down = int(int(rec.get("orig_bytes") or 0) * share), int(int(rec.get("resp_bytes") or 0) * share)
             cur[0] += 1
-            cur[1] += int(rec.get("orig_bytes") or 0)
-            cur[2] += int(rec.get("resp_bytes") or 0)
-            if rec.get("orig_bytes"):
-                self.dests[src][self.names.get(dst) or dst] += int(rec["orig_bytes"])  # unnamed: by address
+            cur[1] += up
+            cur[2] += down
+            if up:
+                self.dests[src][self.names.get(dst) or dst] += up  # unnamed: by address
         return out
+
+    def _share_now(self, rec: dict) -> float:
+        """The part of a connection's bytes that belongs to the hour being counted. Zeek logs a connection when it
+        closes, stamped with its start, so a long one arrives all at once: measured 2026-10-20, the work laptop's EDR
+        agent held one session for 25.3 h (1.56 GB up, about 60 MB an hour) and it was counted as 1.56 GB in the hour
+        it closed, a 254x "spike" that read as an hour's upload (#987). Bytes are spread evenly over the connection's
+        life, and the share in the current and the previous hour is counted (the previous one too, so a short
+        connection logged a minute after the hour turned still counts in full); the earlier hours are closed."""
+        duration = float(rec.get("duration") or 0)
+        if duration <= 3600:
+            return 1.0
+        start = float(rec.get("ts") or 0)
+        window_start, window_end = (self.last_hour - 1) * 3600, (self.last_hour + 1) * 3600
+        overlap = min(start + duration, window_end) - max(start, window_start)
+        return max(0.0, min(1.0, overlap / duration))
 
     def flush(self) -> list[Case]:
         return []  # a partial hour proves nothing
