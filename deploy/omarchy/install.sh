@@ -14,13 +14,17 @@
 # do nothing, since a sleeping sensor watches nothing; takes the mirror interface away from the network manager
 # so it stays up with no address; opens UDP 5514 to the LAN in ufw for the router's logs; then tapwatch itself
 # (init or --import, the public lists, the services), the endpoint agent, and `tapwatch doctor`.
-# Every step checks what is already done, so it can be run again (to update, or after the restart it asks for).
+# Every step checks what is already done, so it can be run again (to update, or after the restart it asks for);
+# --import only on the first run, before there is a config.yaml.
 set -euo pipefail
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mnote:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
-ask() { local a; read -r -p "$1 [Y/n] " a </dev/tty || a=""; [[ ! "$a" =~ ^[Nn] ]]; }
+# Questions need a terminal: with none (ssh without -t, a script), every answer is no, so nothing risky happens
+# unasked. ask: default yes. ask_no: default no, for the ones that can cut this computer off or restart it.
+ask() { local a; read -r -p "$1 [Y/n] " a </dev/tty 2>/dev/null || return 1; [[ ! "$a" =~ ^[Nn] ]]; }
+ask_no() { local a; read -r -p "$1 [y/N] " a </dev/tty 2>/dev/null || return 1; [[ "$a" =~ ^[Yy] ]]; }
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 MIRROR="" IMPORT="" SYSLOG=yes AGENT=yes
@@ -30,7 +34,7 @@ while [ $# -gt 0 ]; do
     --import) IMPORT=$(realpath "${2:?}"); shift 2 ;;
     --no-syslog) SYSLOG=no; shift ;;
     --no-agent) AGENT=no; shift ;;
-    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1 (--help lists them)" ;;
   esac
 done
@@ -43,12 +47,15 @@ sudo -v || die "needs sudo"
 
 # ---- packages and groups -----------------------------------------------------------------------------------------
 say "Installing git, Python, Docker and dumpcap (pacman)"
-sudo pacman -S --needed --noconfirm git python docker wireshark-cli iproute2 >/dev/null
+# -Syu: Arch supports no partial upgrades, and a few weeks' old package lists point at files mirrors have dropped.
+sudo pacman -Syu --needed --noconfirm git python docker wireshark-cli iproute2 >/dev/null
 sudo systemctl enable --now docker.service >/dev/null
+# Groups this session doesn't have yet (`id -nG` with no name: this process's, not the group file's). Added now,
+# they apply only after a restart: with linger on, the user manager the services run under outlives signing out.
 NEW_GROUPS=()
 for g in docker wireshark; do
-  if ! id -nG "$USER" | tr ' ' '\n' | grep -qx "$g"; then
-    sudo usermod -aG "$g" "$USER"
+  if ! id -nG | tr ' ' '\n' | grep -qx "$g"; then
+    id -nG "$USER" | tr ' ' '\n' | grep -qx "$g" || sudo usermod -aG "$g" "$USER"
     NEW_GROUPS+=("$g")
   fi
 done
@@ -65,8 +72,12 @@ printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHa
 
 # ---- the mirror interface ----------------------------------------------------------------------------------------
 if [ -z "$MIRROR" ]; then
-  mapfile -t wired < <(ip -o link show | awk -F': ' '{print $2}' | sed 's/@.*//' \
-    | grep -Ev '^(lo|wl|docker|br-|veth|virbr|tailscale|tun|tap|vnet)' || true)
+  # Physical wired ports: a device behind them, and not wireless (no bridges, tunnels, Docker or modem links).
+  wired=()
+  for d in /sys/class/net/*; do
+    [ -e "$d/device" ] && [ ! -e "$d/wireless" ] && [ ! -e "$d/phy80211" ] || continue
+    [ "$(cat "$d/type" 2>/dev/null)" = 1 ] && wired+=("$(basename "$d")")
+  done
   case ${#wired[@]} in
     0) die "no wired interface found. Plug in the cable to the mirror port (a USB Ethernet adapter is fine), then run this again" ;;
     1) MIRROR=${wired[0]}
@@ -81,7 +92,7 @@ fi
 if ip -o route show default | grep -q " dev $MIRROR "; then
   warn "$MIRROR is this computer's way to the internet right now. Once it's the mirror port it gets no address,"
   warn "so connect Wi-Fi or a second cable first, or this computer goes offline."
-  ask "Carry on?" || exit 1
+  ask_no "Carry on anyway?" || exit 1
 fi
 say "Leaving $MIRROR up with no address (the mirror port only receives copies)"
 if systemctl is-active --quiet NetworkManager; then
@@ -96,13 +107,15 @@ if systemctl is-active --quiet systemd-networkd; then
   printf '[Match]\nName=%s\n\n[Link]\nRequiredForOnline=no\nARP=no\n\n[Network]\nDHCP=no\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n' \
     "$MIRROR" | sudo tee /etc/systemd/network/05-tapwatch-mirror.network >/dev/null
   sudo networkctl reload
+  sudo networkctl reconfigure "$MIRROR"   # drops a DHCP client the old match had started
 fi
 sudo ip addr flush dev "$MIRROR" scope global 2>/dev/null || true
 sudo ip link set "$MIRROR" up
 
 # ---- firewall ----------------------------------------------------------------------------------------------------
 if [ "$SYSLOG" = yes ] && command -v ufw >/dev/null && sudo ufw status | grep -q '^Status: active'; then
-  lan=$(ip -o -4 route show default | awk '{print $5; exit}' | xargs -r ip -o -4 addr show dev | awk '{print $4; exit}')
+  dev=$(ip -o -4 route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')
+  lan=$([ -n "$dev" ] && ip -o -4 addr show dev "$dev" | awk '{print $4; exit}' || true)
   if [ -n "$lan" ]; then
     lan=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)' "$lan")
     say "Letting the router's logs in (ufw: UDP 5514 from $lan)"
@@ -120,8 +133,35 @@ say "Installing tapwatch's Python package"
 if [ -n "$IMPORT" ]; then
   [ ! -f config.yaml ] || die "this checkout already has a config.yaml; move it (and tapwatch.db) aside to import"
   say "Importing settings, cases and baselines from $(basename "$IMPORT")"
-  # Python's "data" filter refuses absolute paths, .. and links out of the folder, whatever the archive holds.
-  .venv/bin/python -c 'import sys, tarfile; tarfile.open(sys.argv[1]).extractall(".", filter="data")' "$IMPORT"
+  # Only the files a move carries (deploy/export-state.sh): config.yaml, .env, and the database, assets and own IOC
+  # list where that config.yaml puts them, inside this folder. Anything else in the archive is refused, so it can't
+  # replace code that runs as you. Python's "data" filter also refuses links and special files.
+  .venv/bin/python - "$IMPORT" <<'PY'
+import sys
+import tarfile
+from pathlib import PurePosixPath
+
+import yaml
+
+def norm(name):
+    p = PurePosixPath(name)
+    parts = [x for x in p.parts if x != "."]
+    if p.is_absolute() or ".." in parts or not parts:
+        sys.exit(f"refusing {name!r}: not a path inside the tapwatch folder")
+    return "/".join(parts)
+
+with tarfile.open(sys.argv[1]) as tar:
+    members = {norm(m.name): m for m in tar.getmembers() if m.isfile()}
+    if "config.yaml" not in members or ".env" not in members:
+        sys.exit("not a tapwatch export: it has no config.yaml or .env (make one with deploy/export-state.sh)")
+    cfg = yaml.safe_load(tar.extractfile(members["config.yaml"])) or {}
+    allowed = {"config.yaml", ".env"} | {norm(cfg[k]) for k in ("db_path", "assets_file", "ioc_file") if cfg.get(k)}
+    allowed.add(norm(cfg.get("db_path", "tapwatch.db")))
+    extra = sorted(set(members) - allowed)
+    if extra:
+        sys.exit(f"refusing the archive: it holds files a tapwatch export doesn't: {', '.join(extra[:5])}")
+    tar.extractall(".", members=list(members.values()), filter="data")
+PY
   chmod 600 .env
   # Settings that name the old computer: listed, not rewritten (config.yaml has the owner's comments).
   .venv/bin/python - <<'PY'
@@ -129,7 +169,8 @@ import yaml
 c = yaml.safe_load(open("config.yaml")) or {}
 ui, hc = c.get("ui") or {}, c.get("host_context") or {}
 for key, val in (("host_context.host", hc.get("host")), ("ui.host", ui.get("host")), ("ui.base_url", ui.get("base_url")),
-                 ("ui.zeek_dirs", ui.get("zeek_dirs")), ("feeds_dir", c.get("feeds_dir"))):
+                 ("ui.zeek_dirs", ui.get("zeek_dirs")), ("feeds_dir", c.get("feeds_dir")),
+                 ("smtp", "set" if c.get("smtp") else None)):
     if val:
         print(f"  {key}: {val}")
 PY
@@ -159,7 +200,7 @@ if [ ${#NEW_GROUPS[@]} -gt 0 ]; then
   echo
   say "Almost done: you were added to ${NEW_GROUPS[*]}, which takes a restart to apply. After it, tapwatch starts"
   say "by itself; check it with:  cd $REPO && .venv/bin/tapwatch doctor --send"
-  if ask "Restart now?"; then sudo systemctl reboot; fi
+  if ask_no "Restart now?"; then sudo systemctl reboot; fi
   exit 0
 fi
 systemctl --user restart 'tapwatch-*.service'

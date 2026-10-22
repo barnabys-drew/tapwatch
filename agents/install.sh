@@ -155,7 +155,7 @@ install_linux() {
     # Arch carries osquery in [extra], kept current (5.23.1 on 2026-10-21, as on the Windows agents), and its unit
     # reads /etc/osquery/osquery.flags and osquery.conf: the files write_flags puts there.
     say "Installing osquery (pacman)"
-    $SUDO pacman -S --needed --noconfirm osquery >/dev/null
+    $SUDO pacman -Syu --needed --noconfirm osquery >/dev/null   # -Syu: Arch supports no partial upgrades
   else
     die "no apt-get, dnf, yum or pacman found; install osquery from https://osquery.io/downloads by hand"
   fi

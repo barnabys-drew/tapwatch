@@ -9,7 +9,7 @@
 set -euo pipefail
 out=$(realpath -m "$1"); hours=${2:-12}
 dumpcap="/mnt/c/Program Files/Wireshark/dumpcap.exe"
-if [ -x "$dumpcap" ]; then
+if [ -f "$dumpcap" ]; then   # -f, not -x: a drvfs mount with an fmask hides the exec bit
   iface=${3:-Ethernet}
   idx=$("$dumpcap" -D | tr -d '\r' | awk -v n="($iface)" '$NF==n || substr($0, length($0)-length(n)+1)==n {sub(/\..*/,"",$1); print $1; exit}')
   [ -n "$idx" ] || { echo "no Npcap interface named $iface" >&2; exit 1; }

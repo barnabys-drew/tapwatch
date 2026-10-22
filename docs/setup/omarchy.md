@@ -39,8 +39,9 @@ questions (`tapwatch init`), and then:
 | `tapwatch update-feeds`, builds the Zeek image, `tapwatch service install` | the same services as the Windows install: alerter, case desk, watchdog, capture, syslog |
 | installs the osquery agent from Arch's own package (skip with `--no-agent`) | host context and the endpoint rules for this computer |
 
-If it added you to a group, it asks to restart: group changes apply at the next sign-in. After the restart,
-tapwatch starts by itself. Check it:
+If it added you to a group, it asks to restart (default no; answer y). Signing out isn't enough: your tapwatch
+services keep running across sign-outs, so they only get the new groups at a restart. After the restart, tapwatch
+starts by itself. Check it:
 
 ```bash
 cd ~/tapwatch && .venv/bin/tapwatch doctor --send
@@ -48,15 +49,17 @@ cd ~/tapwatch && .venv/bin/tapwatch doctor --send
 
 On Linux, doctor also checks the mirror interface (link, no address), the `wireshark` group, and sleep.
 
-Run `deploy/omarchy/install.sh` again at any time: every step checks what is already done. That's also how to
-update (`git pull` first).
+Run `deploy/omarchy/install.sh` again at any time (without `--import`): every step checks what is already done.
+That's also how to update (`git pull` first). It needs a terminal for its questions; over SSH use `ssh -t`, or
+every question is answered no.
 
 ## Moving an existing install
 
 To keep the cases, suppressions and learned baselines, so the new sensor doesn't start a new learning period:
 
 1. On the old computer, from its tapwatch folder: `deploy/export-state.sh`. It writes `tapwatch-state.tar.gz`
-   with `config.yaml`, `.env`, the assets file and a consistent copy of the database. The alerter can keep
+   with `config.yaml`, `.env`, the assets file, your own IOC list and a consistent copy of the database. The
+   import takes only those files from it. The alerter can keep
    running while it does. The file holds your alert addresses and keys, so copy it directly (scp, USB stick)
    and delete it afterwards.
 2. On the new computer: `deploy/omarchy/install.sh --import tapwatch-state.tar.gz`.

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Pack up a tapwatch install to move it to another computer (deploy/omarchy/install.sh --import <file>):
-# config.yaml, .env, the assets file and the database, which holds the cases, their notes and suppressions, and
-# every detector's learned baselines, so the new sensor doesn't start a new learning period.
+# config.yaml, .env, the assets file, your own IOC list (ioc_file) and the database, which holds the cases, their
+# notes and suppressions, and every detector's learned baselines, so the new sensor doesn't start a new learning
+# period. The public lists aren't packed: the new computer downloads them.
 #
 #   deploy/export-state.sh [tapwatch folder (default: this checkout)] [out file (default: ./tapwatch-state.tar.gz)]
 #
@@ -19,7 +20,8 @@ done
 py=$([ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-# The database and assets file where config.yaml says they are (db_path, assets_file), packed under those names.
+# The database, assets file and IOC list where config.yaml says they are (db_path, assets_file, ioc_file), packed
+# under those names. The assets file and IOC list are optional, as they are to tapwatch.
 "$py" - "$tmp" <<'PY'
 import shutil
 import sqlite3
@@ -30,13 +32,14 @@ import yaml
 
 out = Path(sys.argv[1])
 cfg = yaml.safe_load(open("config.yaml")) or {}
-db, assets = cfg.get("db_path", "tapwatch.db"), cfg.get("assets_file", "assets.yaml")
-for name in (db, assets):
+db = cfg.get("db_path", "tapwatch.db")
+optional = [cfg[k] for k in ("assets_file", "ioc_file") if cfg.get(k)]
+for name in (db, *optional):
     if Path(name).is_absolute() or ".." in Path(name).parts:
         sys.exit(f"{name}: only files inside the tapwatch folder can be moved this way; copy it by hand")
-    if not Path(name).is_file():
-        sys.exit(f"no {name} here")
-for name in ("config.yaml", ".env", assets):
+if not Path(db).is_file():
+    sys.exit(f"no database at {db}")
+for name in ("config.yaml", ".env", *(o for o in optional if Path(o).is_file())):
     (out / name).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(name, out / name)
 (out / db).parent.mkdir(parents=True, exist_ok=True)
