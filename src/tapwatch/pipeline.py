@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from . import detectors as det
-from . import evidence, hostrules, inventory, vulnkev
+from . import evidence, hostrules, inventory, vulnkev, zeek
 from .hostctx import HostContext
 from .models import Case, Route, Verdict
 from .notifiers import HerdrNotifier, Notifier
@@ -62,22 +62,29 @@ class Pipeline:
         self._pc_base: dict[int, set] = {}   # "this PC" address sets as configured, before follow_this_pc
         self._pc_warned: str | None = None
         self.vuln = next((d for d in detectors if isinstance(d, vulnkev.VulnKev)), None)
+        self.fleet = [d for d in detectors if isinstance(d, hostrules.FleetAgents)]
         self.device_kev = vulnkev.DeviceKev(store)   # #227
 
     def process(self, rec: dict) -> list[tuple[int, Case, Verdict | None, Route]]:
         """One record through every detector; a `{"_type": "tick", "ts": now}` record is the minute tick instead."""
         out = []
         tick = rec.get("_type") == "tick"
-        if not tick and rec.get("_type") == "osquery" and rec.get("action") == "snapshot":
+        if not tick and rec.get("_type") in ("osquery", zeek.FLEET_OSQUERY) and rec.get("action") == "snapshot":
             self.record_inventory(rec)
         for d in self.detectors:
             for case in (d.tick(rec["ts"]) if tick else d.feed(rec)):
                 handled = self.handle(case)
                 if handled:
                     out.append(handled)
-        if self.vuln is not None and self.vuln.resolved:
-            vulnkev.close_resolved(self.store, self.vuln)   # R48: patched since its case, so the case closes
+        for v in self._vulns():
+            if v.resolved:
+                vulnkev.close_resolved(self.store, v)   # R48: patched since its case, so the case closes
         return out
+
+    def _vulns(self) -> list[vulnkev.VulnKev]:
+        """R48 for this PC, and for every computer enrolled in Fleet."""
+        out = [self.vuln] if self.vuln is not None else []
+        return out + [v for f in self.fleet for v in f.vulns()]
 
     def record_inventory(self, rec: dict) -> None:
         """Software and OS snapshots from the endpoint agents go to the inventory tables (#224); the detectors

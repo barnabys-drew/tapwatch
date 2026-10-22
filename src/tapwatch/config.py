@@ -187,8 +187,15 @@ def host_log_dirs(cfg: dict) -> list[str]:
     the endpoint rules (hostrules.py): `run` follows them like Zeek's directories (zeek.LOG_TYPES names the
     files). Only directories that exist, so a box without an agent changes nothing."""
     h = cfg.get("host_context") or {}
-    dirs = {str(Path(p).parent) for p in (h.get("results_logs") or HOST_LOGS) if Path(p).is_file()}
+    logs = list(h.get("results_logs") or HOST_LOGS) + [p for p in [fleet_results_log(cfg)] if p]
+    dirs = {str(Path(p).parent) for p in logs if Path(p).is_file()}
     return sorted(dirs)
+
+
+def fleet_results_log(cfg: dict) -> str | None:
+    """`fleet: {results_log: <path>}`: the results log a Fleet server writes for every enrolled agent (#14,
+    deploy/fleet). Its rows are other computers' (zeek.FLEET_OSQUERY), each read by its own set of host rules."""
+    return ((cfg.get("fleet") or {}).get("results_log")) or None
 
 
 def hostctx(cfg: dict) -> HostContext | None:

@@ -52,7 +52,9 @@ Results go to `/var/log/osquery/osqueryd.results.log` (macOS and Linux) or
 `C:\Program Files\osquery\log\osqueryd.results.log` (Windows).
 
 **Fleet.** Point the agents at a [Fleet](https://fleetdm.com) server to query
-every machine from one place. Put the settings in `agent.env` once (copy
+every machine from one place, and to bring other computers into tapwatch's endpoint rules
+([docs/setup/fleet.md](../docs/setup/fleet.md): `deploy/fleet` runs one, and `deploy/fleet/agent-bundle.sh` builds
+the one file a computer needs). Put the settings in `agent.env` once (copy
 [agent.env.example](agent.env.example)), and every install picks them up:
 
 ```bash

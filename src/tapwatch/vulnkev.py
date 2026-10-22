@@ -68,7 +68,7 @@ class VulnKev(Detector):
             except OSError:
                 mtime = None
             if self._index is None or mtime != self._index_mtime:
-                self._index, self._index_mtime = vulns.VulnIndex.load(self.feeds_dir), mtime
+                self._index, self._index_mtime = _load_index(self.feeds_dir, mtime), mtime
         return self._index or vulns.VulnIndex()
 
     def feed(self, rec: dict) -> list[Case]:
@@ -149,6 +149,16 @@ class VulnKev(Detector):
 
 
 _dpkg_key = functools.cmp_to_key(inventory.dpkg_compare)
+
+
+_INDEXES: dict[str, tuple] = {}   # feeds dir -> (kev.json mtime, index): Fleet's per-agent rules share one copy
+
+
+def _load_index(feeds_dir: str, mtime) -> vulns.VulnIndex:
+    hit = _INDEXES.get(feeds_dir)
+    if hit is None or hit[0] != mtime:
+        _INDEXES[feeds_dir] = hit = (mtime, vulns.VulnIndex.load(feeds_dir))
+    return hit[1]
 
 
 def close_resolved(store, det: VulnKev) -> int:

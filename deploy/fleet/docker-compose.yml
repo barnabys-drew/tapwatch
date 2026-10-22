@@ -1,0 +1,62 @@
+# Fleet (https://fleetdm.com) for tapwatch: one place the endpoint agents on every computer enroll, get their
+# scheduled queries from, and send results to (#14). tapwatch reads the results log Fleet writes here, the same
+# osquery JSON it reads from a local agent.
+#
+#   cp deploy/fleet/env.example deploy/fleet/.env    # then set the passwords
+#   mkdir -p deploy/fleet/logs                        # first, as you: Docker would create it owned by root
+#   docker compose -f deploy/fleet/docker-compose.yml --env-file deploy/fleet/.env up -d
+#
+# Fleet listens on 127.0.0.1:8412 only, in plain HTTP. The agents insist on HTTPS, so something in front ends TLS:
+# `tailscale serve` on this computer (docs/setup/fleet.md), which gives Fleet a real certificate on the tailnet.
+# Results and status logs land in ./logs next to this file (FLEET_LOG_DIR), rotated by Fleet.
+name: tapwatch-fleet
+services:
+  mysql:
+    image: mysql:8.4.7
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: fleet
+      MYSQL_USER: fleet
+      MYSQL_PASSWORD: ${FLEET_MYSQL_PASSWORD:?set FLEET_MYSQL_PASSWORD in deploy/fleet/.env}
+    volumes: [mysql:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u fleet -p\"$$MYSQL_PASSWORD\" --silent"]
+      interval: 10s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.6-alpine
+    volumes: [redis:/data]
+    restart: unless-stopped
+
+  fleet:
+    image: fleetdm/fleet:v4.93.2
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_started}
+    # Migrations first (a no-op when the schema is current), then the server.
+    command: ["sh", "-c", "fleet prepare db --no-prompt && exec fleet serve"]
+    environment:
+      FLEET_MYSQL_ADDRESS: mysql:3306
+      FLEET_MYSQL_DATABASE: fleet
+      FLEET_MYSQL_USERNAME: fleet
+      FLEET_MYSQL_PASSWORD: ${FLEET_MYSQL_PASSWORD}
+      FLEET_REDIS_ADDRESS: redis:6379
+      FLEET_SERVER_TLS: "false"            # TLS ends at tailscale serve
+      FLEET_SERVER_PRIVATE_KEY: ${FLEET_SERVER_PRIVATE_KEY:?set FLEET_SERVER_PRIVATE_KEY in deploy/fleet/.env}
+      FLEET_OSQUERY_RESULT_LOG_PLUGIN: filesystem
+      FLEET_OSQUERY_STATUS_LOG_PLUGIN: filesystem
+      FLEET_FILESYSTEM_RESULT_LOG_FILE: /logs/osqueryd.results.log
+      FLEET_FILESYSTEM_STATUS_LOG_FILE: /logs/osqueryd.status.log
+      FLEET_FILESYSTEM_ENABLE_LOG_ROTATION: "true"
+      FLEET_FILESYSTEM_MAX_SIZE: "100"     # MB per file before Fleet rotates it
+      FLEET_FILESYSTEM_MAX_BACKUPS: "5"
+    user: "${FLEET_UID:-1000}:${FLEET_GID:-1000}"   # logs owned by the account tapwatch runs as
+    ports: ["127.0.0.1:8412:8080"]
+    volumes: ["${FLEET_LOG_DIR:-./logs}:/logs"]
+    restart: unless-stopped
+
+volumes:
+  mysql:
+  redis:
