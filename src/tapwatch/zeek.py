@@ -25,6 +25,9 @@ LOG_TYPES = {"conn.log": "conn", "dns.log": "dns", "ssl.log": "ssl", "http.log":
              "osqueryd.results.log": "osquery", "osqueryd.snapshots.log": "osquery"}
 
 
+FLEET_OSQUERY = "fleet_osquery"
+
+
 def _parse_line(line: str, kind: str) -> dict | None:
     line = line.strip()
     if not line or line.startswith("#"):
@@ -41,6 +44,12 @@ def _parse_line(line: str, kind: str) -> dict | None:
             rec["ts"] = float(rec.get("unixTime") or 0)
         except (TypeError, ValueError):
             rec["ts"] = 0.0
+        name = str(rec.get("name") or "")
+        if name.startswith("pack/"):
+            # Fleet (#14) sends its scheduled queries in a pack, so their results are named pack/Global/<query>
+            # (or pack/<team>/<query>). They come from other computers: their own type, read per agent
+            # (hostrules.FleetAgents), never by the rules for the PC tapwatch runs on.
+            rec["_type"], rec["name"] = FLEET_OSQUERY, name.rsplit("/", 1)[-1]
     return rec
 
 
