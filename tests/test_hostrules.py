@@ -18,6 +18,7 @@ from tapwatch.hostrules import (
     EndpointState,
     FileChanged,
     FilesStaged,
+    FleetAgents,
     LinuxCommand,
     LinuxSuspiciousConnect,
     LolbinConnects,
@@ -345,8 +346,9 @@ def test_wsl_nat_snapshot_never_moves_the_host_off_the_lan():
 
 def test_names_are_code_only_and_build_wires_them():
     assert set(NAMES) <= CODE_ONLY
-    dets = build({"host_context": {"host": PC}})
+    *dets, fleet = build({"host_context": {"host": PC}})
     assert [d.name for d in dets] == list(NAMES) and len({id(d.state) for d in dets}) == 1
+    assert isinstance(fleet, FleetAgents)                    # last: the computers enrolled in Fleet, each with these rules
     assert dets[0].state.host == PC
     for d in dets:
         assert d.feed(conn(T0)) == [] and d.feed(dns(T0, "a.example")) == []               # Zeek records: not ours

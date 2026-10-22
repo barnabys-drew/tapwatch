@@ -27,6 +27,7 @@ outgoing connections, 7,423 DNS lookups. The per-rule comments cite what each wo
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 from dataclasses import dataclass
 from typing import ClassVar
@@ -61,6 +62,9 @@ from .hostctx import (
     _sysmon_ts,
 )
 from .models import Case
+from .zeek import FLEET_OSQUERY
+
+log = logging.getLogger(__name__)
 
 OSQUERY = "osquery"
 SNAPSHOT = "outbound_connections"   # Windows, every minute: program and parent per socket
@@ -187,9 +191,10 @@ class EndpointState:
     the wrong host (review of PR #87), which splits the dedupe key and misses same-device suppressions.
     Until an address is known the cases name the PC as `PC_UNKNOWN`, never an empty string."""
 
-    def __init__(self, host: str = "", gateways: list[str] | None = None):
+    def __init__(self, host: str = "", gateways: list[str] | None = None, unknown: str = ""):
         self.configured = host
         self._host = host
+        self.unknown = unknown or PC_UNKNOWN   # Fleet's agents: their name, not "this PC", until an address is known
         # the router's networks (network.gateways, documented as one router per /24): the LAN address is the one
         # on a router's /24; a /16 or /23 LAN falls back to the old order. Measured 2026-10-17: the WSL agent in
         # mirrored mode also lists 10.255.255.254, which sorted ahead of 192.168.x and gave three host cases a host
@@ -206,7 +211,7 @@ class EndpointState:
 
     @property
     def host(self) -> str:
-        return self._host or PC_UNKNOWN
+        return self._host or self.unknown
 
     def update_addresses(self, rows: list[dict], ts: float = 0.0) -> None:
         addrs = {str(r.get("address")) for r in rows if r.get("address")}
@@ -1500,12 +1505,22 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
     """The endpoint rules, sharing one EndpointState. `detectors.host_rules: {enabled: false}` turns them off;
     `detectors.<name>: {reported_days: N}` tunes one. The PC's address starts as `host_context.host` and follows
     the agent's `host_addresses` snapshots (the same rows host context uses). `warmup` is the network detectors'
-    clock (the one the pipeline persists), so R23 learns the existing entries during the same first day."""
+    clock (the one the pipeline persists), so R23 learns the existing entries during the same first day.
+    FleetAgents, last, reads the computers enrolled in Fleet, each with a set of these rules of its own."""
     d = cfg.get("detectors", {})
     if (d.get("host_rules") or {}).get("enabled", True) is False:
         return []
-    state = EndpointState((cfg.get("host_context") or {}).get("host") or "",
-                          [str(g) for g in (cfg.get("network") or {}).get("gateways") or ()])
+    state = EndpointState((cfg.get("host_context") or {}).get("host") or "", _gateways(cfg))
+    return rules_for(cfg, state, warmup) + [FleetAgents(cfg)]
+
+
+def _gateways(cfg: dict) -> list[str]:
+    return [str(g) for g in (cfg.get("network") or {}).get("gateways") or ()]
+
+
+def rules_for(cfg: dict, state: EndpointState, warmup: Warmup | None = None) -> list[Detector]:
+    """One computer's host rules, sharing `state`."""
+    d = cfg.get("detectors", {})
     classes = (EncodedCommand, AppSpawnsShell, TempFolderConnects, LolbinConnects, BadSignatureConnects)
     rules = [cls(state, **d.get(cls.name, {})) for cls in classes]
     rules.append(NewPersistence(state, warmup=warmup or Warmup(cfg.get("warmup_seconds", 86400)),
@@ -1528,3 +1543,83 @@ def build(cfg: dict, warmup: Warmup | None = None) -> list[Detector]:
         rules.append(vulnkev.VulnKev(state, feeds_dir=cfg.get("feeds_dir", "feeds"), index=cfg.get("_vuln_index"),
                                      **opts))
     return rules
+
+
+class FleetAgents(Detector):
+    """#14. The computers enrolled in Fleet (deploy/fleet): every agent gets the full set of host rules, with its own
+    EndpointState, warm-up and learned state, as if tapwatch ran on it.
+
+    Fleet writes every agent's results to one log (`fleet.results_log`), keyed by `hostIdentifier` (the agent's
+    uuid, --host_identifier=uuid). A shared state would mix two PCs' process starts, signatures and persistence
+    inventories; separate rule sets keep each one's first-run inventory (R23, R26), learning week (R36, R38) and
+    address (from its own `host_addresses` snapshots). Until a snapshot names the address, its cases name the
+    computer by the hostname Fleet's decorator adds. A new agent learns quietly for `warmup_seconds`, from its
+    own first row. Persisted per agent; at most MAX_AGENTS (the least recently heard is forgotten first)."""
+
+    name = "fleet_agents"
+    PERSIST: ClassVar[tuple[str, ...]] = ("agents",)
+    MAX_AGENTS = 200
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        # agent uuid -> {"host", "label", "warmup_start", "seen", "rules": {rule name: its snapshot}}; persisted
+        self.agents: dict[str, dict] = {}
+        self.live: dict[str, list[Detector]] = {}
+
+    def rules(self, agent: str, label: str) -> list[Detector]:
+        if agent in self.live:
+            return self.live[agent]
+        saved = self.agents.get(agent) or {}
+        state = EndpointState("", _gateways(self.cfg), unknown=f"{saved.get('label') or label} (address not known yet)")
+        state._host = saved.get("host") or ""
+        warmup = Warmup(self.cfg.get("warmup_seconds", 86400))
+        warmup.start = saved.get("warmup_start")
+        rules = rules_for(self.cfg, state, warmup)
+        for r in rules:
+            if r.PERSIST and r.name in (saved.get("rules") or {}):
+                try:
+                    r.restore(saved["rules"][r.name])
+                except Exception as e:  # noqa: BLE001 - one rule's old shape shouldn't cost the agent its others
+                    log.warning("fleet agent %s: discarding saved state for %s: %s", agent, r.name, e)
+        self.live[agent] = rules
+        self.agents.setdefault(agent, {"label": label})
+        return rules
+
+    def feed(self, rec: dict) -> list[Case]:
+        agent = str(rec.get("hostIdentifier") or "")
+        if rec.get("_type") != FLEET_OSQUERY or not agent:
+            return []
+        label = str((rec.get("decorations") or {}).get("hostname") or agent[:8])
+        rules = self.rules(agent, label)
+        self.agents[agent]["seen"] = float(rec.get("ts") or 0)
+        if len(self.agents) > self.MAX_AGENTS:
+            gone = min(self.agents, key=lambda a: self.agents[a].get("seen") or 0)
+            self.agents.pop(gone)
+            self.live.pop(gone, None)
+        r = dict(rec, _type=OSQUERY)
+        return [c for d in rules for c in d.feed(r)]
+
+    def tick(self, now: float) -> list[Case]:
+        return [c for rules in self.live.values() for d in rules for c in d.tick(now)]
+
+    def flush(self) -> list[Case]:
+        return [c for rules in self.live.values() for d in rules for c in d.flush()]
+
+    def vulns(self) -> list[vulnkev.VulnKev]:
+        """Each agent's R48 rule, so the pipeline closes their fixed cases too."""
+        return [d for rules in self.live.values() for d in rules if isinstance(d, vulnkev.VulnKev)]
+
+    def snapshot(self) -> dict:
+        for agent, rules in self.live.items():
+            if agent not in self.agents:
+                continue
+            state = rules[0].state
+            warmup = next((getattr(d, "warmup", None) for d in rules if isinstance(getattr(d, "warmup", None), Warmup)),
+                          None)
+            self.agents[agent].update(host=state._host, warmup_start=warmup.start if warmup else None,
+                                      rules={d.name: d.snapshot() for d in rules if d.PERSIST})
+        return super().snapshot()
+
+    def restore(self, data: dict) -> None:
+        super().restore(data)
+        self.live.clear()   # rebuilt per agent from `agents` at its next row
