@@ -1,17 +1,17 @@
 """agents/config/osquery.conf as Fleet specs (#14): what an agent enrolled in Fleet runs, generated so the two can't drift.
 
-    python tools/fleet_config.py > deploy/fleet/tapwatch.yml      # tests/test_fleet_config.py checks it is current
+    python tools/fleet_config.py > deploy/fleet/tapwatch.yml      # tests/test_fleet.py checks it is current
     fleetctl apply -f deploy/fleet/tapwatch.yml
 
 A standalone agent reads osquery.conf from disk. An enrolled one gets its config from Fleet: the `options` and
 `file_paths` become Fleet's agent options, and every scheduled query becomes a Fleet query with automations on
 (its results go to Fleet's results log, which tapwatch follows) and `discard_data` (Fleet keeps no copy; tapwatch
 has them). Fleet sends the queries to the agents in a pack, so a result's `name` arrives as `pack/Global/<query>`;
-tapwatch strips that prefix (zeek.osquery_name).
+zeek._parse_line strips that prefix and types the record fleet_osquery.
 
 What doesn't carry over: osquery's per-query `denylist: false` (bpf_connections, bpf_process_events). Fleet's
-query spec has no such field, so through Fleet a restart that catches either query mid-run can skip it for a day;
-R22 reports the silent feed. Command-line flags (event publishers, the Sysmon channel) are set on each machine by
+query spec has no such field, so through Fleet a restart that catches either query mid-run can skip it for a day,
+and R22 doesn't watch Fleet's agents (a computer switched off is not a broken feed). Command-line flags (event publishers, the Sysmon channel) are set on each machine by
 the installers, as in standalone mode.
 """
 

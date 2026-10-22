@@ -4,7 +4,7 @@ import json
 
 import yaml
 from conftest import T0
-from test_hostrules import PS, WORD, addrs, start
+from test_hostrules import PS, WORD, addrs, start, task
 
 from tapwatch import config, zeek
 from tapwatch.detectors import decode, encode
@@ -58,6 +58,19 @@ def test_a_new_agent_learns_its_existing_persistence_quietly():
     task = {"name": "updater", "action": "C:\\Users\\Public\\x.exe", "path": "\\updater", "enabled": "1"}
     first = {"name": "scheduled_tasks", "unixTime": T0, "ts": T0, "action": "added", "counter": 0, "columns": task}
     assert fleet.feed(via_fleet(first, FAMILY)) == [] and fleet.flush() == []
+
+
+def test_a_new_agents_learning_day_starts_at_its_first_row():
+    # Review of #270: the first-run inventory is learned without asking the warm-up, so the window opened at the
+    # first new task, days later, and learned that task with it.
+    fleet = FleetAgents(CFG)
+    inventory = [dict(task(T0, f"vendor{i}", "C:\\Program Files\\Vendor\\up.exe"), counter=0) for i in range(3)]
+    for r in inventory:
+        fleet.feed(via_fleet(r, FAMILY))
+    later = T0 + 3 * 86400
+    fleet.feed(via_fleet(dict(task(later, "updater", "C:\\Users\\Public\\x.exe"), counter=5), FAMILY))
+    cases = fleet.flush()
+    assert [c.detector for c in cases] == ["host_persist"]
 
 
 def test_agents_survive_a_restart():

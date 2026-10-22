@@ -3,6 +3,7 @@
 # osquery JSON it reads from a local agent.
 #
 #   cp deploy/fleet/env.example deploy/fleet/.env    # then set the passwords
+#   mkdir -p deploy/fleet/logs                        # first, as you: Docker would create it owned by root
 #   docker compose -f deploy/fleet/docker-compose.yml --env-file deploy/fleet/.env up -d
 #
 # Fleet listens on 127.0.0.1:8412 only, in plain HTTP. The agents insist on HTTPS, so something in front ends TLS:

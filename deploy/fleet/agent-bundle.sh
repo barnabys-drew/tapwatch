@@ -13,13 +13,25 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 out=$(realpath -m "${1:-$HOME/tapwatch-agent.zip}")
-set -a; . "$HERE/.env"; set +a
-: "${FLEET_URL:?set FLEET_URL in deploy/fleet/.env: the https address the agents reach Fleet at}"
-: "${FLEET_API_TOKEN:?set FLEET_API_TOKEN in deploy/fleet/.env (docs/setup/fleet.md)}"
+# Only the two values this needs, read rather than sourced: the file also holds the database password and the
+# server key, which no child process here should see.
+env_value() { sed -n "s/^$1=//p" "$HERE/.env" | tail -1; }
+FLEET_URL=$(env_value FLEET_URL)
+token=$(env_value FLEET_API_TOKEN)
+[ -n "$FLEET_URL" ] || { echo "set FLEET_URL in deploy/fleet/.env: the https address the agents reach Fleet at" >&2; exit 1; }
+[ -n "$token" ] || { echo "set FLEET_API_TOKEN in deploy/fleet/.env (docs/setup/fleet.md)" >&2; exit 1; }
 api=${FLEET_API_URL:-http://127.0.0.1:8412}
-secret=$(curl -fsS -H "Authorization: Bearer $FLEET_API_TOKEN" "$api/api/v1/fleet/spec/enroll_secret" \
+# The token goes to curl on stdin, not its command line, where every account on this computer could read it (ps).
+secret=$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+  | curl -fsS --config - "$api/api/v1/fleet/spec/enroll_secret" \
   | python3 -c 'import json, sys; s = json.load(sys.stdin)["spec"]["secrets"]; print(s[0]["secret"] if s else "")')
+unset token
 [ -n "$secret" ] || { echo "Fleet has no enroll secret yet: add one under Hosts > Manage enroll secrets" >&2; exit 1; }
+# agent.env is read as plain KEY=value by both installers (install.sh sources it; install.ps1 doesn't unquote), so
+# only values that need no quoting. Fleet's generated secrets are letters, digits and +/=.
+for v in "$FLEET_URL" "$secret"; do
+  [[ "$v" =~ ^[A-Za-z0-9._:/+=-]+$ ]] || { echo "the Fleet URL or enroll secret has characters agent.env can't carry" >&2; exit 1; }
+done
 FLEET_URL=$FLEET_URL ENROLL_SECRET=$secret python3 - "$REPO/agents" "$out" <<'PY'
 import os
 import sys
@@ -39,6 +51,7 @@ try:
                    f"FLEET_URL={os.environ['FLEET_URL']}\nENROLL_SECRET={os.environ['ENROLL_SECRET']}\nFLEET_CERT=\n")
 finally:
     os.umask(old)
+out.chmod(0o600)   # an older ZIP being overwritten keeps its mode otherwise
 PY
 echo "wrote $out: unzip it on the other computer, then double-click tapwatch-agent\\install.cmd (Windows)"
 echo "or run tapwatch-agent/install.sh (Linux, macOS)"

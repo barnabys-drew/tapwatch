@@ -1554,7 +1554,10 @@ class FleetAgents(Detector):
     inventories; separate rule sets keep each one's first-run inventory (R23, R26), learning week (R36, R38) and
     address (from its own `host_addresses` snapshots). Until a snapshot names the address, its cases name the
     computer by the hostname Fleet's decorator adds. A new agent learns quietly for `warmup_seconds`, from its
-    own first row. Persisted per agent; at most MAX_AGENTS (the least recently heard is forgotten first)."""
+    own first row. Persisted per agent; at most MAX_AGENTS (the least recently heard is forgotten first).
+
+    Records are told apart by name (zeek: `pack/...` is Fleet's), so the PC tapwatch runs on stays standalone: an
+    agent there enrolled in Fleet stops writing its local log (docs/setup/fleet.md)."""
 
     name = "fleet_agents"
     PERSIST: ClassVar[tuple[str, ...]] = ("agents",)
@@ -1566,14 +1569,17 @@ class FleetAgents(Detector):
         self.agents: dict[str, dict] = {}
         self.live: dict[str, list[Detector]] = {}
 
-    def rules(self, agent: str, label: str) -> list[Detector]:
+    def rules(self, agent: str, label: str, ts: float) -> list[Detector]:
         if agent in self.live:
             return self.live[agent]
         saved = self.agents.get(agent) or {}
         state = EndpointState("", _gateways(self.cfg), unknown=f"{saved.get('label') or label} (address not known yet)")
         state._host = saved.get("host") or ""
         warmup = Warmup(self.cfg.get("warmup_seconds", 86400))
-        warmup.start = saved.get("warmup_start")
+        # The agent's learning day starts at its first row. Left to the rules, it would start at the first entry they
+        # judge: the first-run inventory is learned without asking, so a new task days later would open the window
+        # and be learned with it (review of #270).
+        warmup.start = saved.get("warmup_start") or ts or None
         rules = rules_for(self.cfg, state, warmup)
         for r in rules:
             if r.PERSIST and r.name in (saved.get("rules") or {}):
@@ -1590,10 +1596,11 @@ class FleetAgents(Detector):
         if rec.get("_type") != FLEET_OSQUERY or not agent:
             return []
         label = str((rec.get("decorations") or {}).get("hostname") or agent[:8])
-        rules = self.rules(agent, label)
-        self.agents[agent]["seen"] = float(rec.get("ts") or 0)
+        ts = float(rec.get("ts") or 0)
+        rules = self.rules(agent, label, ts)
+        self.agents[agent]["seen"] = ts
         if len(self.agents) > self.MAX_AGENTS:
-            gone = min(self.agents, key=lambda a: self.agents[a].get("seen") or 0)
+            gone = min((a for a in self.agents if a != agent), key=lambda a: self.agents[a].get("seen") or 0)
             self.agents.pop(gone)
             self.live.pop(gone, None)
         r = dict(rec, _type=OSQUERY)

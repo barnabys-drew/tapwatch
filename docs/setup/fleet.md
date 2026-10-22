@@ -13,11 +13,12 @@ On the computer that runs tapwatch, from the tapwatch checkout:
 
 ```bash
 cp deploy/fleet/env.example deploy/fleet/.env      # fill in the two secrets: openssl rand -base64 32
+mkdir -p deploy/fleet/logs                          # as you, first: Docker would create it owned by root
 docker compose -f deploy/fleet/docker-compose.yml --env-file deploy/fleet/.env up -d
 ```
 
 This starts Fleet, MySQL and Redis. Fleet listens on `127.0.0.1:8412` only. Its results log lands in
-`FLEET_LOG_DIR` (default `deploy/fleet/logs`), owned by your account.
+`FLEET_LOG_DIR` (default `deploy/fleet/logs`; if you set another, create that one first too).
 
 ## 2. HTTPS through Tailscale
 
@@ -66,6 +67,9 @@ Then `systemctl --user restart tapwatch-alerter`.
 ```bash
 deploy/fleet/agent-bundle.sh          # writes ~/tapwatch-agent.zip
 ```
+
+Not the computer tapwatch runs on: its agents stay standalone. An enrolled agent sends its results to Fleet
+instead of its local log, and tapwatch's rules and host context for this PC read that log.
 
 Copy the ZIP to the other computer (it holds the enroll secret, so copy it directly and delete it afterwards). Make
 sure Tailscale is signed in there. Then unzip it and:
