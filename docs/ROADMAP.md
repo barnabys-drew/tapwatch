@@ -6,32 +6,61 @@ of truth for individual items; this page is the why and the order._
 ```mermaid
 flowchart LR
     A["<b>v0.1</b> · shipped 2026-10-13<br/>network detection, guardrailed AI triage,<br/>case desk, Linux + Windows install"]
-    B["<b>v0.2</b> · next<br/>prove it outside one house:<br/>long-running test, clean installs"]
-    C["<b>v0.3</b><br/>endpoint rules: living off the land,<br/>per OS, then installed software"]
+    B["<b>v0.2</b> · shipped 2026-10-20<br/>prove it outside one house:<br/>long-running test, clean installs"]
+    B2["<b>v0.2.5</b> · done 2026-10-20<br/>easy install: one-step Windows<br/>installer, tapwatch doctor"]
+    C["<b>v0.3</b> · built, closing<br/>endpoint rules: living off the land,<br/>per OS, then installed software"]
     D["<b>Later</b><br/>Fleet, richer TLS and domain intel,<br/>packages and images"]
     E["<b>v0.4</b><br/>learning from history: 30-day behavior,<br/>a judge that does tier-1 triage"]
     F["<b>v0.5</b><br/>home XDR: email, DNS, identity<br/>and endpoint signals, one-tap response"]
-    A --> B --> C --> D --> E --> F
+    A --> B --> B2 --> C --> D --> E --> F
     style A fill:#2e7d32,color:#fff
-    style B fill:#f9a825,color:#000
+    style B fill:#2e7d32,color:#fff
+    style B2 fill:#2e7d32,color:#fff
+    style C fill:#f9a825,color:#000
 ```
 
 ## Where we are
 
-**v0.1.1** is the current release; tapwatch has been running on a real home network since v0.1.0 shipped. It watches a mirror
-port with Zeek, runs 34 case types from 32 plain-code detectors, and asks a small AI model (Jev) for
-triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
+**[v0.2.0](https://github.com/barnabys-drew/tapwatch/releases/tag/v0.2.0)** is the current release (2026-10-20);
+tapwatch has been running on a real home network since v0.1.0 shipped. It watches a mirror port with Zeek, runs
+22 network and 17 host case types from plain-code detectors, and asks a small AI model (Jev) for triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
 the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Area | State |
 |---|---|
-| Network detection | **Solid.** 22 network case types (plus 12 host ones), baselines that survive restarts, a scripted self-check at 27/27 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
+| Network detection | **Solid.** 22 network case types, baselines that survive restarts, a scripted self-check at 27/27 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
-| Linux install | **Solid.** `docker compose up`, verified end to end on a live interface |
-| Windows install | **Works on one PC.** WSL + Npcap services; a clean-machine test is still to do |
-| Host context (who on the PC made this traffic) | **Verified live on test shapes** (2026-10-17): the owner-named eff.org test (#413) exposed two gaps, fixed the same day (#114, #117); a tampered binary's connection raised R21 (#429, see DESIGN R21). Accuracy against the owner's dispositions is tracked week by week by the benchmark, and a live case was still mis-capped once that day (#132), so it does not yet lower alerts on its own |
+| Linux install | **Solid.** `docker compose up`, verified end to end on a live interface. Zeek runs from a patched 9.0 LTS image as the user, not root ([#252](https://github.com/barnabys-drew/tapwatch/pull/252)). A native host install for Arch-based desktops (Omarchy) is in progress |
+| Windows install | **Passed on a clean machine.** The one-step installer went from the ZIP to a test alert on a fresh Windows 11 VM (v0.2.5, [#175](https://github.com/barnabys-drew/tapwatch/issues/175)), and `tapwatch doctor` names what's wrong. The first outside install is next |
+| Host context (who on the PC made this traffic) | **A week of real data reviewed** (v0.2, [#4](https://github.com/barnabys-drew/tapwatch/issues/4)): a program named for 106 of 136 PC cases, consistent with the owner's review. The intent verdicts never fired on real traffic and stay unmeasured, so host context still does not lower alerts on its own |
+| Endpoint rules | **Built** on Windows (osquery + Sysmon) and Linux (osquery eBPF): R17–R29 and R36–R39, plus R48 known-exploited software. A host case and a network case on the same PC pair only when the host rule names that network rule (`hostrules.PAIRS`). v0.3 closes after R39's first week |
 | Router syslog | **Verified on a live gateway** (2026-10-16). CEF events and firewall lines parsed as sent; admin logins checked against a real line. IPS verdicts still await a real detection |
 | macOS | **Later.** Waiting on a tester with a Mac; it won't ship untested |
+
+### 2026-10-20 to 10-21: v0.3 built, vulnerable software, less noise
+
+- **v0.3's last rules**: R36 remote-access tools, R37 tunnels, R38 staging, R39 persistence and credential files
+  ([#235](https://github.com/barnabys-drew/tapwatch/pull/235), [#236](https://github.com/barnabys-drew/tapwatch/pull/236),
+  [#238](https://github.com/barnabys-drew/tapwatch/pull/238)). Each one's safe test raised its case on the live PC.
+  Those runs also showed every test case lifted to an alert by an unrelated digest item, so a host rule now names
+  the network rules that tell its story, and only those pair with it (`hostrules.PAIRS`,
+  [#240](https://github.com/barnabys-drew/tapwatch/pull/240), [#242](https://github.com/barnabys-drew/tapwatch/pull/242))
+- **Vulnerable software** (v0.5's first piece): a software inventory from the agents, CISA KEV, OSV and NVD data
+  through `update-feeds` (downloads only), and R48 `vuln_kev`, which also raises the device's other cases while
+  it's open ([#253](https://github.com/barnabys-drew/tapwatch/pull/253), [#257](https://github.com/barnabys-drew/tapwatch/pull/257))
+- **Zeek 9.0 LTS** with Debian's fixes: 30 critical and 312 high findings down to 0 fixable, and capture runs as
+  the user ([#252](https://github.com/barnabys-drew/tapwatch/pull/252))
+- **The Linux eBPF connection feed** went silent for a day: osquery was restarted mid-query and denylisted it. Its
+  lookups now read one process instead of all of /proc (5.2 s to 0.5 s on 300 rows), and both eBPF feeds are never
+  denylisted ([#244](https://github.com/barnabys-drew/tapwatch/pull/244))
+- **Noise cut from live cases**: `upload_spike` spreads a long connection's bytes over its life, so a 25-hour
+  session no longer reads as a one-hour burst ([#259](https://github.com/barnabys-drew/tapwatch/pull/259)); Windows'
+  own scheduled rundll32, a two-adapter PC and read-only tunnel commands stop raising cases
+  ([#250](https://github.com/barnabys-drew/tapwatch/pull/250)); R22 counts silence across restarts
+  ([#246](https://github.com/barnabys-drew/tapwatch/pull/246))
+- **R16** says whether a remote-control session's other end is another device in the house, and sends it to the
+  digest when both ends are labelled ([#261](https://github.com/barnabys-drew/tapwatch/pull/261)); `ioc_match`
+  gained the AdFection / Candiru spyware indicators, tiered ([#248](https://github.com/barnabys-drew/tapwatch/pull/248))
 
 ### 2026-10-17: the monitor watches itself
 
@@ -78,7 +107,7 @@ Host context grew from "which program" to "is that program OK", and the Windows 
 v0.1 is tuned on one network. v0.2 is about evidence that it holds up elsewhere and over time, and that
 someone else can install it without help.
 
-**Done 2026-10-20.** Everything in it closed: Sysmon command lines, connections and DNS lookups for Windows
+**Done 2026-10-20**, released as [v0.2.0](https://github.com/barnabys-drew/tapwatch/releases/tag/v0.2.0). Everything in it closed: Sysmon command lines, connections and DNS lookups for Windows
 cases (#15), a clean-machine Windows install (#6), the router's own events (#7, #8), and a week of real host-context
 data reviewed (#4, [results](../eval/RESULTS.md#first-week-on-a-live-network-and-host-context-4-2026-10-13-to-2026-10-20)):
 attribution named the program for 106 of 136 PC cases, consistent with the owner's review; the intent verdicts
@@ -106,6 +135,8 @@ The clean-machine test (#6) worked, but took an expert most of an afternoon. The
 all of this: a Windows PC in a UniFi office, installing alone from the docs. So: one installer that does every
 step a script can, one command that says what's wrong, and one guide in plain words.
 
+**Done 2026-10-20**, shipped in v0.2.0. The first outside install is ready to send.
+
 **Done when** a fresh Windows 11 machine goes from the downloaded ZIP to a test alert with nothing typed but the
 installer's questions, and `tapwatch doctor` reports every problem the #6 run hit by name.
 
@@ -132,13 +163,17 @@ and cloud CLIs, vulnerable drivers and DLL hijacks. Most of those work on every 
 **Done when:** one rule each on Windows and Linux runs end to end, from an installed agent to a routed case, with the
 agent's log locked down.
 
+**Built 2026-10-20.** Every rule is on `main`, and each safe test raised its case on the live PC. The milestone stays
+open for R39: it ships at digest until a week of file-event volume is measured (from 2026-10-20, so around
+2026-10-27), and then its severity-4 cases alert.
+
 | Issue | What | Status |
 |---|---|---|
-| [#26](https://github.com/barnabys-drew/tapwatch/issues/26) | Framework: osquery process events, host detectors, network correlation | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): the agent's osquery logs are a log source and `hostrules.py` raises host cases. Host ↔ network correlation built 2026-10-17 (five-minute window, measured on the live history); persistence snapshots are R23. Left: a locked-down results log |
-| [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): R17–R21, 0 cases on 34.5 h of the main PC's agent log. Pass 2 started 2026-10-17 with R23, new persistence entries (tasks, services, startup items, cron, launchd), measured on 40 h: 6 digest items, 0 alerts. R24 the same day: backups, logs, Defender or accounts changed, 0 such starts in 40 h. 2026-10-18: R25 discovery bursts, R26 browser extensions, WMI subscriptions in R23. Left: LSASS access (needs Sysmon event 10) |
+| [#26](https://github.com/barnabys-drew/tapwatch/issues/26) | Framework: osquery process events, host detectors, network correlation | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): the agent's osquery logs are a log source and `hostrules.py` raises host cases. Host ↔ network correlation built 2026-10-17 (five-minute window, measured on the live history); persistence snapshots are R23. **Done** 2026-10-18: the results log is readable only by its owner ([#166](https://github.com/barnabys-drew/tapwatch/pull/166)). Since 2026-10-20 a host case pairs only with the network rules it names (`hostrules.PAIRS`, [#240](https://github.com/barnabys-drew/tapwatch/pull/240)) |
+| [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): R17–R21, 0 cases on 34.5 h of the main PC's agent log. Pass 2 started 2026-10-17 with R23, new persistence entries (tasks, services, startup items, cron, launchd), measured on 40 h: 6 digest items, 0 alerts. R24 the same day: backups, logs, Defender or accounts changed, 0 such starts in 40 h. 2026-10-18: R25 discovery bursts, R26 browser extensions, WMI subscriptions in R23. **Done** 2026-10-18 with R29, lsass memory reads ([#166](https://github.com/barnabys-drew/tapwatch/pull/166)), baseline measured |
 | [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | **done** 2026-10-18 ([#148](https://github.com/barnabys-drew/tapwatch/pull/148), [#155](https://github.com/barnabys-drew/tapwatch/pull/155), [#169](https://github.com/barnabys-drew/tapwatch/pull/169)): R27, R28, and R23 on Linux (SSH keys, systemd units, SUID programs, kernel modules, ld.so.preload, privileged containers, bind shells); baselines measured 2026-10-19 |
-| [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools) | **designed** 2026-10-20: R36 remote-access tools (#230), R37 tunnels (#231), R38 staging (#232); drivers, DLL hijacks and the rest moved to #233 |
-| [#167](https://github.com/barnabys-drew/tapwatch/issues/167) | R39: file-change monitoring for persistence and credential paths (osquery file_events, Sysmon event 11) | **designed** 2026-10-20 |
+| [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools) | **built** 2026-10-20: R36 remote-access tools (#230, [#235](https://github.com/barnabys-drew/tapwatch/pull/235)), R37 tunnels (#231) and R38 staging (#232, [#236](https://github.com/barnabys-drew/tapwatch/pull/236)); safe tests passed live ([#240](https://github.com/barnabys-drew/tapwatch/pull/240)). Drivers, DLL hijacks and the rest moved to #233 under Later |
+| [#167](https://github.com/barnabys-drew/tapwatch/issues/167) | R39: file-change monitoring for persistence and credential paths (osquery file_events, Sysmon event 11) | **built** 2026-10-20 ([#238](https://github.com/barnabys-drew/tapwatch/pull/238)), safe test passed live; digest-only until a week's file-event volume is measured |
 
 ## Later ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/2))
 
@@ -147,16 +182,21 @@ Ordered by theme, not date.
 - **macOS**, once there's a Mac to test on: basic support for the tapwatch box ([#5](https://github.com/barnabys-drew/tapwatch/issues/5)) and
   macOS living-off-the-land rules ([#29](https://github.com/barnabys-drew/tapwatch/issues/29))
 - **More endpoints:** host context for other computers through a Fleet server ([#14](https://github.com/barnabys-drew/tapwatch/issues/14))
-- **Sharper detection:** JA4 TLS fingerprints ([#16](https://github.com/barnabys-drew/tapwatch/issues/16)), the Public Suffix List ([#17](https://github.com/barnabys-drew/tapwatch/issues/17)), a
-  newly-registered-domains feed ([#18](https://github.com/barnabys-drew/tapwatch/issues/18)), IPv6 exposure ([#19](https://github.com/barnabys-drew/tapwatch/issues/19)), jitter-tolerant beacons
-  ([#24](https://github.com/barnabys-drew/tapwatch/issues/24))
+- **Living off the land, part 2:** vulnerable drivers, DLL hijacks, browsers, Office add-ins and trusted sites
+  ([#233](https://github.com/barnabys-drew/tapwatch/issues/233))
+- **Sharper detection:** JA4 TLS fingerprints ([#16](https://github.com/barnabys-drew/tapwatch/issues/16)) and a
+  newly-registered-domains feed ([#18](https://github.com/barnabys-drew/tapwatch/issues/18)). Done: the Public Suffix List
+  ([#17](https://github.com/barnabys-drew/tapwatch/issues/17)), IPv6 exposure ([#19](https://github.com/barnabys-drew/tapwatch/issues/19)) and
+  jitter-tolerant beacons ([#24](https://github.com/barnabys-drew/tapwatch/issues/24))
 - **AI triage:** majority vote for borderline calls ([#21](https://github.com/barnabys-drew/tapwatch/issues/21)); a triage
   agent built with LangGraph on the owner's own GKE cluster that investigates before it decides: the device's
   other cases, how similar cases were closed, and host context, all through read-only tools that return
   Jev-style summaries and disposition labels, never notes, IPs or MACs. It is opt-in. The router's guardrails
   still apply to its verdict, and it runs in shadow mode against Jev first ([#263](https://github.com/barnabys-drew/tapwatch/issues/263))
-- **Packaging and ops:** a container image and PyPI package ([#22](https://github.com/barnabys-drew/tapwatch/issues/22)), a watchdog for every capture
-  path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)), TCP/TLS syslog ([#25](https://github.com/barnabys-drew/tapwatch/issues/25)), a same-switch VLAN guide ([#23](https://github.com/barnabys-drew/tapwatch/issues/23))
+- **Packaging and ops:** a container image and PyPI package ([#22](https://github.com/barnabys-drew/tapwatch/issues/22)), TCP/TLS syslog
+  ([#25](https://github.com/barnabys-drew/tapwatch/issues/25)), a same-switch VLAN guide ([#23](https://github.com/barnabys-drew/tapwatch/issues/23)).
+  Done: a watchdog for every capture path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)). In progress: a native host
+  install for Arch-based Linux desktops (Omarchy)
 - [x] Benchmark the progress: a running report from the case history of noise rate, Jev agreement
   with the triage disposition and host-context accuracy, week by week, on the stats page and as
   `tapwatch benchmark` Markdown (asked 2026-10-16, built 2026-10-17, [#130](https://github.com/barnabys-drew/tapwatch/pull/130));
@@ -207,10 +247,10 @@ shown before it runs, recorded, and undoable.
 | [#55](https://github.com/barnabys-drew/tapwatch/issues/55) | Response actions: one-tap quarantine and block, always owner-approved | designed 2026-10-20 (#214–#217) |
 | [#56](https://github.com/barnabys-drew/tapwatch/issues/56) | Canary tokens: fake credentials and files that alert when touched | designed 2026-10-20 (#218–#220) |
 | [#57](https://github.com/barnabys-drew/tapwatch/issues/57) | Identity signals: account sign-ins from new devices or places | designed 2026-10-20 (#221–#223) |
-| [#58](https://github.com/barnabys-drew/tapwatch/issues/58) | Vulnerable software: installed programs checked against known vulnerabilities | built 2026-10-20 (#224–#227): inventory, KEV/OSV/NVD feeds, R48 `vuln_kev`, other cases raised on the device |
+| [#58](https://github.com/barnabys-drew/tapwatch/issues/58) | Vulnerable software: installed programs checked against known vulnerabilities | **built** 2026-10-20 (#224–#227, [#253](https://github.com/barnabys-drew/tapwatch/pull/253), [#257](https://github.com/barnabys-drew/tapwatch/pull/257)): inventory, KEV/OSV/NVD feeds, R48 `vuln_kev`, other cases raised on the device. Open until the agents' software queries run live and a real snapshot goes through R48 |
 
-The v0.5 designs are sub-issues of each row above. Rule numbers: R30–R35 are v0.4, R40–R48 v0.5, and R36–R39
-are kept for v0.3's remaining rules (#39, #167).
+The v0.5 designs are sub-issues of each row above. Rule numbers: R30–R35 are v0.4, R40–R48 v0.5 (R48 built), and
+R36–R39 are v0.3's last rules (#39, #167), now built.
 
 ## Not planned
 
