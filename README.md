@@ -189,6 +189,10 @@ Add `--profile syslog` for the router syslog listener, or `--profile ids` for Su
 endpoint agent and the services, restarting once, and finishes with `tapwatch doctor`
 ([the guide](docs/setup/office-unifi.md); each step by hand: [docs/setup/windows.md](docs/setup/windows.md)).
 
+**Omarchy or Arch Linux:** `deploy/omarchy/install.sh` from a checkout. It turns the computer into the sensor:
+packages, the mirror interface, no sleep, the services, the agent and `tapwatch doctor`. It can also move an
+existing install over with its cases and baselines ([the guide](docs/setup/omarchy.md)).
+
 **Linux without Docker:** run tapwatch as systemd user services with
 `tapwatch service install --zeek-dir <dir>`.
 
