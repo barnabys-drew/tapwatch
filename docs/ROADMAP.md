@@ -150,7 +150,11 @@ Ordered by theme, not date.
 - **Sharper detection:** JA4 TLS fingerprints ([#16](https://github.com/barnabys-drew/tapwatch/issues/16)), the Public Suffix List ([#17](https://github.com/barnabys-drew/tapwatch/issues/17)), a
   newly-registered-domains feed ([#18](https://github.com/barnabys-drew/tapwatch/issues/18)), IPv6 exposure ([#19](https://github.com/barnabys-drew/tapwatch/issues/19)), jitter-tolerant beacons
   ([#24](https://github.com/barnabys-drew/tapwatch/issues/24))
-- **AI triage:** majority vote for borderline calls ([#21](https://github.com/barnabys-drew/tapwatch/issues/21))
+- **AI triage:** majority vote for borderline calls ([#21](https://github.com/barnabys-drew/tapwatch/issues/21)); a triage
+  agent built with LangGraph on the owner's own GKE cluster that investigates before it decides: the device's
+  other cases, how similar cases were closed, and host context, all through read-only tools that return
+  Jev-style summaries and disposition labels, never notes, IPs or MACs. It is opt-in. The router's guardrails
+  still apply to its verdict, and it runs in shadow mode against Jev first ([#263](https://github.com/barnabys-drew/tapwatch/issues/263))
 - **Packaging and ops:** a container image and PyPI package ([#22](https://github.com/barnabys-drew/tapwatch/issues/22)), a watchdog for every capture
   path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)), TCP/TLS syslog ([#25](https://github.com/barnabys-drew/tapwatch/issues/25)), a same-switch VLAN guide ([#23](https://github.com/barnabys-drew/tapwatch/issues/23))
 - [x] Benchmark the progress: a running report from the case history of noise rate, Jev agreement
@@ -210,8 +214,10 @@ are kept for v0.3's remaining rules (#39, #167).
 
 ## Not planned
 
-Cloud hosting, multi-site management, a mobile app, or a SIEM. tapwatch stays one small box that keeps
-data at home and stays quiet unless something matters.
+A hosted service, multi-site management, a mobile app, or a SIEM. tapwatch stays one small box that keeps
+data at home and stays quiet unless something matters. The triage agent (#263) would be the only piece running
+on cloud infrastructure the owner operates. Like Jev and the AI categorizer, it is opt-in, and it sees only redacted
+summaries.
 
 ## How work lands
 
