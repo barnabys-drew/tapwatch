@@ -18,6 +18,7 @@ Start with the [project README](../README.md) for what tapwatch does and how to 
 - [setup/mirror-port.md](setup/mirror-port.md): configure a managed switch to mirror the router port
 - [setup/router-syslog.md](setup/router-syslog.md): send the router's IPS and admin events to tapwatch, and when Suricata adds anything
 - [setup/windows.md](setup/windows.md): run tapwatch on a Windows PC (Npcap + WSL)
+- [setup/omarchy.md](setup/omarchy.md): run tapwatch on an Omarchy (Arch Linux) computer, or move an install to one
 - [../agents/README.md](../agents/README.md): endpoint agents (osquery, plus Sysmon on Windows) for host context
 
 ## Evidence and plans
