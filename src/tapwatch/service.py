@@ -1,8 +1,8 @@
 """`tapwatch service install`: run tapwatch unattended as systemd *user* services (no root).
 
-For a Linux install without Docker, and for the Windows path, where everything but Npcap runs
-inside WSL (which has systemd). With Docker on Linux, use deploy/docker-compose.yml instead:
-its restart policies do the same job.
+For a Linux host (deploy/omarchy/install.sh) and for the Windows path, where everything but Npcap runs
+inside WSL (which has systemd). In both, the capture is dumpcap on the mirror NIC streaming into Zeek in
+Docker (eval/capture_mirror.sh). deploy/docker-compose.yml is the all-containers alternative.
 
 The units run the same Python and the same tapwatch code as the command that installed them,
 from a working directory holding config.yaml, .env and the database. That suits a repo
@@ -58,9 +58,9 @@ def units(home: str, zeek_dir: str, capture_iface: str | None = None, syslog: bo
             f"/bin/bash {REPO}/eval/watchdog.sh {shlex.quote(zeek_dir)} 300", home, restart="always",
             extra=f"Environment=TAPWATCH_HOME={home}\nEnvironment=\"TAPWATCH_CMD={python} -m tapwatch.cli\"\n"),
     }
-    if capture_iface:  # Windows + WSL: Npcap's dumpcap on Windows streams into Zeek in Docker
+    if capture_iface:  # dumpcap on the mirror NIC (Npcap's on Windows, the distro's on Linux) into Zeek in Docker
         out["tapwatch-capture.service"] = _unit(
-            "tapwatch capture (Npcap mirror NIC -> Zeek)",
+            "tapwatch capture (mirror NIC -> Zeek)",
             f"{REPO}/eval/capture_mirror.sh {shlex.quote(zeek_dir)} 87600 {shlex.quote(capture_iface)}", home,
             restart="always",
             extra="ExecStartPre=-/usr/bin/docker rm -f tapwatch-mirror\nExecStopPost=-/usr/bin/docker rm -f tapwatch-mirror\n")

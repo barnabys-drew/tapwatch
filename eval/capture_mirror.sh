@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
-# Whole-house capture on Windows+WSL: dumpcap (Npcap, promiscuous) on the mirror
-# NIC streams pcap to Zeek in Docker, which writes JSON logs for tapwatch.
-#   eval/capture_mirror.sh <out-dir> [hours] [npcap-interface-name]
-# WSL can't capture the mirror itself: Windows drops frames for other MACs unless
-# Npcap puts the NIC in promiscuous mode, so the capture must happen on Windows.
+# Whole-house capture: dumpcap (promiscuous) on the mirror NIC streams pcap to Zeek in Docker, which writes JSON
+# logs for tapwatch.
+#   eval/capture_mirror.sh <out-dir> [hours] [interface]
+# Windows+WSL: the interface is the Npcap adapter name ("Ethernet 2"). WSL can't capture the mirror itself: Windows
+# drops frames for other MACs unless Npcap puts the NIC in promiscuous mode, so dumpcap.exe runs on Windows.
+# Linux (Omarchy, any distro): the interface is the kernel name (enp0s31f6) and the distro's dumpcap captures it,
+# allowed by its capabilities to members of the `wireshark` group.
 set -euo pipefail
-out=$(realpath -m "$1"); hours=${2:-12}; iface=${3:-Ethernet}
+out=$(realpath -m "$1"); hours=${2:-12}
 dumpcap="/mnt/c/Program Files/Wireshark/dumpcap.exe"
-idx=$("$dumpcap" -D | tr -d '\r' | awk -v n="($iface)" '$NF==n || substr($0, length($0)-length(n)+1)==n {sub(/\..*/,"",$1); print $1; exit}')
-[ -n "$idx" ] || { echo "no Npcap interface named $iface" >&2; exit 1; }
+if [ -f "$dumpcap" ]; then   # -f, not -x: a drvfs mount with an fmask hides the exec bit
+  iface=${3:-Ethernet}
+  idx=$("$dumpcap" -D | tr -d '\r' | awk -v n="($iface)" '$NF==n || substr($0, length($0)-length(n)+1)==n {sub(/\..*/,"",$1); print $1; exit}')
+  [ -n "$idx" ] || { echo "no Npcap interface named $iface" >&2; exit 1; }
+else
+  iface=${3:?name the mirror interface, e.g. enp0s31f6}
+  dumpcap=$(command -v dumpcap) || { echo "dumpcap not found: install wireshark-cli (Arch) or the wireshark package" >&2; exit 1; }
+  [ -e "/sys/class/net/$iface" ] || { echo "no network interface named $iface (ip -br link lists them)" >&2; exit 1; }
+  idx=$iface
+fi
 mkdir -p "$out"
 img=$("$(dirname "$(realpath "$0")")/zeek_image.sh")
 # Zeek runs as this user (it reads a pcap stream on stdin and needs no privileges). Until 2026-10-20 it ran as

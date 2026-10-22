@@ -199,7 +199,7 @@ def check_router(units: list[str], zeek_dir: Path, now: float, new: bool = False
         when = "nothing has arrived" if age is None else f"nothing for {_mins(age)}"
         return [Result(FAIL, "Router", f"the router isn't sending its logs: {when}",
                        "in UniFi, set the SIEM/syslog server to this PC's address, port 5514; on Windows, add the two "
-                       "firewall rules in docs/setup/router-syslog.md")]
+                       "firewall rules in docs/setup/router-syslog.md; on Linux with ufw: sudo ufw allow 5514/udp")]
     return [Result(OK, "Router", f"router logs arriving ({_mins(age)} ago)")]
 
 
@@ -304,6 +304,71 @@ def check_windows(run=_run) -> list[Result]:
     return out
 
 
+def capture_iface_from_units(unit_dir: Path = service.UNIT_DIR) -> str | None:
+    """The mirror interface `service install --capture-iface` gave the capture unit (its last argument)."""
+    try:
+        text = (unit_dir / "tapwatch-capture.service").read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("ExecStart="):
+            try:
+                words = shlex.split(line.removeprefix("ExecStart="))
+            except ValueError:
+                return None
+            return words[-1] if len(words) >= 4 else None
+    return None
+
+
+SLEEP_TARGETS = ("sleep.target", "suspend.target", "hibernate.target", "hybrid-sleep.target")
+
+
+def check_linux_host(units: list[str], run=_run, unit_dir: Path = service.UNIT_DIR,
+                     sys_net: Path = Path("/sys/class/net"), wsl: bool | None = None,
+                     host: str | None = None) -> list[Result]:
+    """A Linux host capturing the mirror itself (deploy/omarchy/install.sh): the parts the Windows side covers on
+    WSL. The mirror NIC, dumpcap's permission to capture, sleep, and whether `host_context.host` is this machine
+    (a config moved from another computer still names that one). Skipped on WSL and without a capture unit."""
+    if (Path("/mnt/c/Windows").exists() if wsl is None else wsl) or "tapwatch-capture" not in units:
+        return []
+    out = []
+    if host:
+        words = run(["ip", "-o", "addr", "show", "scope", "global"])[1].split()
+        mine = {words[i + 1].split("/")[0] for i, w in enumerate(words[:-1]) if w in ("inet", "inet6")}
+        if mine and host not in mine:
+            out.append(Result(WARN, "PC agent", f"host_context.host is {host}, which isn't this computer, so "
+                              "cases about that one would be explained with this one's programs",
+                              "in config.yaml set host_context: {host: <this computer's IP>}, then restart tapwatch"))
+    iface = capture_iface_from_units(unit_dir)
+    if not iface:
+        return out
+    state = None
+    try:
+        state = (sys_net / iface / "operstate").read_text().strip()
+    except OSError:
+        out.append(Result(FAIL, "Mirror NIC", f"there is no network interface named {iface}",
+                          "ip -br link lists them; then tapwatch service install ... --capture-iface <name>"))
+    if state is not None:
+        if state not in ("up", "unknown"):
+            out.append(Result(FAIL, "Mirror NIC", f"{iface} is {state}: no link",
+                              "check the cable from this computer to the switch's mirror port"))
+        elif run(["ip", "-o", "addr", "show", "dev", iface, "scope", "global"])[1].strip():
+            out.append(Result(WARN, "Mirror NIC", f"{iface} has an IP address; the mirror port should have none",
+                              "run deploy/omarchy/install.sh again, or tell the network manager to leave it alone"))
+        else:
+            out.append(Result(OK, "Mirror NIC", f"{iface} is up with no address"))
+    if os.geteuid() != 0 and "wireshark" not in run(["id", "-nG"])[1].split():
+        out.append(Result(FAIL, "Capture", "this account can't capture (not in the wireshark group)",
+                          f"sudo usermod -aG wireshark {os.environ.get('USER', '$USER')}, then restart the computer"))
+    enabled = run(["systemctl", "is-enabled", *SLEEP_TARGETS])[1].split()
+    if enabled and any(e != "masked" for e in enabled):
+        out.append(Result(WARN, "Sleep", "this computer can go to sleep, and then nothing is watched",
+                          "sudo systemctl mask " + " ".join(SLEEP_TARGETS)))
+    elif enabled:
+        out.append(Result(OK, "Sleep", "sleep is off"))
+    return out
+
+
 def this_pc_addresses(cfg: dict) -> set[str]:
     net = cfg.get("network") or {}
     found = set(net.get("admin_devices") or [])
@@ -333,6 +398,7 @@ def run_all(cfg: dict, cfg_path: str, zeek_dir: str, now: float | None = None, r
     results += check_vuln_feeds(cfg, now)
     results += check_disk(Path("."))
     results += check_windows(run)
+    results += check_linux_host(units, run, unit_dir, host=(cfg.get("host_context") or {}).get("host"))
     return results
 
 

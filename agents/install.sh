@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install osquery and start it as a service.
 #   macOS: Homebrew (brew install --cask osquery)
-#   Linux: osquery's official apt or dnf/yum repository
+#   Linux: osquery's official apt or dnf/yum repository; on Arch (Omarchy) the distro's own package
 #
 #   ./install.sh                          standalone: scheduled queries log to local files
 #   ./install.sh --fleet-url https://fleet.lan:8080 --enroll-secret XXXX [--fleet-cert fleet.pem]
@@ -151,8 +151,13 @@ install_linux() {
     curl -fsSL https://pkg.osquery.io/rpm/osquery-s3-rpm.repo | $SUDO tee /etc/yum.repos.d/osquery-s3-rpm.repo >/dev/null
     say "Installing osquery"
     $SUDO "$pm" install -y -q osquery
+  elif command -v pacman >/dev/null; then
+    # Arch carries osquery in [extra], kept current (5.23.1 on 2026-10-21, as on the Windows agents), and its unit
+    # reads /etc/osquery/osquery.flags and osquery.conf: the files write_flags puts there.
+    say "Installing osquery (pacman)"
+    $SUDO pacman -Syu --needed --noconfirm osquery >/dev/null   # -Syu: Arch supports no partial upgrades
   else
-    die "no apt-get, dnf or yum found; install osquery from https://osquery.io/downloads by hand"
+    die "no apt-get, dnf, yum or pacman found; install osquery from https://osquery.io/downloads by hand"
   fi
 
   local dir=/etc/osquery

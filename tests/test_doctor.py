@@ -139,3 +139,42 @@ def test_send_failure_is_a_failed_line_not_a_traceback(tmp_path, monkeypatch, ca
     assert cli.main(["doctor", "--zeek-dir", str(tmp_path), "--send"]) == 1
     out = capsys.readouterr().out
     assert "[FAIL] Test alert" in out and "403" in out
+
+
+def test_a_linux_host_checks_its_mirror_nic_capture_rights_and_sleep(tmp_path, monkeypatch):
+    units = tmp_path / "units"
+    touch(units / "tapwatch-capture.service", text="ExecStart=/r/eval/capture_mirror.sh /h/logs/zeek 87600 enp0s31f6\n")
+    net = tmp_path / "net"
+    touch(net / "enp0s31f6" / "operstate", text="up\n")
+    monkeypatch.setattr(doctor.os, "geteuid", lambda: 1000)
+    answers = {"ip": "", "id": "owner wheel wireshark docker\n", "systemctl": "masked\nmasked\nmasked\nmasked\n"}
+
+    def run(cmd, timeout=10):
+        return 0, answers[cmd[0]]
+
+    def check():
+        return {r.part: r for r in doctor.check_linux_host(["tapwatch-capture"], run, units, net, wsl=False)}
+    r = check()
+    assert [r[p].level for p in ("Mirror NIC", "Sleep")] == [doctor.OK, doctor.OK] and "Capture" not in r
+    answers.update(ip="2: enp0s31f6    inet 192.168.50.30/24 brd 192.168.50.255 scope global dynamic\n",
+                   id="owner wheel docker\n", systemctl="masked\nstatic\nstatic\nstatic\n")
+    r = check()
+    assert r["Mirror NIC"].level == doctor.WARN and r["Capture"].level == doctor.FAIL
+    assert "usermod -aG wireshark" in r["Capture"].fix and "mask sleep.target" in r["Sleep"].fix
+    touch(net / "enp0s31f6" / "operstate", text="down\n")
+    assert check()["Mirror NIC"].level == doctor.FAIL
+    assert doctor.check_linux_host(["tapwatch-capture"], run, units, net, wsl=True) == []
+    assert doctor.check_linux_host(["tapwatch-alerter"], run, units, net, wsl=False) == []
+
+
+def test_a_config_moved_from_another_computer_names_the_wrong_host(tmp_path):
+    units = touch(tmp_path / "tapwatch-capture.service", text="ExecStart=/r/capture_mirror.sh /z 87600 enp1s0\n").parent
+    addrs = ("2: wlan0    inet 192.168.50.30/24 brd 192.168.50.255 scope global dynamic wlan0\n"
+             "2: wlan0    inet6 fd00::30/64 scope global\n")
+
+    def run(cmd, timeout=10):
+        return 0, addrs if cmd[:2] == ["ip", "-o"] and "dev" not in cmd else ""
+    moved = doctor.check_linux_host(["tapwatch-capture"], run, units, tmp_path, wsl=False, host="192.168.50.20")
+    assert next(r.part for r in moved if r.level == doctor.WARN) == "PC agent"
+    here = doctor.check_linux_host(["tapwatch-capture"], run, units, tmp_path, wsl=False, host="192.168.50.30")
+    assert "PC agent" not in [r.part for r in here]
