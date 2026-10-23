@@ -396,7 +396,7 @@ def cmd_import_state(args, cfg) -> int:
 
     try:
         settings = migrate.import_state(args.file)
-    except (migrate.ImportRefused, OSError, ValueError) as e:
+    except (migrate.ImportRefused, OSError) as e:
         print(f"tapwatch import-state: {e}", file=sys.stderr)
         return 1
     print("Imported settings, cases and learned baselines.")

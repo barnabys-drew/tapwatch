@@ -307,6 +307,11 @@ $needSettings = $LASTEXITCODE -ne 0
 $discordUrl, $typesafeKey, $anthropicKey = "", "", ""
 if (-not $needSettings) {
     Note "tapwatch is already set up in Ubuntu: keeping its settings (alerts, keys)."
+    if ($import) {
+        Warn "So $(Split-Path -Leaf $import) was NOT taken over. To use it instead, in Ubuntu move ~/tapwatch/config.yaml"
+        Warn "and ~/tapwatch/tapwatch.db aside (mkdir ~/tapwatch/old; mv ~/tapwatch/config.yaml ~/tapwatch/tapwatch.db ~/tapwatch/old/),"
+        Warn "then run this installer again."
+    }
     $import = $null
 } elseif ($import) {
     Note "The alert settings and keys come from the old computer's tapwatch."
@@ -367,6 +372,7 @@ $vars = @{ TW_ANSWERS = ($answersJson | ConvertTo-Json -Compress); TW_IFACE = $i
 if ($import) {
     if (-not (Test-Path $import)) { Stop-Install "the export $import isn't there any more; put it back next to install-windows.cmd" }
     $vars.TW_IMPORT = ((Quiet { & wsl.exe -d $Distro -u root -e wslpath -a $import }) -join "").Trim()
+    if (-not $vars.TW_IMPORT) { Stop-Install "Ubuntu can't see $import; move it to a folder without unusual characters and run this again" }
 }
 Invoke-Linux $linuxUser @("app", $RepoUrl, $Branch) $vars
 $discordUrl, $typesafeKey, $anthropicKey, $vars, $answersJson = "", "", "", $null, $null

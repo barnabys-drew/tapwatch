@@ -327,12 +327,23 @@ def check_this_host(host: str | None, run=_run) -> list[Result]:
     """Whether `host_context.host` is this computer: a config moved from another computer (tapwatch import-state)
     still names that one, and cases about it would be explained with this one's programs. WSL in mirrored mode
     lists Windows' own addresses; in NAT mode it only has its 172.x address, so nothing is concluded there."""
-    if not host:
+    try:
+        want = ipaddress.ip_address(str(host or ""))
+    except ValueError:
         return []
     words = run(["ip", "-o", "addr", "show", "scope", "global"])[1].split()
-    mine = {words[i + 1].split("/")[0] for i, w in enumerate(words[:-1]) if w in ("inet", "inet6")}
-    lan = {a for a in mine if ":" not in a and not a.startswith("172.") and a != "10.255.255.254"}
-    if not lan or host in mine:
+    mine = set()
+    for i, w in enumerate(words[:-1]):
+        if w in ("inet", "inet6"):
+            try:
+                mine.add(ipaddress.ip_address(words[i + 1].split("/")[0]))
+            except ValueError:
+                continue
+    # WSL in NAT mode has only its own 172.16/12 address (and WSL's DNS proxy, 10.255.255.254): an office LAN in
+    # 172.16/12 counts once another address shows this is mirrored mode or a plain Linux host.
+    wsl_nat = ipaddress.ip_network("172.16.0.0/12")
+    v4 = {a for a in mine if a.version == 4 and str(a) != "10.255.255.254"}
+    if not v4 or all(a in wsl_nat for a in v4) and want not in wsl_nat or want in mine:
         return []
     return [Result(WARN, "PC agent", f"host_context.host is {host}, which isn't this computer, so cases about that "
                    "one would be explained with this one's programs",
