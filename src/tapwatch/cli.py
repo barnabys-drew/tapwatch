@@ -391,6 +391,22 @@ def cmd_doctor(args, cfg) -> int:
     return 1 if any(r.level == doctor.FAIL for r in results) else 0
 
 
+def cmd_import_state(args, cfg) -> int:
+    from . import migrate
+
+    try:
+        settings = migrate.import_state(args.file)
+    except (migrate.ImportRefused, OSError) as e:
+        print(f"tapwatch import-state: {e}", file=sys.stderr)
+        return 1
+    print("Imported settings, cases and learned baselines.")
+    if settings:
+        print("These settings came from the old computer; point them at this one in config.yaml:")
+        for line in settings:
+            print(f"  {line}")
+    return 0
+
+
 def cmd_test_alert(args, cfg) -> int:
     if args.herdr:
         h = config.herdr(cfg)
@@ -496,6 +512,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--zeek-dir", help="the log dir `run` watches (default: the one `service install` used)")
     s.add_argument("--send", action="store_true", help="also send a test alert")
     s.set_defaults(fn=cmd_doctor)
+
+    s = sub.add_parser("import-state", help="take over another computer's tapwatch (from deploy/export-state.sh)")
+    s.add_argument("file", help="the tapwatch-state.tar.gz export-state wrote")
+    s.set_defaults(fn=cmd_import_state)
 
     s = sub.add_parser("test-alert", help="send a sample alert")
     s.add_argument("--herdr", action="store_true", help="pop a test notification in Herdr instead")

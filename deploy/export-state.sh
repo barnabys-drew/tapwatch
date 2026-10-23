@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Pack up a tapwatch install to move it to another computer (deploy/omarchy/install.sh --import <file>):
+# Pack up a tapwatch install to move it to another computer (Windows: put the file next to install-windows.cmd
+# before running it; Omarchy/Arch: deploy/omarchy/install.sh --import <file>; any install: tapwatch import-state):
 # config.yaml, .env, the assets file, your own IOC list (ioc_file) and the database, which holds the cases, their
 # notes and suppressions, and every detector's learned baselines, so the new sensor doesn't start a new learning
 # period. The public lists aren't packed: the new computer downloads them.
@@ -48,4 +49,5 @@ src.backup(dst)  # consistent while the alerter keeps writing
 dst.close()
 PY
 (umask 077 && tar -czf "$out" -C "$tmp" .)
-echo "wrote $out ($(du -h "$out" | cut -f1)); on the new computer: deploy/omarchy/install.sh --import $(basename "$out")"
+echo "wrote $out ($(du -h "$out" | cut -f1)). On the new computer (Windows): put it next to install-windows.cmd, then"
+echo "run the installer. Omarchy/Arch: deploy/omarchy/install.sh --import $(basename "$out")"

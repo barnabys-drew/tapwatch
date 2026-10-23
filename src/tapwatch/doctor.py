@@ -323,22 +323,40 @@ def capture_iface_from_units(unit_dir: Path = service.UNIT_DIR) -> str | None:
 SLEEP_TARGETS = ("sleep.target", "suspend.target", "hibernate.target", "hybrid-sleep.target")
 
 
+def check_this_host(host: str | None, run=_run) -> list[Result]:
+    """Whether `host_context.host` is this computer: a config moved from another computer (tapwatch import-state)
+    still names that one, and cases about it would be explained with this one's programs. WSL in mirrored mode
+    lists Windows' own addresses; in NAT mode it only has its 172.x address, so nothing is concluded there."""
+    try:
+        want = ipaddress.ip_address(str(host or ""))
+    except ValueError:
+        return []
+    words = run(["ip", "-o", "addr", "show", "scope", "global"])[1].split()
+    mine = set()
+    for i, w in enumerate(words[:-1]):
+        if w in ("inet", "inet6"):
+            try:
+                mine.add(ipaddress.ip_address(words[i + 1].split("/")[0]))
+            except ValueError:
+                continue
+    # WSL in NAT mode has only its own 172.16/12 address (and WSL's DNS proxy, 10.255.255.254): an office LAN in
+    # 172.16/12 counts once another address shows this is mirrored mode or a plain Linux host.
+    wsl_nat = ipaddress.ip_network("172.16.0.0/12")
+    v4 = {a for a in mine if a.version == 4 and str(a) != "10.255.255.254"}
+    if not v4 or all(a in wsl_nat for a in v4) and want not in wsl_nat or want in mine:
+        return []
+    return [Result(WARN, "PC agent", f"host_context.host is {host}, which isn't this computer, so cases about that "
+                   "one would be explained with this one's programs",
+                   "in config.yaml set host_context: {host: <this computer's IP>}, then restart tapwatch")]
+
+
 def check_linux_host(units: list[str], run=_run, unit_dir: Path = service.UNIT_DIR,
-                     sys_net: Path = Path("/sys/class/net"), wsl: bool | None = None,
-                     host: str | None = None) -> list[Result]:
+                     sys_net: Path = Path("/sys/class/net"), wsl: bool | None = None) -> list[Result]:
     """A Linux host capturing the mirror itself (deploy/omarchy/install.sh): the parts the Windows side covers on
-    WSL. The mirror NIC, dumpcap's permission to capture, sleep, and whether `host_context.host` is this machine
-    (a config moved from another computer still names that one). Skipped on WSL and without a capture unit."""
+    WSL. The mirror NIC, dumpcap's permission to capture, and sleep. Skipped on WSL and without a capture unit."""
     if (Path("/mnt/c/Windows").exists() if wsl is None else wsl) or "tapwatch-capture" not in units:
         return []
     out = []
-    if host:
-        words = run(["ip", "-o", "addr", "show", "scope", "global"])[1].split()
-        mine = {words[i + 1].split("/")[0] for i, w in enumerate(words[:-1]) if w in ("inet", "inet6")}
-        if mine and host not in mine:
-            out.append(Result(WARN, "PC agent", f"host_context.host is {host}, which isn't this computer, so "
-                              "cases about that one would be explained with this one's programs",
-                              "in config.yaml set host_context: {host: <this computer's IP>}, then restart tapwatch"))
     iface = capture_iface_from_units(unit_dir)
     if not iface:
         return out
@@ -398,7 +416,8 @@ def run_all(cfg: dict, cfg_path: str, zeek_dir: str, now: float | None = None, r
     results += check_vuln_feeds(cfg, now)
     results += check_disk(Path("."))
     results += check_windows(run)
-    results += check_linux_host(units, run, unit_dir, host=(cfg.get("host_context") or {}).get("host"))
+    results += check_linux_host(units, run, unit_dir)
+    results += check_this_host((cfg.get("host_context") or {}).get("host"), run)
     return results
 
 

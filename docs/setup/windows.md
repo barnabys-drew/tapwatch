@@ -141,3 +141,18 @@ and `systemctl --user restart tapwatch-ui`. Open the `base_url` from any of your
 including this PC. Requests without a listed Tailscale login get a 403, even ones sent straight to
 port 8765. Use `serve`, not `funnel`, which would put the desk on the public internet. Any HTTPS
 port that's free on the PC works; 443 is fine if nothing else uses it.
+
+
+## Moving tapwatch to another PC
+
+To keep the cases, suppressions and what tapwatch has learned, so the new PC doesn't start a new learning period:
+
+1. On the old PC, in Ubuntu: `cd ~/tapwatch && deploy/export-state.sh` writes `tapwatch-state.tar.gz`. It holds
+   your alert addresses and keys, so copy it directly (USB stick, a direct network copy) and delete it afterwards.
+2. On the new PC, put it in the unzipped tapwatch folder, next to `install-windows.cmd`, then run the installer.
+   It finds the file and offers to take it over, and skips the alert and AI-key questions.
+3. The install log lists the settings that named the old PC. In `~/tapwatch/config.yaml`, set
+   `host_context.host` to the new PC's address and check the others (`ui.host`, `ui.base_url`, ...), then
+   `systemctl --user restart 'tapwatch-*'`. `tapwatch doctor` warns while `host_context.host` isn't this PC.
+4. Point the router's syslog at the new PC, and turn tapwatch off on the old one, or both alert on everything:
+   `systemctl --user disable --now 'tapwatch-*'`.
