@@ -14,6 +14,10 @@ What it does, each step skipped when it's already done, so running it again is s
   7. Keeps the PC awake and tapwatch running after restarts; the osquery + Sysmon agent; the router's firewall rules.
   8. Ends with `tapwatch doctor` (what works, what's left), the ntfy address, and a test alert once subscribed.
 
+Moving from another computer: put the tapwatch-state.tar.gz that deploy/export-state.sh made there into this folder
+(next to install-windows.cmd) first. The installer offers to take over its settings, cases and learned baselines
+instead of asking for new alert settings (tapwatch import-state).
+
 Everything it prints, the Linux steps included, goes to %LOCALAPPDATA%\tapwatch\install.log, the file to send
 for help. Secrets (the password, webhook, keys, the ntfy address) are typed hidden or shown only after the log
 closes, reach Ubuntu in environment variables, and are never written to the log or to disk.
@@ -155,12 +159,15 @@ $gateway = if ($route) { $route.NextHop } else { "" }
 $thisIp = if ($route) { (Get-NetIPAddress -InterfaceIndex $route.ifIndex -AddressFamily IPv4 | Select-Object -First 1).IPAddress } else { "" }
 if (-not $thisIp) { Stop-Install "This PC has no internet connection right now; tapwatch needs one to install." }
 Note "This PC's address: $thisIp (the router's logs go here)    router: $gateway"
+# An export from the old computer (deploy/export-state.sh), dropped next to install-windows.cmd
+$importFile = Get-ChildItem -Path $Here -Filter "tapwatch-state*.tar.gz" -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
 # ------------------------------------------------------------------ 2. everyday questions (kept over the restart)
 $saved = $null
 if (Test-Path $Answers) { $saved = Get-Content $Answers -Raw | ConvertFrom-Json }
 if ($saved) {
-    $linuxUser, $iface, $alerts, $syslog = $saved.linuxUser, $saved.iface, $saved.alerts, $saved.syslog
+    $linuxUser, $iface, $alerts, $syslog, $import = $saved.linuxUser, $saved.iface, $saved.alerts, $saved.syslog, $saved.import
 } else {
     Say "A few questions first (Enter takes the suggestion in [brackets])"
     $existing = ""
@@ -203,17 +210,27 @@ if ($saved) {
         Warn "a second port is plugged into the mirror port (a USB-to-Ethernet adapter works). Fine for a first try."
     }
 
-    Write-Host ""
-    Note "Where should alerts go?"
-    Note "1. Phone app 'ntfy' (free, recommended: install ntfy from the App Store or Google Play)"
-    Note "2. A Discord channel"
-    Note "3. Nowhere for now (you can add one later)"
-    $alerts = @{ "1" = "ntfy"; "2" = "discord"; "3" = "none" }[(Ask "Number" "1")]
-    if (-not $alerts) { $alerts = "ntfy" }
+    $import = $null
+    if ($importFile) {
+        Write-Host ""
+        Note "Found $($importFile.Name): tapwatch from another computer (settings, cases, what it has learned)."
+        if (Ask-YesNo "Take it over here? Its alert settings are kept, so there are fewer questions" "y") { $import = $importFile.FullName }
+    }
+    if ($import) {
+        $alerts = "imported"
+    } else {
+        Write-Host ""
+        Note "Where should alerts go?"
+        Note "1. Phone app 'ntfy' (free, recommended: install ntfy from the App Store or Google Play)"
+        Note "2. A Discord channel"
+        Note "3. Nowhere for now (you can add one later)"
+        $alerts = @{ "1" = "ntfy"; "2" = "discord"; "3" = "none" }[(Ask "Number" "1")]
+        if (-not $alerts) { $alerts = "ntfy" }
+    }
 
     Write-Host ""
     $syslog = Ask-YesNo "Is the router UniFi, and should tapwatch read its logs (blocked attacks, admin logins)?" "y"
-    @{ linuxUser = $linuxUser; iface = $iface; alerts = $alerts; syslog = $syslog } | ConvertTo-Json | Set-Content $Answers
+    @{ linuxUser = $linuxUser; iface = $iface; alerts = $alerts; syslog = $syslog; import = $import } | ConvertTo-Json | Set-Content $Answers
 }
 
 # ------------------------------------------------------------------ 3. Windows features (restart once)
@@ -290,6 +307,9 @@ $needSettings = $LASTEXITCODE -ne 0
 $discordUrl, $typesafeKey, $anthropicKey = "", "", ""
 if (-not $needSettings) {
     Note "tapwatch is already set up in Ubuntu: keeping its settings (alerts, keys)."
+    $import = $null
+} elseif ($import) {
+    Note "The alert settings and keys come from the old computer's tapwatch."
 } else {
     if ($alerts -eq "discord") {
         Write-Host ""
@@ -344,6 +364,10 @@ if ($discordUrl) { $answersJson.discord_url = $discordUrl }
 if ($typesafeKey) { $answersJson.typesafe_key = $typesafeKey }
 if ($anthropicKey) { $answersJson.anthropic_key = $anthropicKey }
 $vars = @{ TW_ANSWERS = ($answersJson | ConvertTo-Json -Compress); TW_IFACE = $iface; TW_SYSLOG = $(if ($syslog) { "yes" } else { "no" }) }
+if ($import) {
+    if (-not (Test-Path $import)) { Stop-Install "the export $import isn't there any more; put it back next to install-windows.cmd" }
+    $vars.TW_IMPORT = ((Quiet { & wsl.exe -d $Distro -u root -e wslpath -a $import }) -join "").Trim()
+}
 Invoke-Linux $linuxUser @("app", $RepoUrl, $Branch) $vars
 $discordUrl, $typesafeKey, $anthropicKey, $vars, $answersJson = "", "", "", $null, $null
 
@@ -372,7 +396,7 @@ if ($syslog -and $gateway -and $mirroredOk) {
 
 # ------------------------------------------------------------------ 8. check and finish
 # ntfy's test alert waits until the owner has subscribed (below); Discord's channel already exists, so send it now.
-$send = if ($alerts -eq "discord") { "send" } else { "nosend" }
+$send = if ($alerts -in @("discord", "imported")) { "send" } else { "nosend" }   # imported: the channel is already set up
 Say $(if ($send -eq "send") { "Checking everything (and sending a test alert)" } else { "Checking everything" })
 Invoke-Linux $linuxUser @("doctor", $send)
 Remove-Item $Answers -ErrorAction SilentlyContinue
@@ -381,7 +405,12 @@ Write-Host ""
 Write-Host "tapwatch is installed." -ForegroundColor Green
 Note "Anything marked [!] or [FAIL] above says what to do. The UniFi steps (mirror port, router logs) are in"
 Note "docs/setup/office-unifi.md. To check again later, open Ubuntu and run:  cd ~/tapwatch; .venv/bin/tapwatch doctor"
-Note "The first 3 days are a learning period: expect it to be quiet while it learns this network."
+if ($import) {
+    Warn "Moved from another computer: the settings listed in step 6 named it. In ~/tapwatch/config.yaml set"
+    Warn "host_context.host to $thisIp, check ui.host and the other lines listed, then turn tapwatch off on the old computer."
+} else {
+    Note "The first 3 days are a learning period: expect it to be quiet while it learns this network."
+}
 Stop-Transcript | Out-Null   # the ntfy address is a secret: shown on screen only, after the log is closed
 if ($alerts -eq "ntfy") {
     $ntfy = Invoke-Linux $linuxUser @("ntfy-url") -Capture

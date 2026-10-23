@@ -6,6 +6,8 @@
 #   TW_ANSWERS  the JSON `tapwatch init --answers -` reads (stage app)
 #   TW_IFACE    the Windows adapter name for the capture, e.g. "Ethernet 2" (stage app)
 #   TW_SYSLOG   "yes" to also run the router syslog listener (stage app)
+#   TW_IMPORT   a tapwatch-state.tar.gz from deploy/export-state.sh, as a Linux path: take over that install's
+#               settings, cases and baselines instead of writing new settings (stage app)
 #
 #   wsl-setup.sh root <user>            as root: account, systemd, packages, docker group (then: wsl --shutdown)
 #   wsl-setup.sh linger <user>          as root: keep the user's services running with nobody signed in
@@ -81,6 +83,9 @@ app)
     .venv/bin/pip install -q -e .
     if [ -f config.yaml ]; then
         say "Keeping the existing settings (config.yaml); delete it and run the installer again to start over"
+    elif [ -n "${TW_IMPORT:-}" ]; then
+        say "Taking over the old computer's tapwatch: settings, cases and learned baselines"
+        .venv/bin/tapwatch import-state "$TW_IMPORT"
     else
         say "Writing the settings"
         # The ntfy address is a secret and this output goes to the install log; the installer shows it
