@@ -167,14 +167,23 @@ def test_a_linux_host_checks_its_mirror_nic_capture_rights_and_sleep(tmp_path, m
     assert doctor.check_linux_host(["tapwatch-alerter"], run, units, net, wsl=False) == []
 
 
-def test_a_config_moved_from_another_computer_names_the_wrong_host(tmp_path):
-    units = touch(tmp_path / "tapwatch-capture.service", text="ExecStart=/r/capture_mirror.sh /z 87600 enp1s0\n").parent
-    addrs = ("2: wlan0    inet 192.168.50.30/24 brd 192.168.50.255 scope global dynamic wlan0\n"
-             "2: wlan0    inet6 fd00::30/64 scope global\n")
+def test_a_config_moved_from_another_computer_names_the_wrong_host():
+    addrs = {"now": "2: eth0    inet 192.168.50.30/24 brd 192.168.50.255 scope global eth0\n"
+                    "2: eth0    inet6 fd00::30/64 scope global\n"}
 
     def run(cmd, timeout=10):
-        return 0, addrs if cmd[:2] == ["ip", "-o"] and "dev" not in cmd else ""
-    moved = doctor.check_linux_host(["tapwatch-capture"], run, units, tmp_path, wsl=False, host="192.168.50.20")
-    assert next(r.part for r in moved if r.level == doctor.WARN) == "PC agent"
-    here = doctor.check_linux_host(["tapwatch-capture"], run, units, tmp_path, wsl=False, host="192.168.50.30")
-    assert "PC agent" not in [r.part for r in here]
+        return 0, addrs["now"]
+    (r,) = doctor.check_this_host("192.168.50.20", run)
+    assert r.level == doctor.WARN and r.part == "PC agent"
+    assert doctor.check_this_host("192.168.50.30", run) == [] and doctor.check_this_host(None, run) == []
+    addrs["now"] = "2: eth0    inet 172.28.5.2/20 brd 172.28.15.255 scope global eth0\n"      # WSL in NAT mode: no conclusion
+    assert doctor.check_this_host("192.168.50.20", run) == []
+
+
+def test_the_host_check_compares_addresses_not_spellings():
+    def run(cmd, timeout=10):
+        return 0, ("2: eth0    inet 172.20.0.5/16 scope global eth0\n2: eth1    inet 192.168.50.9/24 scope global eth1\n"
+                   "2: eth1    inet6 fd00::9/64 scope global\n")
+    assert doctor.check_this_host("fd00:0:0::9", run) == []                     # the same IPv6 address, written longer
+    assert doctor.check_this_host("172.20.0.5", run) == []                      # an office LAN in 172.16/12
+    assert doctor.check_this_host("172.20.0.6", run)[0].level == doctor.WARN

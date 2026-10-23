@@ -133,49 +133,9 @@ say "Installing tapwatch's Python package"
 if [ -n "$IMPORT" ]; then
   [ ! -f config.yaml ] || die "this checkout already has a config.yaml; move it (and tapwatch.db) aside to import"
   say "Importing settings, cases and baselines from $(basename "$IMPORT")"
-  # Only the files a move carries (deploy/export-state.sh): config.yaml, .env, and the database, assets and own IOC
-  # list where that config.yaml puts them, inside this folder. Anything else in the archive is refused, so it can't
-  # replace code that runs as you. Python's "data" filter also refuses links and special files.
-  .venv/bin/python - "$IMPORT" <<'PY'
-import sys
-import tarfile
-from pathlib import PurePosixPath
-
-import yaml
-
-def norm(name):
-    p = PurePosixPath(name)
-    parts = [x for x in p.parts if x != "."]
-    if p.is_absolute() or ".." in parts or not parts:
-        sys.exit(f"refusing {name!r}: not a path inside the tapwatch folder")
-    return "/".join(parts)
-
-with tarfile.open(sys.argv[1]) as tar:
-    members = {norm(m.name): m for m in tar.getmembers() if m.isfile()}
-    if "config.yaml" not in members or ".env" not in members:
-        sys.exit("not a tapwatch export: it has no config.yaml or .env (make one with deploy/export-state.sh)")
-    cfg = yaml.safe_load(tar.extractfile(members["config.yaml"])) or {}
-    allowed = {"config.yaml", ".env"} | {norm(cfg[k]) for k in ("db_path", "assets_file", "ioc_file") if cfg.get(k)}
-    allowed.add(norm(cfg.get("db_path", "tapwatch.db")))
-    extra = sorted(set(members) - allowed)
-    if extra:
-        sys.exit(f"refusing the archive: it holds files a tapwatch export doesn't: {', '.join(extra[:5])}")
-    tar.extractall(".", members=list(members.values()), filter="data")
-PY
-  chmod 600 .env
-  # Settings that name the old computer: listed, not rewritten (config.yaml has the owner's comments).
-  .venv/bin/python - <<'PY'
-import yaml
-c = yaml.safe_load(open("config.yaml")) or {}
-ui, hc = c.get("ui") or {}, c.get("host_context") or {}
-for key, val in (("host_context.host", hc.get("host")), ("ui.host", ui.get("host")), ("ui.base_url", ui.get("base_url")),
-                 ("ui.zeek_dirs", ui.get("zeek_dirs")), ("feeds_dir", c.get("feeds_dir")),
-                 ("smtp", "set" if c.get("smtp") else None)):
-    if val:
-        print(f"  {key}: {val}")
-PY
-  warn "the settings above came from the old computer: point them at this one in config.yaml (tapwatch doctor"
-  warn "flags a host_context.host that isn't this computer, and a case desk that can't start)"
+  # Only the files a move carries, at the paths their config.yaml names (tapwatch import-state, migrate.py); it lists
+  # the settings that named the old computer.
+  .venv/bin/tapwatch import-state "$IMPORT"
 elif [ -f config.yaml ]; then
   say "Keeping the existing settings (config.yaml)"
 else
