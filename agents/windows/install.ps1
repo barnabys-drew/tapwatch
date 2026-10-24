@@ -74,9 +74,16 @@ Copy-Item (Join-Path $Repo "config\osquery.conf") $conf -Force
 if ($Mode -eq "fleet") {
     $fleetHost = ($FleetUrl -replace '^https?://', '') -replace '/.*$', ''
     $secretPath = Join-Path $Root "enroll_secret"
-    # A run before this one left the file readable only (below), Administrators included: let them write it again,
-    # or a re-run stops with "Access to the path ... enroll_secret is denied".
-    if (Test-Path $secretPath) { icacls $secretPath /grant:r "Administrators:F" | Out-Null }
+    # A run before this one left the file readable only (below), Administrators included, so it can't be rewritten
+    # ("Access to the path ... enroll_secret is denied"). Its owner is Administrators (this installer runs elevated), and
+    # an owner may always change the permissions: give write back. If another account owns it, take ownership first.
+    if (Test-Path $secretPath) {
+        icacls $secretPath /grant:r "Administrators:F" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            takeown /f $secretPath /a | Out-Null
+            icacls $secretPath /grant:r "Administrators:F" | Out-Null
+        }
+    }
     Set-Content -Path $secretPath -Value $EnrollSecret -NoNewline -Encoding ascii
     # Only SYSTEM and Administrators may read the secret.
     icacls $secretPath /inheritance:r /grant:r "SYSTEM:R" "Administrators:R" | Out-Null
