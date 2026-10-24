@@ -113,19 +113,27 @@ if (-not $NoSysmon) {
     try {
         Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile "$tmp\Sysmon.zip" -UseBasicParsing
         Expand-Archive "$tmp\Sysmon.zip" -DestinationPath $tmp
-        $exe = Join-Path $tmp $(if ([Environment]::Is64BitOperatingSystem) { "Sysmon64.exe" } else { "Sysmon.exe" })
+        # ARM laptops (Snapdragon) need Sysmon64a.exe: the x64 build can't load its driver there and exits with an error.
+        $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+        $exe = Join-Path $tmp $(if ($arch -eq "ARM64") { "Sysmon64a.exe" } elseif ([Environment]::Is64BitOperatingSystem) { "Sysmon64.exe" } else { "Sysmon.exe" })
         $sig = Get-AuthenticodeSignature $exe
         if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") {
             throw "Sysmon download failed its signature check ($($sig.Status)); not installing it"
         }
         $config = Join-Path $PSScriptRoot "sysmon.xml"
-        $svcName = [System.IO.Path]::GetFileNameWithoutExtension($exe)
-        if (Get-Service -Name $svcName -ErrorAction SilentlyContinue) {
-            & $exe -c $config | Out-Null      # already installed: just load our config
+        # Any Sysmon already there (Sysmon, Sysmon64, Sysmon64a): load our config into it rather than install a second one.
+        $existing = Get-Service -Name "Sysmon*" -ErrorAction SilentlyContinue | Where-Object Name -ne "SysmonDrv" | Select-Object -First 1
+        if ($existing) {
+            $exe = Join-Path $env:windir "$($existing.Name).exe"
+            $out = & $exe -c $config 2>&1
         } else {
-            & $exe -accepteula -i $config | Out-Null
+            $out = & $exe -accepteula -i $config 2>&1
         }
-        if ($LASTEXITCODE -ne 0) { throw "Sysmon exited with code $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) {
+            # Sysmon says why on its own output; without it a bare exit code gave nothing to go on.
+            $why = ($out | ForEach-Object { "$_".Trim() } | Where-Object { $_ -and $_ -notmatch '^(System Monitor|Copyright|Sysinternals)' }) -join " / "
+            throw "Sysmon exited with code $LASTEXITCODE ($arch): $why"
+        }
         # Default log is 64 MB, a few days of history at most; give it 256 MB.
         wevtutil sl Microsoft-Windows-Sysmon/Operational /ms:268435456
     } finally {
