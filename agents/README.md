@@ -134,22 +134,38 @@ closes those cases as `benign_expected` with the explanation, all in the audit t
 
 ## Deploying with a management tool
 
-To roll the agent out to an office's Windows PCs from the tool that already manages them (Intune, an RMM such as
-NinjaOne, PDQ Deploy, a Group Policy startup script), deploy this folder with an `agent.env` naming the office's own
-Fleet server (`deploy/fleet/agent-bundle.sh` builds exactly that ZIP), and run as SYSTEM:
+To roll the agent out to an office's Windows PCs from the tool that already manages them, deploy this folder with an
+`agent.env` naming the office's own Fleet server (`deploy/fleet/agent-bundle.sh` builds exactly that ZIP) and run it
+as SYSTEM:
 
 ```
 install-silent.cmd
 ```
 
-It installs osquery 5.24.0 from osquery's official MSI (pinned by its SHA-256, since winget usually isn't available to
-SYSTEM), installs Sysmon with tapwatch's config, and enrolls the PC in Fleet, with no prompts. Exit code **0** means
-the agent is running and **1** means it isn't. The tool can report that, and the reason is in
-`%ProgramData%\tapwatch\agent-install.log`. Running it again is safe and is how to update. The PC appears under
-Hosts in Fleet within a minute.
+- **Intune:** as a Win32 app (wrap the folder with the Content Prep Tool into an `.intunewin`; install command
+  `install-silent.cmd`). A platform script can't carry the folder.
+- **An RMM or PDQ Deploy:** copy the folder and run `install-silent.cmd` as SYSTEM.
 
-The agent.env in that package holds the enroll secret: keep the package in the tool's private storage, not on a
-shared drive. The points below about asking first apply to company PCs too: staff should know the agent is there.
+It installs osquery 5.24.0 from osquery's official MSI, pinned by its SHA-256, since winget usually isn't available
+to SYSTEM. It then installs Sysmon with tapwatch's config and enrolls the PC in Fleet, with no prompts. It works from
+a 32-bit tool too: the wrapper starts 64-bit PowerShell.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | the agent is running |
+| 1 | it isn't; the reason is in `%ProgramData%\tapwatch\agent-install.log` (only SYSTEM and Administrators can read it) |
+| 1618 | another installation (Windows Update, the tool's next package) kept running for 10 minutes; retry later. Intune retries this code by default. |
+
+A package without `agent.env` fails rather than installing an agent that never reports. Running it again is safe:
+it brings the agent's config and Sysmon up to date. osquery itself changes version only when a newer tapwatch pins a
+newer MSI.
+
+If the office reaches the internet only through a proxy, add `PROXY=host:port` to `agent.env`. The downloads use it,
+and so does osquery's connection to Fleet.
+
+The `agent.env` in the package holds the enroll secret. Keep the package in the tool's own storage, not on a shared
+drive: that rules out a Group Policy startup script, whose files sit in a share every computer can read. Staff should
+know the agent is there, as below.
 
 ## Installing on someone else's computer
 
