@@ -66,14 +66,28 @@ $conf = Join-Path $Root "osquery.conf"
 $db = Join-Path $Root "osquery.db"
 $logs = Join-Path $Root "log"
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
+# osquery's MSI starts its service on a fresh install, and the running osqueryd holds osquery.conf open: Copy-Item
+# then fails ("being used by another process"). Stopped here, started again below with the new flags.
+Stop-Service -Name osqueryd -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $Repo "config\osquery.conf") $conf -Force
 
 if ($Mode -eq "fleet") {
     $fleetHost = ($FleetUrl -replace '^https?://', '') -replace '/.*$', ''
     $secretPath = Join-Path $Root "enroll_secret"
+    # A run before this one left the file readable only (below), Administrators included, so it can't be rewritten
+    # ("Access to the path ... enroll_secret is denied"). Its owner is Administrators (this installer runs elevated), and
+    # an owner may always change the permissions: give write back. If another account owns it, take ownership first.
+    if (Test-Path $secretPath) {
+        icacls $secretPath /grant:r "*S-1-5-32-544:F" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            takeown /f $secretPath /a | Out-Null
+            icacls $secretPath /grant:r "*S-1-5-32-544:F" | Out-Null
+        }
+    }
     Set-Content -Path $secretPath -Value $EnrollSecret -NoNewline -Encoding ascii
     # Only SYSTEM and Administrators may read the secret.
-    icacls $secretPath /inheritance:r /grant:r "SYSTEM:R" "Administrators:R" | Out-Null
+    # By SID (SYSTEM, Administrators): the group names are translated on a non-English Windows and icacls would fail.
+    icacls $secretPath /inheritance:r /grant:r "*S-1-5-18:R" "*S-1-5-32-544:R" | Out-Null
     $certFlag = ""
     if ($FleetCert) {
         if (-not [System.IO.Path]::IsPathRooted($FleetCert)) { $FleetCert = Join-Path $Repo $FleetCert }
@@ -110,24 +124,46 @@ if (-not $NoSysmon) {
     try {
         Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile "$tmp\Sysmon.zip" -UseBasicParsing
         Expand-Archive "$tmp\Sysmon.zip" -DestinationPath $tmp
-        $exe = Join-Path $tmp $(if ([Environment]::Is64BitOperatingSystem) { "Sysmon64.exe" } else { "Sysmon.exe" })
+        # ARM laptops (Snapdragon) need Sysmon64a.exe: the x64 build can't load its driver there and exits with an error.
+        # From the CPU itself (Win32_Processor.Architecture 12 = ARM64): an x64-emulated PowerShell reports AMD64.
+        $arch = if ((Get-CimInstance Win32_Processor | Select-Object -First 1).Architecture -eq 12) { "ARM64" } else { "x64" }
+        $exe = Join-Path $tmp $(if ($arch -eq "ARM64") { "Sysmon64a.exe" } elseif ([Environment]::Is64BitOperatingSystem) { "Sysmon64.exe" } else { "Sysmon.exe" })
         $sig = Get-AuthenticodeSignature $exe
         if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") {
             throw "Sysmon download failed its signature check ($($sig.Status)); not installing it"
         }
         $config = Join-Path $PSScriptRoot "sysmon.xml"
-        $svcName = [System.IO.Path]::GetFileNameWithoutExtension($exe)
-        if (Get-Service -Name $svcName -ErrorAction SilentlyContinue) {
-            & $exe -c $config | Out-Null      # already installed: just load our config
-        } else {
-            & $exe -accepteula -i $config | Out-Null
+        # Any Sysmon already there (Sysmon, Sysmon64, Sysmon64a): load our config into it rather than install a second one.
+        $existing = Get-Service -Name "Sysmon", "Sysmon64", "Sysmon64a" -ErrorAction SilentlyContinue | Select-Object -First 1
+        # Sysmon prints its banner on stderr. With ErrorActionPreference Stop, Windows PowerShell 5.1 turns every
+        # stderr line of a native command captured with 2>&1 into a terminating RemoteException, before Sysmon has
+        # even finished: relax it for this call and judge by the exit code.
+        $oldEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            if ($existing) {
+                $exe = Join-Path $env:windir "$($existing.Name).exe"
+                $out = & $exe -c $config 2>&1
+            } else {
+                $out = & $exe -accepteula -i $config 2>&1
+            }
+        } finally {
+            $ErrorActionPreference = $oldEap
         }
-        if ($LASTEXITCODE -ne 0) { throw "Sysmon exited with code $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) {
+            # Sysmon says why on its own output; without it a bare exit code gave nothing to go on.
+            $why = ($out | ForEach-Object { "$_".Trim() } | Where-Object { $_ -and $_ -notmatch '^(System Monitor|Copyright|Sysinternals)' }) -join " / "
+            throw "Sysmon exited with code $LASTEXITCODE ($arch): $why"
+        }
         # Default log is 64 MB, a few days of history at most; give it 256 MB.
         wevtutil sl Microsoft-Windows-Sysmon/Operational /ms:268435456
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     }
+    # osqueryd was started above, before Sysmon's event channel existed on a fresh PC, and it subscribes to the channel
+    # only when it starts: until a restart it receives no Sysmon events at all (the first laptop enrolled: Sysmon
+    # logging hundreds of events, osquery's windows_events publisher at 0).
+    Restart-Service -Name osqueryd -Force
 }
 
 Write-Host ""
