@@ -383,7 +383,11 @@ Quiet { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $He
 if (-not (Get-ScheduledTask -TaskName "tapwatch keep-alive" -ErrorAction SilentlyContinue)) { Stop-Install "the keep-alive task didn't install" }
 
 Say "Installing the PC agent (osquery and Sysmon: which program made a connection)"
-Quiet { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Here "agents\windows\install.ps1") } | ForEach-Object { Note $_ }
+$agentRestart = $false
+Quiet { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Here "agents\windows\install.ps1") } | ForEach-Object {
+    Note $_
+    if ("$_" -match '^Restart this PC once to finish') { $agentRestart = $true }   # Windows' built-in Sysmon (26H2)
+}
 $osq = Get-Service osqueryd -ErrorAction SilentlyContinue
 if (-not $osq -or $osq.Status -ne "Running") { Stop-Install "the PC agent (osqueryd) isn't running" }
 
@@ -416,6 +420,10 @@ if ($import) {
     Warn "host_context.host to $thisIp, check ui.host and the other lines listed, then turn tapwatch off on the old computer."
 } else {
     Note "The first 3 days are a learning period: expect it to be quiet while it learns this network."
+}
+if ($agentRestart) {
+    Warn "Restart this PC once to finish: Windows starts Sysmon's event log only at startup (Windows 11 26H2 and later)."
+    Warn "Until then the PC agent records which program made a connection, but not program starts or DNS lookups."
 }
 Stop-Transcript | Out-Null   # the ntfy address is a secret: shown on screen only, after the log is closed
 if ($alerts -eq "ntfy") {
