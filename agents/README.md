@@ -155,6 +155,7 @@ a 32-bit tool too: the wrapper starts 64-bit PowerShell.
 | 0 | the agent is running |
 | 1 | it isn't; the reason is in `%ProgramData%\tapwatch\agent-install.log` (only SYSTEM and Administrators can read it) |
 | 1618 | another installation (Windows Update, the tool's next package) kept running for 10 minutes; retry later. Intune retries this code by default. |
+| 3010 | installed; **a restart finishes it**. On Windows 11 26H2 and later the agent uses Windows' built-in Sysmon, whose event log Windows only starts at boot. Intune and most RMMs treat 3010 as "success, restart pending". |
 
 A package without `agent.env` fails rather than installing an agent that never reports. Running it again is safe:
 it brings the agent's config and Sysmon up to date. osquery itself changes version only when a newer tapwatch pins a
