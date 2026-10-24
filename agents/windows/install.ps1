@@ -9,8 +9,9 @@ Install osquery and Sysmon (Microsoft Sysinternals) on Windows, then start them.
   From a deployment tool (Intune, an RMM, PDQ, a GPO startup script), as SYSTEM, no prompts: install-silent.cmd,
   or  powershell -NoProfile -ExecutionPolicy Bypass -File windows\install.ps1 -Silent
   -Silent installs osquery from its pinned official MSI (winget is usually missing for SYSTEM), writes everything to
-  %ProgramData%\tapwatch\agent-install.log, and exits 0 when the agent runs, 1 when it doesn't. Running it again
-  is safe; it is also how to update.
+  %ProgramData%\tapwatch\agent-install.log, and exits 0 when the agent runs, 1 when it doesn't, 3010 when it's
+  installed and a restart finishes it (Windows' built-in Sysmon), 1618 when another install kept running. Running it
+  again is safe; it is also how to update.
 
 Fleet settings can also live in agent.env in the repo root (see agent.env.example).
 #>
@@ -120,6 +121,7 @@ if ($useWinget) {
     Remove-Item -Force $msi -ErrorAction SilentlyContinue
     if ($p.ExitCode -eq 1618 -and $Silent) {
         Write-Host "error: another installation kept running for 10 minutes; the deployment tool can retry"
+        Write-Host "exit code 1618"
         Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
         exit 1618
     }
@@ -194,41 +196,52 @@ if ((Get-Service osqueryd).Status -ne "Running") { Start-Service osqueryd }
 #      failed"). Seen on two 26H2 PCs. Turning the feature on needs no restart and puts sysmon.exe in System32; it
 #      writes to the same Microsoft-Windows-Sysmon/Operational channel osquery reads.
 #   3. the Sysinternals download, signature-checked, on older Windows.
-function Invoke-Sysmon($exe, [string[]]$arguments) {
-    # Sysmon prints its banner on stderr. With ErrorActionPreference Stop, Windows PowerShell 5.1 turns every stderr
-    # line of a native command captured with 2>&1 into a terminating RemoteException before Sysmon has finished:
-    # relax it for this call and judge by the exit code.
+function Invoke-Native($exe, [string[]]$arguments) {
+    # A native command's output and exit code. Sysmon prints its banner on stderr, wevtutil its errors: with
+    # ErrorActionPreference Stop, Windows PowerShell 5.1 turns every stderr line of a native command captured with 2>&1
+    # into a terminating RemoteException before the command has finished. Relax it for this call; callers judge by
+    # the exit code.
     $oldEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    try { $out = & $exe @arguments 2>&1 } finally { $ErrorActionPreference = $oldEap }
-    if ($LASTEXITCODE -ne 0) {
+    try { $out = & $exe @arguments 2>&1; $code = $LASTEXITCODE } finally { $ErrorActionPreference = $oldEap }
+    return @{ Code = $code; Out = $out }
+}
+function Invoke-Sysmon($exe, [string[]]$arguments) {
+    $r = Invoke-Native $exe $arguments
+    $out = $r.Out
+    if ($r.Code -ne 0) {
         # Sysmon's own words, without its banner (its output is UTF-16: drop the NULs a 5.1 capture leaves in).
         $why = ($out | ForEach-Object { ("$_" -replace "`0", "").Trim() } |
             Where-Object { $_ -and $_ -notmatch '^(System Monitor|By Mark|Copyright|Using libxml2|Sysinternals|System\.Management\.Automation\.RemoteException)' }) -join " / "
-        throw "Sysmon exited with code $LASTEXITCODE ($exe): $why"
+        throw "Sysmon exited with code $($r.Code) ($exe): $why"
     }
 }
 if (-not $NoSysmon) {
     $config = Join-Path $PSScriptRoot "sysmon.xml"
     $existing = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -in @("Sysmon", "Sysmon64", "Sysmon64a") } | Select-Object -First 1
-    $inbox = Get-WindowsOptionalFeature -Online -FeatureName Sysmon -ErrorAction SilentlyContinue
+    $inbox = $null
+    if (-not $existing) {
+        try { $inbox = Get-WindowsOptionalFeature -Online -FeatureName Sysmon -ErrorAction Stop }
+        catch {
+            # No such feature on this build (anything before 26H2), or Windows' servicing is busy. On a 26H2 PC the
+            # download is bound to fail (exit 13), so say what went wrong rather than try it.
+            if ([int](Get-CimInstance Win32_OperatingSystem).BuildNumber -ge 26300) {
+                throw "couldn't check Windows' built-in Sysmon (Windows Update or another install may be running; try again later): $_"
+            }
+        }
+    }
     if ($existing) {
         Say "Sysmon is installed ($($existing.Name)): loading tapwatch's config into it"
-        Invoke-Sysmon ($existing.PathName.Trim('"')) @("-accepteula", "-c", $config)   # SYSTEM may never have accepted the EULA
+        # The service's command line: a quoted path, or a bare one, maybe followed by arguments.
+        $exe = if ($existing.PathName -match '^"([^"]+)"') { $Matches[1] } else { ($existing.PathName -split ' ')[0] }
+        Invoke-Sysmon $exe @("-accepteula", "-c", $config)   # SYSTEM may never have accepted the EULA
     } elseif ($inbox) {
         Say "Turning on Windows' built-in Sysmon (records every process start and network connection)"
         if ($inbox.State -ne "Enabled") { Enable-WindowsOptionalFeature -Online -FeatureName Sysmon -All -NoRestart | Out-Null }
         $exe = Join-Path $env:windir "System32\sysmon.exe"
         if (-not (Test-Path $exe)) { throw "Windows' Sysmon feature is on but $exe isn't there" }
         Invoke-Sysmon $exe @("-accepteula", "-i", $config)
-        # Windows' Event Log service loads its list of logs when it starts, and the built-in Sysmon's log was
-        # registered after this boot: until a restart it has nowhere to write ("The instance name passed was not
-        # recognized"), and osquery sees nothing. Seen on the mini PC: no events at all, then hundreds a minute after
-        # one restart. Restarting the Event Log service would do it too, but stopping that service is what attackers do
-        # to hide, and an office's security tools may flag it: hand the restart to the owner or the deployment tool.
-        wevtutil gli Microsoft-Windows-Sysmon/Operational 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { $NeedsRestart = $true }
     } else {
         Say "Installing Sysmon (records every process start and network connection, with the program behind it)"
         $tmp = Join-Path $Work ("sysmon-" + [guid]::NewGuid())
@@ -249,8 +262,18 @@ if (-not $NoSysmon) {
             Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
         }
     }
-    # Default log is 64 MB, a few days of history at most; give it 256 MB (once the log exists, after a restart if needed).
-    if (-not $NeedsRestart) { wevtutil sl Microsoft-Windows-Sysmon/Operational /ms:268435456 }
+    # Can Windows open Sysmon's log? Its Event Log service loads the list of logs when it starts, and Windows' built-in
+    # Sysmon registers its log when the feature is turned on: until a restart it has nowhere to write ("The instance
+    # name passed was not recognized"), and osquery sees nothing. Seen on the mini PC: no events at all, then hundreds a
+    # minute after one restart. Checked whichever way Sysmon came, so a re-run before that restart still says so.
+    # Restarting the Event Log service would do it too, but stopping that service is what attackers do to hide, and an
+    # office's security tools may flag it: the restart is left to the owner or the deployment tool.
+    if ((Invoke-Native "wevtutil.exe" @("gli", "Microsoft-Windows-Sysmon/Operational")).Code -ne 0) {
+        $NeedsRestart = $true
+    } else {
+        # Default log is 64 MB, a few days of history at most; give it 256 MB.
+        Invoke-Native "wevtutil.exe" @("sl", "Microsoft-Windows-Sysmon/Operational", "/ms:268435456") | Out-Null
+    }
     # A Sysmon that "installed" but isn't running records nothing: fail rather than report success.
     $running = Get-Service -Name "Sysmon", "Sysmon64", "Sysmon64a" -ErrorAction SilentlyContinue | Where-Object Status -eq "Running"
     if (-not $running) { throw "Sysmon installed but its service isn't running" }
@@ -278,14 +301,19 @@ if (-not $NoSysmon) {
         Write-Host "      Select-String -Path `"$logs\osqueryd.results.log`" -Pattern sysmon_events | Select-Object -Last 3"
     }
 }
-if ($Window) {
-    Write-Host ""
-    Write-Host "This window closes in 15 seconds."
-    Start-Sleep -Seconds 15
-}
 if ($NeedsRestart) {
     Write-Host ""
+    # The tapwatch installer (deploy/windows/install.ps1) looks for this line.
     Write-Host "Restart this PC once to finish: Windows starts Sysmon's event log at startup." -ForegroundColor Yellow
+}
+if ($Window) {
+    Write-Host ""
+    if ($NeedsRestart) {
+        Read-Host "Press Enter to close"
+    } else {
+        Write-Host "This window closes in 15 seconds."
+        Start-Sleep -Seconds 15
+    }
 }
 if ($Silent) {
     # 3010: installed, a restart finishes it (the Windows Installer convention; Intune and RMMs handle it as a reboot).
