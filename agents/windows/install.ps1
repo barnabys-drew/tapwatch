@@ -87,6 +87,7 @@ $OsqueryMsi = @{ Version = "5.24.0"; Sha256 = "5f123c07936ee927d7b44ccdaf5d01c4b
 $installed = Get-ChildItem -Path (Join-Path $ProgramFiles64 "osquery") -Filter osqueryd.exe -Recurse -ErrorAction SilentlyContinue |
     Select-Object -First 1
 $have = $null   # osqueryd.exe's version, when it parses
+$NeedsRestart = $false   # set when Windows' built-in Sysmon is installed but its event log waits for a restart
 $useWinget = -not $Silent -and (Get-Command winget -ErrorAction SilentlyContinue)
 if ($useWinget) {
     Say "Installing osquery with winget"
@@ -221,6 +222,13 @@ if (-not $NoSysmon) {
         $exe = Join-Path $env:windir "System32\sysmon.exe"
         if (-not (Test-Path $exe)) { throw "Windows' Sysmon feature is on but $exe isn't there" }
         Invoke-Sysmon $exe @("-accepteula", "-i", $config)
+        # Windows' Event Log service loads its list of logs when it starts, and the built-in Sysmon's log was
+        # registered after this boot: until a restart it has nowhere to write ("The instance name passed was not
+        # recognized"), and osquery sees nothing. Seen on the mini PC: no events at all, then hundreds a minute after
+        # one restart. Restarting the Event Log service would do it too, but stopping that service is what attackers do
+        # to hide, and an office's security tools may flag it: hand the restart to the owner or the deployment tool.
+        wevtutil gli Microsoft-Windows-Sysmon/Operational 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { $NeedsRestart = $true }
     } else {
         Say "Installing Sysmon (records every process start and network connection, with the program behind it)"
         $tmp = Join-Path $Work ("sysmon-" + [guid]::NewGuid())
@@ -241,8 +249,8 @@ if (-not $NoSysmon) {
             Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
         }
     }
-    # Default log is 64 MB, a few days of history at most; give it 256 MB.
-    wevtutil sl Microsoft-Windows-Sysmon/Operational /ms:268435456
+    # Default log is 64 MB, a few days of history at most; give it 256 MB (once the log exists, after a restart if needed).
+    if (-not $NeedsRestart) { wevtutil sl Microsoft-Windows-Sysmon/Operational /ms:268435456 }
     # A Sysmon that "installed" but isn't running records nothing: fail rather than report success.
     $running = Get-Service -Name "Sysmon", "Sysmon64", "Sysmon64a" -ErrorAction SilentlyContinue | Where-Object Status -eq "Running"
     if (-not $running) { throw "Sysmon installed but its service isn't running" }
@@ -275,8 +283,13 @@ if ($Window) {
     Write-Host "This window closes in 15 seconds."
     Start-Sleep -Seconds 15
 }
+if ($NeedsRestart) {
+    Write-Host ""
+    Write-Host "Restart this PC once to finish: Windows starts Sysmon's event log at startup." -ForegroundColor Yellow
+}
 if ($Silent) {
-    $code = if ((Get-Service osqueryd).Status -eq "Running") { 0 } else { 1 }
+    # 3010: installed, a restart finishes it (the Windows Installer convention; Intune and RMMs handle it as a reboot).
+    $code = if ((Get-Service osqueryd).Status -ne "Running") { 1 } elseif ($NeedsRestart) { 3010 } else { 0 }
     Write-Host "exit code $code"   # in the log too, so a tool's report can be checked against it
     Stop-Transcript | Out-Null
     exit $code
