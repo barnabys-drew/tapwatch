@@ -158,6 +158,10 @@ if (-not $NoSysmon) {
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     }
+    # osqueryd was started above, before Sysmon's event channel existed on a fresh PC, and it subscribes to the channel
+    # only when it starts: until a restart it receives no Sysmon events at all (the first laptop enrolled: Sysmon
+    # logging hundreds of events, osquery's windows_events publisher at 0).
+    Restart-Service -Name osqueryd -Force
 }
 
 Write-Host ""
