@@ -132,6 +132,25 @@ case was assessed likely benign, it proposes a **program-scoped suppression** wi
 different program talking to the same place still alerts. `--apply` creates it (30-day expiry) and
 closes those cases as `benign_expected` with the explanation, all in the audit trail.
 
+## Deploying with a management tool
+
+To roll the agent out to an office's Windows PCs from the tool that already manages them (Intune, an RMM such as
+NinjaOne, PDQ Deploy, a Group Policy startup script), deploy this folder with an `agent.env` naming the office's own
+Fleet server (`deploy/fleet/agent-bundle.sh` builds exactly that ZIP), and run as SYSTEM:
+
+```
+install-silent.cmd
+```
+
+It installs osquery 5.24.0 from osquery's official MSI (pinned by its SHA-256, since winget usually isn't available to
+SYSTEM), installs Sysmon with tapwatch's config, and enrolls the PC in Fleet, with no prompts. Exit code **0** means
+the agent is running and **1** means it isn't. The tool can report that, and the reason is in
+`%ProgramData%\tapwatch\agent-install.log`. Running it again is safe and is how to update. The PC appears under
+Hosts in Fleet within a minute.
+
+The agent.env in that package holds the enroll secret: keep the package in the tool's private storage, not on a
+shared drive. The points below about asking first apply to company PCs too: staff should know the agent is there.
+
 ## Installing on someone else's computer
 
 The agent records which programs run and what they connect to, including work apps and personal activity. On a

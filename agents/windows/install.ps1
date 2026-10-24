@@ -1,10 +1,16 @@
 <#
-Install osquery (winget) and Sysmon (Microsoft Sysinternals) on Windows, then start them.
+Install osquery and Sysmon (Microsoft Sysinternals) on Windows, then start them.
 
   Double-click install.cmd in the repo root, or from an admin PowerShell:
     .\windows\install.ps1                                   standalone (local log files)
     .\windows\install.ps1 -FleetUrl https://fleet.lan:8080 -EnrollSecret XXXX [-FleetCert fleet.pem]
     .\windows\install.ps1 -NoSysmon                         skip Sysmon
+
+  From a deployment tool (Intune, an RMM, PDQ, a GPO startup script), as SYSTEM, no prompts: install-silent.cmd,
+  or  powershell -NoProfile -ExecutionPolicy Bypass -File windows\install.ps1 -Silent
+  -Silent installs osquery from its pinned official MSI (winget is usually missing for SYSTEM), writes everything to
+  %ProgramData%\tapwatch\agent-install.log, and exits 0 when the agent runs, 1 when it doesn't. Running it again
+  is safe; it is also how to update.
 
 Fleet settings can also live in agent.env in the repo root (see agent.env.example).
 #>
@@ -15,15 +21,24 @@ param(
     [string]$FleetCert = "",
     [switch]$Standalone,
     [switch]$NoSysmon,
-    [switch]$Window            # set by install.cmd: close the window on success, wait on failure
+    [switch]$Window,           # set by install.cmd: close the window on success, wait on failure
+    [switch]$Silent            # a deployment tool: no prompts, a log file, exit code 0/1
 )
 $ErrorActionPreference = "Stop"
 trap {
     Write-Host "error: $_" -ForegroundColor Red
+    if ($Silent) { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null; exit 1 }
     if ($Window) { Read-Host "Install failed. Press Enter to close" }
     break
 }
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is very slow with the progress bar
+# Windows PowerShell 5.1 can default to TLS 1.0 on an older build; GitHub and Sysinternals need 1.2.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+if ($Silent) {
+    $logDir = Join-Path $env:ProgramData "tapwatch"
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    Start-Transcript -Path (Join-Path $logDir "agent-install.log") -Append | Out-Null
+}
 $Repo = Split-Path -Parent $PSScriptRoot
 
 function Say($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -48,14 +63,36 @@ if ($Mode -eq "fleet" -and -not $EnrollSecret) { throw "-FleetUrl needs -EnrollS
 Say "Mode: $Mode"
 
 # ---------------------------------------------------------------- osquery
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    throw "winget isn't available. Install 'App Installer' from the Microsoft Store, then run this again."
+# The official MSI from osquery's GitHub release, pinned by the SHA-256 the release publishes (the MSI itself is not
+# code-signed): what -Silent installs, and the fallback when winget is missing. x64 only; ARM64 Windows runs it
+# under emulation. Bump the version and hash together.
+$OsqueryMsi = @{ Version = "5.24.0"; Sha256 = "5f123c07936ee927d7b44ccdaf5d01c4b9bab2956328a4d8c7adc3395812a659"
+                 Url = "https://github.com/osquery/osquery/releases/download/5.24.0/osquery-5.24.0.msi" }
+$installed = Get-ChildItem -Path (Join-Path $env:ProgramFiles "osquery") -Filter osqueryd.exe -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+$useWinget = -not $Silent -and (Get-Command winget -ErrorAction SilentlyContinue)
+if ($useWinget) {
+    Say "Installing osquery with winget"
+    # No --scope: osquery's winget package is a single per-machine MSI that declares no scope, and asking for
+    # "--scope machine" filters it out ("No applicable installer found").
+    winget install --id osquery.osquery --exact --silent --accept-package-agreements --accept-source-agreements
+    # winget exits non-zero when the package is already installed and current; that's fine.
+} elseif ($installed -and [version](($installed.VersionInfo.ProductVersion -split '[^0-9.]')[0]) -ge [version]$OsqueryMsi.Version) {
+    # The same or newer (winget, or an earlier run): msiexec would refuse a downgrade anyway.
+    Say "osquery $($installed.VersionInfo.ProductVersion) is installed"
+} else {
+    Say "Installing osquery $($OsqueryMsi.Version) from its official MSI"
+    $msi = Join-Path $env:TEMP "osquery-$($OsqueryMsi.Version).msi"
+    Invoke-WebRequest -Uri $OsqueryMsi.Url -OutFile $msi -UseBasicParsing
+    $got = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLower()
+    if ($got -ne $OsqueryMsi.Sha256) {
+        Remove-Item -Force $msi
+        throw "the osquery download doesn't match the pinned SHA-256 ($got); not installing it"
+    }
+    $p = Start-Process msiexec.exe -ArgumentList @("/i", "`"$msi`"", "/qn", "/norestart") -Wait -PassThru
+    Remove-Item -Force $msi -ErrorAction SilentlyContinue
+    if ($p.ExitCode -notin @(0, 3010)) { throw "the osquery MSI failed (msiexec exit $($p.ExitCode))" }   # 3010: reboot later
 }
-Say "Installing osquery with winget"
-# No --scope: osquery's winget package is a single per-machine MSI that declares no scope, and asking for
-# "--scope machine" filters it out ("No applicable installer found").
-winget install --id osquery.osquery --exact --silent --accept-package-agreements --accept-source-agreements
-# winget exits non-zero when the package is already installed and current; that's fine.
 
 $Root = Join-Path $env:ProgramFiles "osquery"
 $osqueryd = Get-ChildItem -Path $Root -Filter osqueryd.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -188,4 +225,8 @@ if ($Window) {
     Write-Host ""
     Write-Host "This window closes in 15 seconds."
     Start-Sleep -Seconds 15
+}
+if ($Silent) {
+    Stop-Transcript | Out-Null
+    exit $(if ((Get-Service osqueryd).Status -eq "Running") { 0 } else { 1 })
 }
