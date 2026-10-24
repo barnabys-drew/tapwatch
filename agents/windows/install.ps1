@@ -133,11 +133,20 @@ if (-not $NoSysmon) {
         $config = Join-Path $PSScriptRoot "sysmon.xml"
         # Any Sysmon already there (Sysmon, Sysmon64, Sysmon64a): load our config into it rather than install a second one.
         $existing = Get-Service -Name "Sysmon*" -ErrorAction SilentlyContinue | Where-Object Name -ne "SysmonDrv" | Select-Object -First 1
-        if ($existing) {
-            $exe = Join-Path $env:windir "$($existing.Name).exe"
-            $out = & $exe -c $config 2>&1
-        } else {
-            $out = & $exe -accepteula -i $config 2>&1
+        # Sysmon prints its banner on stderr. With ErrorActionPreference Stop, Windows PowerShell 5.1 turns every
+        # stderr line of a native command captured with 2>&1 into a terminating RemoteException, before Sysmon has
+        # even finished: relax it for this call and judge by the exit code.
+        $oldEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            if ($existing) {
+                $exe = Join-Path $env:windir "$($existing.Name).exe"
+                $out = & $exe -c $config 2>&1
+            } else {
+                $out = & $exe -accepteula -i $config 2>&1
+            }
+        } finally {
+            $ErrorActionPreference = $oldEap
         }
         if ($LASTEXITCODE -ne 0) {
             # Sysmon says why on its own output; without it a bare exit code gave nothing to go on.
