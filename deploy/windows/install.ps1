@@ -337,14 +337,20 @@ if (-not $needSettings) {
 # ------------------------------------------------------------------ 5. Wireshark + Npcap
 Say "Installing the capture tools"
 $dumpcap = Join-Path $env:ProgramFiles "Wireshark\dumpcap.exe"
+# Downloads that run as administrator go in a folder only SYSTEM and Administrators can write to: in TEMP, any program
+# running as the signed-in user could swap the file between the signature check and the run.
+$Downloads = Join-Path $env:ProgramData "tapwatch-setup"
+New-Item -ItemType Directory -Force -Path $Downloads | Out-Null
+icacls $Downloads /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
 if (-not (Test-Path $dumpcap)) {
     Note "Wireshark (provides dumpcap, which reads the mirror port)"
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         # On a brand-new Windows, winget's first use can fail before its package sources are ready: the mini PC's
         # first install stopped here, and minutes later the same command found Wireshark at once. Refresh the
-        # sources, then try twice, keeping winget's last words for the log.
-        Quiet { & winget source update } | Out-Null
+        # sources, then try twice, a minute apart, keeping winget's last words for the log.
+        Quiet { & winget source update --disable-interactivity } | Out-Null
         for ($try = 1; $try -le 2 -and -not (Test-Path $dumpcap); $try++) {
+            if ($try -gt 1) { Start-Sleep -Seconds 60 }
             $said = Quiet { & winget install -e --id WiresharkFoundation.Wireshark --silent --accept-package-agreements --accept-source-agreements }
             if (-not (Test-Path $dumpcap)) {
                 Note "winget didn't install it (exit $LASTEXITCODE): $((@($said) | Where-Object { "$_".Trim() } | Select-Object -Last 2) -join ' / ')"
@@ -363,7 +369,7 @@ if (-not (Test-Path $dumpcap)) {
             Where-Object { [int]$_.Groups[2].Value % 2 -eq 0 } |
             Sort-Object { [version]"$($_.Groups[1].Value).$($_.Groups[2].Value).$($_.Groups[3].Value)" } | Select-Object -Last 1
         if (-not $stable) { Stop-Install "couldn't find a stable Wireshark on wireshark.org; install it from there, then run this again" }
-        $exe = Join-Path $env:TEMP $stable.Value
+        $exe = Join-Path $Downloads $stable.Value
         Invoke-WebRequest -Uri "https://www.wireshark.org/download/win64/$($stable.Value)" -OutFile $exe -UseBasicParsing
         $sig = Get-AuthenticodeSignature $exe
         if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch 'O=Wireshark Foundation') {
@@ -382,7 +388,7 @@ if (-not $npcap -or $npcap.Status -ne "Running") {
     $page = (Invoke-WebRequest -Uri "https://npcap.com/" -UseBasicParsing).Content
     $m = [regex]::Match($page, 'dist/npcap-[0-9.]+\.exe')
     if (-not $m.Success) { Stop-Install "couldn't find the Npcap download on npcap.com; install it from there by hand, then run this again" }
-    $exe = Join-Path $env:TEMP ($m.Value -replace '^dist/', '')
+    $exe = Join-Path $Downloads ($m.Value -replace '^dist/', '')
     Invoke-WebRequest -Uri "https://npcap.com/$($m.Value)" -OutFile $exe -UseBasicParsing
     $sig = Get-AuthenticodeSignature $exe
     if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch 'Nmap Software LLC|Insecure\.Com LLC') {

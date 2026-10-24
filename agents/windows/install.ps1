@@ -97,16 +97,13 @@ if ($useWinget) {
     winget install --id osquery.osquery --exact --silent --accept-package-agreements --accept-source-agreements
     # winget exits non-zero when the package is already installed and current; that's fine.
 }
-# winget can fail on a brand-new Windows before its package sources are ready (seen with Wireshark on the mini PC):
-# then the pinned MSI below installs osquery instead.
-if ($useWinget -and -not (Get-ChildItem -Path (Join-Path $ProgramFiles64 "osquery") -Filter osqueryd.exe -Recurse -ErrorAction SilentlyContinue)) {
-    Warn "winget didn't install osquery; using its official MSI instead"
-    $useWinget = $false
-    $installed = $null
-}
+# winget can fail on a brand-new Windows before its package sources are ready (seen with Wireshark on the mini PC),
+# leaving no osquery or an older one: look again, and the pinned MSI below installs it unless what's there is current.
 if ($useWinget) {
-    Say "osquery installed with winget"
-} elseif ($installed -and [version]::TryParse((("$($installed.VersionInfo.ProductVersion)" -split '[^0-9.]')[0]), [ref]$have) -and
+    $installed = Get-ChildItem -Path (Join-Path $ProgramFiles64 "osquery") -Filter osqueryd.exe -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+}
+if ($installed -and [version]::TryParse((("$($installed.VersionInfo.ProductVersion)" -split '[^0-9.]')[0]), [ref]$have) -and
           $have -ge [version]$OsqueryMsi.Version) {
     # The same or newer (winget, or an earlier run): msiexec would refuse a downgrade anyway.
     Say "osquery $($installed.VersionInfo.ProductVersion) is installed"
