@@ -3,7 +3,7 @@ tapwatch for a Windows PC, in one go. Double-click install-windows.cmd in the fo
 it asks for admin rights once and runs this.
 
 What it does, each step skipped when it's already done, so running it again is safe (and is how to update):
-  1. Checks this PC can run it (Windows version, virtualization, winget, disk space).
+  1. Checks this PC can run it (Windows version, virtualization, disk space).
   2. Asks the everyday questions (Linux account name, which network port, where alerts go, router logs).
   3. Turns on the Windows features WSL needs, restarts, and carries on by itself after you sign in.
   4. Installs Ubuntu without its first-run prompts, with mirrored networking and systemd, then asks the
@@ -148,7 +148,7 @@ if (-not $cs.HypervisorPresent -and -not $cpu.VirtualizationFirmwareEnabled) {
     Stop-Install "Virtualization is turned off in this PC's firmware (BIOS/UEFI). Turn on 'Intel VT-x' or 'AMD-V' (sometimes called SVM), then run this again."
 }
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Stop-Install "winget isn't available. Install 'App Installer' from the Microsoft Store, then run this again."
+    Warn "winget isn't available; Wireshark will be downloaded from wireshark.org instead."
 }
 $free = (Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':'))).Free / 1GB
 if ($free -lt 20) { Stop-Install ("Only {0:N0} GB free on {1}; tapwatch needs about 20 GB." -f $free, $env:SystemDrive) }
@@ -337,17 +337,58 @@ if (-not $needSettings) {
 # ------------------------------------------------------------------ 5. Wireshark + Npcap
 Say "Installing the capture tools"
 $dumpcap = Join-Path $env:ProgramFiles "Wireshark\dumpcap.exe"
+# Downloads that run as administrator go in a folder only SYSTEM and Administrators can write to: in TEMP, any program
+# running as the signed-in user could swap the file between the signature check and the run.
+$Downloads = Join-Path $env:ProgramData "tapwatch-setup"
+New-Item -ItemType Directory -Force -Path $Downloads | Out-Null
+icacls $Downloads /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
 if (-not (Test-Path $dumpcap)) {
     Note "Wireshark (provides dumpcap, which reads the mirror port)"
-    Quiet { & winget install -e --id WiresharkFoundation.Wireshark --silent --accept-package-agreements --accept-source-agreements } | Out-Null
-    if (-not (Test-Path $dumpcap)) { Stop-Install "Wireshark didn't install (no $dumpcap)" }
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        # On a brand-new Windows, winget's first use can fail before its package sources are ready: the mini PC's
+        # first install stopped here, and minutes later the same command found Wireshark at once. Refresh the
+        # sources, then try twice, a minute apart, keeping winget's last words for the log.
+        Quiet { & winget source update --disable-interactivity } | Out-Null
+        for ($try = 1; $try -le 2 -and -not (Test-Path $dumpcap); $try++) {
+            if ($try -gt 1) { Start-Sleep -Seconds 60 }
+            $said = Quiet { & winget install -e --id WiresharkFoundation.Wireshark --silent --accept-package-agreements --accept-source-agreements }
+            if (-not (Test-Path $dumpcap)) {
+                Note "winget didn't install it (exit $LASTEXITCODE): $((@($said) | Where-Object { "$_".Trim() } | Select-Object -Last 2) -join ' / ')"
+            }
+        }
+    }
+    if (-not (Test-Path $dumpcap)) {
+        # Wireshark's own installer, from wireshark.org: its signature must be the Wireshark Foundation's. /S installs
+        # silently (it doesn't install Npcap that way; the next step does). The newest *stable* release, from the
+        # download folder's listing: Wireshark-latest-*.exe is the development series (odd minor versions, 4.7.x in
+        # 2026-10), while winget installs the stable one (even minor, 4.6.x).
+        Note "Downloading Wireshark from wireshark.org instead"
+        $arch = if ((Get-CimInstance Win32_Processor | Select-Object -First 1).Architecture -eq 12) { "arm64" } else { "x64" }
+        $listing = (Invoke-WebRequest -Uri "https://www.wireshark.org/download/win64/" -UseBasicParsing).Content
+        $stable = [regex]::Matches($listing, "Wireshark-(\d+)\.(\d+)\.(\d+)-$arch\.exe") |
+            Where-Object { [int]$_.Groups[2].Value % 2 -eq 0 } |
+            Sort-Object { [version]"$($_.Groups[1].Value).$($_.Groups[2].Value).$($_.Groups[3].Value)" } | Select-Object -Last 1
+        if (-not $stable) { Stop-Install "couldn't find a stable Wireshark on wireshark.org; install it from there, then run this again" }
+        $exe = Join-Path $Downloads $stable.Value
+        Invoke-WebRequest -Uri "https://www.wireshark.org/download/win64/$($stable.Value)" -OutFile $exe -UseBasicParsing
+        $sig = Get-AuthenticodeSignature $exe
+        if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch 'O=Wireshark Foundation') {
+            Remove-Item $exe -Force
+            Stop-Install "the Wireshark download failed its signature check ($($sig.Status)); not running it"
+        }
+        Start-Process -FilePath $exe -ArgumentList "/S", "/desktopicon=no", "/quicklaunchicon=no" -Wait
+        Remove-Item $exe -Force -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path $dumpcap)) {
+        Stop-Install "Wireshark didn't install (no $dumpcap). Install it from wireshark.org, then run this again."
+    }
 } else { Note "Wireshark is installed" }
 $npcap = Get-Service npcap -ErrorAction SilentlyContinue
 if (-not $npcap -or $npcap.Status -ne "Running") {
     $page = (Invoke-WebRequest -Uri "https://npcap.com/" -UseBasicParsing).Content
     $m = [regex]::Match($page, 'dist/npcap-[0-9.]+\.exe')
     if (-not $m.Success) { Stop-Install "couldn't find the Npcap download on npcap.com; install it from there by hand, then run this again" }
-    $exe = Join-Path $env:TEMP ($m.Value -replace '^dist/', '')
+    $exe = Join-Path $Downloads ($m.Value -replace '^dist/', '')
     Invoke-WebRequest -Uri "https://npcap.com/$($m.Value)" -OutFile $exe -UseBasicParsing
     $sig = Get-AuthenticodeSignature $exe
     if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch 'Nmap Software LLC|Insecure\.Com LLC') {
