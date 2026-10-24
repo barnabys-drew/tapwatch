@@ -1,10 +1,16 @@
 <#
-Install osquery (winget) and Sysmon (Microsoft Sysinternals) on Windows, then start them.
+Install osquery and Sysmon (Microsoft Sysinternals) on Windows, then start them.
 
   Double-click install.cmd in the repo root, or from an admin PowerShell:
     .\windows\install.ps1                                   standalone (local log files)
     .\windows\install.ps1 -FleetUrl https://fleet.lan:8080 -EnrollSecret XXXX [-FleetCert fleet.pem]
     .\windows\install.ps1 -NoSysmon                         skip Sysmon
+
+  From a deployment tool (Intune, an RMM, PDQ, a GPO startup script), as SYSTEM, no prompts: install-silent.cmd,
+  or  powershell -NoProfile -ExecutionPolicy Bypass -File windows\install.ps1 -Silent
+  -Silent installs osquery from its pinned official MSI (winget is usually missing for SYSTEM), writes everything to
+  %ProgramData%\tapwatch\agent-install.log, and exits 0 when the agent runs, 1 when it doesn't. Running it again
+  is safe; it is also how to update.
 
 Fleet settings can also live in agent.env in the repo root (see agent.env.example).
 #>
@@ -15,15 +21,30 @@ param(
     [string]$FleetCert = "",
     [switch]$Standalone,
     [switch]$NoSysmon,
-    [switch]$Window            # set by install.cmd: close the window on success, wait on failure
+    [switch]$Window,           # set by install.cmd: close the window on success, wait on failure
+    [switch]$Silent            # a deployment tool: no prompts, a log file, exit code 0/1
 )
 $ErrorActionPreference = "Stop"
 trap {
     Write-Host "error: $_" -ForegroundColor Red
+    if ($Silent) { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null; exit 1 }
     if ($Window) { Read-Host "Install failed. Press Enter to close" }
     break
 }
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is very slow with the progress bar
+# Windows PowerShell 5.1 can default to TLS 1.0 on an older build; GitHub and Sysinternals need 1.2.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+# A folder only SYSTEM and Administrators can open, for the downloads this script runs as SYSTEM (osquery's MSI,
+# Sysmon) and for the install log. Windows\Temp, SYSTEM's TEMP, lets any user create a file there first and swap
+# its contents between the hash check and msiexec. The log can carry -EnrollSecret if a tool passed it on the
+# command line.
+$Work = Join-Path $env:ProgramData "tapwatch"
+New-Item -ItemType Directory -Force -Path $Work | Out-Null
+icacls $Work /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+if ($Silent) { Start-Transcript -Path (Join-Path $Work "agent-install.log") -Append | Out-Null }
+# The 64-bit Program Files even from a 32-bit PowerShell (Intune's Win32 apps and some RMMs start one), where
+# $env:ProgramFiles is "Program Files (x86)" and the x64 MSI's osquery would not be found.
+$ProgramFiles64 = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
 $Repo = Split-Path -Parent $PSScriptRoot
 
 function Say($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -38,26 +59,73 @@ if (Test-Path $envFile) {
                 "FLEET_URL"     { if (-not $FleetUrl)     { $FleetUrl = $Matches[2] } }
                 "ENROLL_SECRET" { if (-not $EnrollSecret) { $EnrollSecret = $Matches[2] } }
                 "FLEET_CERT"    { if (-not $FleetCert)    { $FleetCert = $Matches[2] } }
+                "PROXY"         { $Proxy = $Matches[2] }
             }
         }
     }
 }
 if ($Standalone) { $FleetUrl = "" }
+if ($Silent -and -not $FleetUrl -and -not $Standalone) {
+    # A deployment that lost agent.env would otherwise install standalone, report success, and never reach Fleet.
+    throw "no Fleet address: agent.env is missing next to install-silent.cmd (or pass -Standalone on purpose)"
+}
+if ($Proxy) {
+    # PROXY=host:port in agent.env, for an office that only reaches the internet through a proxy: the downloads
+    # here, and osquery's own connection to Fleet (its --proxy_hostname flag below).
+    $PSDefaultParameterValues["Invoke-WebRequest:Proxy"] = "http://$Proxy"
+}
 $Mode = if ($FleetUrl) { "fleet" } else { "standalone" }
 if ($Mode -eq "fleet" -and -not $EnrollSecret) { throw "-FleetUrl needs -EnrollSecret (or ENROLL_SECRET in agent.env)" }
 Say "Mode: $Mode"
 
 # ---------------------------------------------------------------- osquery
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    throw "winget isn't available. Install 'App Installer' from the Microsoft Store, then run this again."
+# The official MSI from osquery's GitHub release, pinned by the SHA-256 the release publishes (the MSI itself is not
+# code-signed): what -Silent installs, and the fallback when winget is missing. x64 only; ARM64 Windows runs it
+# under emulation. Bump the version and hash together.
+$OsqueryMsi = @{ Version = "5.24.0"; Sha256 = "5f123c07936ee927d7b44ccdaf5d01c4b9bab2956328a4d8c7adc3395812a659"
+                 Url = "https://github.com/osquery/osquery/releases/download/5.24.0/osquery-5.24.0.msi" }
+$installed = Get-ChildItem -Path (Join-Path $ProgramFiles64 "osquery") -Filter osqueryd.exe -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+$have = $null   # osqueryd.exe's version, when it parses
+$useWinget = -not $Silent -and (Get-Command winget -ErrorAction SilentlyContinue)
+if ($useWinget) {
+    Say "Installing osquery with winget"
+    # No --scope: osquery's winget package is a single per-machine MSI that declares no scope, and asking for
+    # "--scope machine" filters it out ("No applicable installer found").
+    winget install --id osquery.osquery --exact --silent --accept-package-agreements --accept-source-agreements
+    # winget exits non-zero when the package is already installed and current; that's fine.
+} elseif ($installed -and [version]::TryParse((("$($installed.VersionInfo.ProductVersion)" -split '[^0-9.]')[0]), [ref]$have) -and
+          $have -ge [version]$OsqueryMsi.Version) {
+    # The same or newer (winget, or an earlier run): msiexec would refuse a downgrade anyway.
+    Say "osquery $($installed.VersionInfo.ProductVersion) is installed"
+} else {
+    Say "Installing osquery $($OsqueryMsi.Version) from its official MSI"
+    $msi = Join-Path $Work ("osquery-" + [guid]::NewGuid() + ".msi")
+    Invoke-WebRequest -Uri $OsqueryMsi.Url -OutFile $msi -UseBasicParsing
+    $got = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLower()
+    if ($got -ne $OsqueryMsi.Sha256) {
+        Remove-Item -Force $msi
+        throw "the osquery download doesn't match the pinned SHA-256 ($got); not installing it"
+    }
+    $msiLog = Join-Path $Work "osquery-msi.log"
+    # 1618: another installation is running (Windows Update, or the deployment tool's next package): wait for it, up
+    # to 10 minutes, then hand 1618 back, which Intune's default return codes treat as "retry".
+    for ($try = 1; ; $try++) {
+        $p = Start-Process msiexec.exe -ArgumentList @("/i", "`"$msi`"", "/qn", "/norestart", "/l*v", "`"$msiLog`"") -Wait -PassThru
+        if ($p.ExitCode -ne 1618 -or $try -ge 20) { break }
+        Say "another installation is running; trying again in 30 s"
+        Start-Sleep -Seconds 30
+    }
+    Remove-Item -Force $msi -ErrorAction SilentlyContinue
+    if ($p.ExitCode -eq 1618 -and $Silent) {
+        Write-Host "error: another installation kept running for 10 minutes; the deployment tool can retry"
+        Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+        exit 1618
+    }
+    if ($p.ExitCode -notin @(0, 3010)) { throw "the osquery MSI failed (msiexec exit $($p.ExitCode)); see $msiLog" }   # 3010: reboot later
 }
-Say "Installing osquery with winget"
-# No --scope: osquery's winget package is a single per-machine MSI that declares no scope, and asking for
-# "--scope machine" filters it out ("No applicable installer found").
-winget install --id osquery.osquery --exact --silent --accept-package-agreements --accept-source-agreements
-# winget exits non-zero when the package is already installed and current; that's fine.
 
-$Root = Join-Path $env:ProgramFiles "osquery"
+$Root = Join-Path $ProgramFiles64 "osquery"
 $osqueryd = Get-ChildItem -Path $Root -Filter osqueryd.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $osqueryd) { throw "osqueryd.exe not found under $Root after install" }
 
@@ -103,6 +171,7 @@ if ($Mode -eq "fleet") {
         Replace("@CONF_PATH@", $conf).Replace("@LOG_PATH@", $logs).Replace("@DB_PATH@", $db)
 }
 $text = $text.TrimEnd() + "`n" + (Get-Content (Join-Path $Repo "config\windows.flags") -Raw)   # Sysmon events
+if ($Proxy) { $text = $text.TrimEnd() + "`n--proxy_hostname=$Proxy`n" }
 [System.IO.File]::WriteAllText($flags, ($text -replace "`r`n", "`n"))   # LF only, so no stray \r ends up in a flag value
 
 Say "Starting the osqueryd service"
@@ -119,7 +188,7 @@ if ((Get-Service osqueryd).Status -ne "Running") { Start-Service osqueryd }
 # ---------------------------------------------------------------- Sysmon
 if (-not $NoSysmon) {
     Say "Installing Sysmon (records every process start and network connection, with the program behind it)"
-    $tmp = Join-Path $env:TEMP ("sysmon-" + [guid]::NewGuid())
+    $tmp = Join-Path $Work ("sysmon-" + [guid]::NewGuid())
     New-Item -ItemType Directory -Path $tmp | Out-Null
     try {
         Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile "$tmp\Sysmon.zip" -UseBasicParsing
@@ -143,7 +212,7 @@ if (-not $NoSysmon) {
         try {
             if ($existing) {
                 $exe = Join-Path $env:windir "$($existing.Name).exe"
-                $out = & $exe -c $config 2>&1
+                $out = & $exe -accepteula -c $config 2>&1   # SYSTEM may never have accepted the EULA: no prompt
             } else {
                 $out = & $exe -accepteula -i $config 2>&1
             }
@@ -188,4 +257,8 @@ if ($Window) {
     Write-Host ""
     Write-Host "This window closes in 15 seconds."
     Start-Sleep -Seconds 15
+}
+if ($Silent) {
+    Stop-Transcript | Out-Null
+    exit $(if ((Get-Service osqueryd).Status -eq "Running") { 0 } else { 1 })
 }
