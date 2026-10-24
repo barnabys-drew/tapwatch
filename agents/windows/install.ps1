@@ -66,6 +66,9 @@ $conf = Join-Path $Root "osquery.conf"
 $db = Join-Path $Root "osquery.db"
 $logs = Join-Path $Root "log"
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
+# osquery's MSI starts its service on a fresh install, and the running osqueryd holds osquery.conf open: Copy-Item
+# then fails ("being used by another process"). Stopped here, started again below with the new flags.
+Stop-Service -Name osqueryd -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $Repo "config\osquery.conf") $conf -Force
 
 if ($Mode -eq "fleet") {
