@@ -68,7 +68,7 @@ def test_features_keep_no_network_strings():
 
 def test_endpoint_rules_key_on_the_program_file_name():
     assert judge.key_for("host_encoded_cmd", {}, ["powershell.exe"]) == "program:powershell.exe"
-    assert judge.key_for("beaconing", {"host_program_path": "C:\\Users\\x\\App\\Chrome.exe"}, ["a.example.com"]) \
+    assert judge.key_for("beaconing", {"host_program_path": "C:\\Program Files\\App\\Chrome.exe"}, ["a.example.com"]) \
         == "program:chrome.exe"
     assert judge.key_for("scan", {"dedupe": "192.168.50.20"}, []) == "ind:192.168.50.20"
 
