@@ -382,6 +382,11 @@ def cmd_accounts(args, cfg) -> int:
         print("3. Copy the whole address from the browser's address bar and paste it here.\n")
         code = acc.code_from_redirect(input("address: "), state)
         tok = acc.exchange(acc.Http(), cid, secret, code, verifier)
+        same = acc.same_account(acc.Http(), cid, secret, d, label, tok)
+        if same:
+            print(f"that's the same Google account as {same!r}: nothing saved. Open the link in a private window "
+                  "and sign in to the other account.", file=sys.stderr)
+            return 1
         path = acc.save_token(d, label, {"refresh_token": tok["refresh_token"], "scope": tok.get("scope", ""),
                                          "added": round(time.time())})
         print(f"saved {label} ({path}, mode 600); add it under account_check.google in config.yaml")
@@ -416,7 +421,8 @@ def cmd_account_check(args, cfg) -> int:
     except acc.AccountError as e:
         print(e, file=sys.stderr)
         return 1
-    f = acc.facts(result)
+    mb = json.loads(row["facts"] or "{}").get("mb")
+    f = acc.facts(result, upload_bytes=mb * 1e6 if isinstance(mb, (int, float)) else None)
     text = acc.summary(f)
     print(text)
     if args.names:   # the terminal only: titles are never stored

@@ -245,3 +245,38 @@ def test_the_cli_checks_google_uploads_only_and_saves_counts(tmp_path, two_accou
     assert Store(db).notes(up)[-1]["text"].startswith("Account check")
     assert "private name" not in capsys.readouterr().out          # titles only with --names
     assert cli.main(["account-check", str(up), "--names"]) == 0 and "private name.mp4" in capsys.readouterr().out
+
+
+def test_small_mail_beside_a_big_upload_doesnt_explain_it(two_accounts):
+    """#986: five sent emails of a few KB in the window of a 1.5 GB upload are not its explanation."""
+    routes = routes_for_one_upload()
+    routes["https://driveactivity"] = {"activities": []}
+    msgs = {"m1": T - 1200, "o1": T - 90000}
+    del routes["https://gmail.googleapis.com/gmail/v1/users/me/messages"]
+    routes = {   # the per-message route first: the fake matches by prefix
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/": lambda url, p: {
+            "internalDate": str(int(msgs[url.rsplit("/", 1)[1]] * 1000)), "sizeEstimate": 8_000},
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages": lambda url, p: {
+            "messages": [{"id": "m1"}, {"id": "o1"}] if p["labelIds"] == "SENT" else []},
+        **routes}
+    result = acc.check(two_accounts, T - 9000, T + 1800, http=FakeHttp(routes))
+    f = acc.facts(result, upload_bytes=1577e6)
+    assert f["outcome"] == "unexplained" and f["too_small"] and f["upload_mb"] == 1577
+    text = acc.summary(f)
+    assert "nothing big enough to explain the 1577 MB upload: unexplained." in text and "(1 sent, 8 KB)" in text
+    assert acc.facts(result, upload_bytes=20e3)["outcome"] == "explained"   # the same mail explains a small upload
+    assert acc.facts(result)["outcome"] == "explained"                      # no upload size: mail counts
+
+
+def test_a_second_label_for_the_same_account_is_refused(tmp_path, monkeypatch):
+    d = tmp_path / "accounts"
+    acc.save_token(d, "primary", {"refresh_token": "r-1", "scope": acc.SCOPES["gmail"]})
+    def profile(url, p):
+        return {"emailAddress": "owner@example.com"}
+    http = FakeHttp({acc.TOKEN_URL: {"access_token": "access-1"},
+                     "https://gmail.googleapis.com/gmail/v1/users/me/profile": profile})
+    new = {"access_token": "access-1", "refresh_token": "r-2", "scope": acc.SCOPES["gmail"]}
+    assert acc.same_account(http, "c", "s", d, "secondary", new) == "primary"
+    assert acc.same_account(http, "c", "s", d, "secondary", dict(new, scope=acc.SCOPES["drive"])) == ""
+    url, _, _ = acc.auth_request("client-1", ["drive"])
+    assert "select_account" in urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["prompt"][0]
