@@ -40,8 +40,9 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 ### 2026-10-22 to 10-24: the sensor moves to its own box, Fleet for the other computers
 
 - **Fleet** (#14, part 1): a Fleet server in `deploy/fleet` that the agents enroll in, and each agent's results
-  go through the host rules ([#270](https://github.com/barnabys-drew/tapwatch/pull/270)). Three home computers report
-  through it
+  go through the host rules ([#270](https://github.com/barnabys-drew/tapwatch/pull/270)). Three computers report
+  through it over Tailscale; one that should only report is tagged so the tailnet lets it reach Fleet's port and
+  nothing else
 - **Moving an install**: `deploy/export-state.sh` packs the config, cases, notes and learned baselines, and the
   Windows installer or `tapwatch import-state` takes them over on the new computer, refusing anything else in the
   file ([#272](https://github.com/barnabys-drew/tapwatch/pull/272)). The live sensor moved this way to a mini PC
@@ -55,6 +56,12 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
   Sysmon handled ([#274](https://github.com/barnabys-drew/tapwatch/pull/274))
 - **winget not ready on a brand-new PC**: both installers retry, then fall back to a signature-checked Wireshark
   from wireshark.org or osquery's pinned installer ([#279](https://github.com/barnabys-drew/tapwatch/pull/279))
+- **The house's own public address** (`network.public_ips`): once the computers reported to Fleet over Tailscale,
+  six beaconing cases (three alerts) appeared within an hour, all going to the house's own address. Tailscale peers on one LAN try
+  each other's router-mapped port about once a minute. Traffic between a LAN device and that address is now
+  skipped before the rules, and the host rules don't count it as the internet. The review caught that calling
+  the address a LAN device would have raised admin-port and new-device cases on it
+  ([#285](https://github.com/barnabys-drew/tapwatch/pull/285)). It is set by hand: the router's logs never carry it
 
 ### 2026-10-20 to 10-21: v0.3 built, vulnerable software, less noise
 
