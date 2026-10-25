@@ -30,12 +30,31 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 |---|---|
 | Network detection | **Solid.** 22 network case types, baselines that survive restarts, a scripted self-check at 27/27 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
-| Linux install | **Solid.** `docker compose up`, verified end to end on a live interface. Zeek runs from a patched 9.0 LTS image as the user, not root ([#252](https://github.com/barnabys-drew/tapwatch/pull/252)). A native host install for Arch-based desktops (Omarchy) is in progress |
-| Windows install | **Passed on a clean machine.** The one-step installer went from the ZIP to a test alert on a fresh Windows 11 VM (v0.2.5, [#175](https://github.com/barnabys-drew/tapwatch/issues/175)), and `tapwatch doctor` names what's wrong. The first outside install is next |
+| Linux install | **Solid.** `docker compose up`, verified end to end on a live interface. Zeek runs from a patched 9.0 LTS image as the user, not root ([#252](https://github.com/barnabys-drew/tapwatch/pull/252)). A native host install for Arch-based desktops (Omarchy) is built ([#267](https://github.com/barnabys-drew/tapwatch/pull/267)) |
+| Windows install | **Passed on a clean machine.** The one-step installer went from the ZIP to a test alert on a fresh Windows 11 VM (v0.2.5, [#175](https://github.com/barnabys-drew/tapwatch/issues/175)), and `tapwatch doctor` names what's wrong. On 2026-10-24 it moved a running sensor to a new mini PC, cases and baselines included (`import-state`, [#272](https://github.com/barnabys-drew/tapwatch/pull/272)). The first outside install is next |
 | Host context (who on the PC made this traffic) | **A week of real data reviewed** (v0.2, [#4](https://github.com/barnabys-drew/tapwatch/issues/4)): a program named for 106 of 136 PC cases, consistent with the owner's review. The intent verdicts never fired on real traffic and stay unmeasured, so host context still does not lower alerts on its own |
 | Endpoint rules | **Built** on Windows (osquery + Sysmon) and Linux (osquery eBPF): R17–R29 and R36–R39, plus R48 known-exploited software. A host case and a network case on the same PC pair only when the host rule names that network rule (`hostrules.PAIRS`). v0.3 closes after R39's first week |
 | Router syslog | **Verified on a live gateway** (2026-10-16). CEF events and firewall lines parsed as sent; admin logins checked against a real line. IPS verdicts still await a real detection |
 | macOS | **Later.** Waiting on a tester with a Mac; it won't ship untested |
+
+### 2026-10-22 to 10-24: the sensor moves to its own box, Fleet for the other computers
+
+- **Fleet** (#14, part 1): a Fleet server in `deploy/fleet` that the agents enroll in, and each agent's results
+  go through the host rules ([#270](https://github.com/barnabys-drew/tapwatch/pull/270)). Three home computers report
+  through it
+- **Moving an install**: `deploy/export-state.sh` packs the config, cases, notes and learned baselines, and the
+  Windows installer or `tapwatch import-state` takes them over on the new computer, refusing anything else in the
+  file ([#272](https://github.com/barnabys-drew/tapwatch/pull/272)). The live sensor moved this way to a mini PC
+  with its own mirror port
+- **Native Linux install** for Arch-based desktops (Omarchy), and Python 3.14 in CI
+  ([#267](https://github.com/barnabys-drew/tapwatch/pull/267))
+- **Windows agent installer**, from the first installs on other PCs: a silent mode for deployment tools with a
+  pinned, hash-checked osquery and standard exit codes ([#276](https://github.com/barnabys-drew/tapwatch/pull/276));
+  Windows' built-in Sysmon on 26H2, which needs one restart
+  ([#277](https://github.com/barnabys-drew/tapwatch/pull/277)); config replaced safely, ARM PCs and an existing
+  Sysmon handled ([#274](https://github.com/barnabys-drew/tapwatch/pull/274))
+- **winget not ready on a brand-new PC**: both installers retry, then fall back to a signature-checked Wireshark
+  from wireshark.org or osquery's pinned installer ([#279](https://github.com/barnabys-drew/tapwatch/pull/279))
 
 ### 2026-10-20 to 10-21: v0.3 built, vulnerable software, less noise
 
@@ -181,7 +200,9 @@ Ordered by theme, not date.
 
 - **macOS**, once there's a Mac to test on: basic support for the tapwatch box ([#5](https://github.com/barnabys-drew/tapwatch/issues/5)) and
   macOS living-off-the-land rules ([#29](https://github.com/barnabys-drew/tapwatch/issues/29))
-- **More endpoints:** host context for other computers through a Fleet server ([#14](https://github.com/barnabys-drew/tapwatch/issues/14))
+- **More endpoints:** host context for other computers through a Fleet server ([#14](https://github.com/barnabys-drew/tapwatch/issues/14)).
+  Part 1 is done: the Fleet server, and the host rules on every enrolled computer. Next: "which program" for a
+  network case on those computers
 - **Living off the land, part 2:** vulnerable drivers, DLL hijacks, browsers, Office add-ins and trusted sites
   ([#233](https://github.com/barnabys-drew/tapwatch/issues/233))
 - **Sharper detection:** JA4 TLS fingerprints ([#16](https://github.com/barnabys-drew/tapwatch/issues/16)) and a
@@ -195,8 +216,8 @@ Ordered by theme, not date.
   still apply to its verdict, and it runs in shadow mode against Jev first ([#263](https://github.com/barnabys-drew/tapwatch/issues/263))
 - **Packaging and ops:** a container image and PyPI package ([#22](https://github.com/barnabys-drew/tapwatch/issues/22)), TCP/TLS syslog
   ([#25](https://github.com/barnabys-drew/tapwatch/issues/25)), a same-switch VLAN guide ([#23](https://github.com/barnabys-drew/tapwatch/issues/23)).
-  Done: a watchdog for every capture path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)). In progress: a native host
-  install for Arch-based Linux desktops (Omarchy)
+  Done: a watchdog for every capture path ([#20](https://github.com/barnabys-drew/tapwatch/issues/20)) and a native host
+  install for Arch-based Linux desktops (Omarchy, [#267](https://github.com/barnabys-drew/tapwatch/pull/267))
 - [x] Benchmark the progress: a running report from the case history of noise rate, Jev agreement
   with the triage disposition and host-context accuracy, week by week, on the stats page and as
   `tapwatch benchmark` Markdown (asked 2026-10-16, built 2026-10-17, [#130](https://github.com/barnabys-drew/tapwatch/pull/130));
