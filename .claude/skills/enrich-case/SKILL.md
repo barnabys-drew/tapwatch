@@ -42,6 +42,9 @@ It prints one line per account and records counts, file types, times and sizes o
 Report it plainly, using the outcome it prints:
 - **Something shows up:** "Drive shows N uploads at HH:MM (types)".
 - **"unexplained":** every account was fully checked and shows nothing. Say so.
+- **"possibly_managed_account":** the accounts show nothing, but the device reached a managed-account name such
+  as ios-mdm.google.com during the upload. Say a work or school Google account on the device may explain it and
+  the check can't see that account; ask the owner rather than calling it unexplained.
 - **"incomplete":** a check failed, stopped short or isn't set up. That's no answer either way: don't count it as
   unexplained. If no accounts or client are configured, mention docs/setup/account-check.md and carry on. Don't run it with `--names` unless the user asks. It
 can't see Google Photos backups, so a phone's photo backup stays unexplained by design.

@@ -268,6 +268,54 @@ def test_small_mail_beside_a_big_upload_doesnt_explain_it(two_accounts):
     assert acc.facts(result)["outcome"] == "explained"                      # no upload size: mail counts
 
 
+def zeek_logs(d, host, names):
+    """dns.log and ssl.log in `d`: `host` looking up and connecting to each name over the upload's hours."""
+    d.mkdir()
+    rows = [(T - 5400 + 60 * i, n) for i, n in enumerate(names)]
+    (d / "dns.log").write_text("".join(json.dumps({"ts": ts, "id.orig_h": host, "id.resp_h": "192.168.50.1",
+                                                   "query": n, "qtype_name": "A"}) + "\n" for ts, n in rows))
+    (d / "ssl.log").write_text("".join(json.dumps({"ts": ts + 1, "id.orig_h": host, "id.resp_h": "203.0.113.7",
+                                                   "server_name": n}) + "\n" for ts, n in rows))
+    return d
+
+
+def managed_cli(tmp_path, two_accounts, monkeypatch, names):
+    from tapwatch import cli
+    db = str(tmp_path / "t.db")
+    case = Store(db).add(Case("upload_spike", "192.168.50.23", T, "Upload spike", {"mb": 1560},
+                              ["gcs-us-00003.content-storage-upload.googleapis.com"]), "new", None, Route.DIGEST,
+                         "test")
+    routes = routes_for_one_upload()
+    routes["https://driveactivity"] = {"activities": []}
+    monkeypatch.setattr(acc, "Http", lambda: FakeHttp(routes))
+    other = zeek_logs(tmp_path / "other", "192.168.50.99", ["ios-mdm.google.com"])   # another device's marker
+    cfg = {**two_accounts, "db_path": db,
+           "ui": {"zeek_dirs": [str(zeek_logs(tmp_path / "zeek", "192.168.50.23", names)), str(other)]}}
+    monkeypatch.setattr(cli.config, "load", lambda path: cfg)
+    assert cli.main(["account-check", str(case), "--save"]) == 0
+    return json.loads(Store(db).get(case)["facts"])["account_check"], Store(db).notes(case)[-1]["text"]
+
+
+def test_a_managed_account_marker_makes_an_unexplained_upload_possibly_managed(tmp_path, two_accounts, monkeypatch):
+    """#986: the personal accounts showed nothing; the phone reached Google's iOS device management meanwhile."""
+    f, note = managed_cli(tmp_path, two_accounts, monkeypatch,
+                          ["mail.example.net", "IOS-MDM.google.com.", "content-storage-upload.googleapis.com"])
+    assert f["outcome"] == "possibly_managed_account" and f["managed_markers"] == ["ios-mdm.google.com"]
+    assert "possibly_managed_account" in note and "managed (work or school) Google account" in note
+    assert "can't see it" in note and "unexplained" not in note
+
+
+def test_without_a_marker_the_upload_stays_unexplained(tmp_path, two_accounts, monkeypatch):
+    f, note = managed_cli(tmp_path, two_accounts, monkeypatch, ["mail.example.net", "mdm.example.net"])
+    assert f["outcome"] == "unexplained" and "managed_markers" not in f
+    assert "the accounts show nothing: unexplained." in note
+    # markers never override an explanation or an incomplete check
+    result = {"window": [T - 9000, T + 1800], "accounts": {"personal": {"youtube": {"rows": [
+        {"time": T - 900, "type": "video"}], "complete": True}}}}
+    assert acc.facts(result, markers=["ios-mdm.google.com"])["outcome"] == "explained"
+    assert acc.facts({"window": [0, 1], "accounts": {}}, markers=["ios-mdm.google.com"])["outcome"] == "incomplete"
+
+
 def test_a_second_label_for_the_same_account_is_refused(tmp_path, monkeypatch):
     d = tmp_path / "accounts"
     acc.save_token(d, "primary", {"refresh_token": "r-1", "scope": acc.SCOPES["gmail"]})
