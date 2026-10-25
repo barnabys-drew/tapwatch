@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 
 from conftest import T0, conn, dhcp, dns, eve_alert, ssl
 
+from tapwatch import hostrules
 from tapwatch.detectors import (
+    HOUSE_IPS,
     Beaconing,
     CleartextAuth,
     DevProfile,
@@ -23,10 +25,12 @@ from tapwatch.detectors import (
     Warmup,
     base_domain,
     build,
+    hairpin,
     in_hours,
     is_internal,
     looks_random,
     parse_hours,
+    set_house_ips,
     set_local_nets,
     suffix_match,
 )
@@ -502,16 +506,22 @@ def test_multicast_and_broadcast_count_as_local():
         set_local_nets(())
 
 
-def test_the_houses_public_address_counts_as_inside():
+def test_traffic_through_the_houses_public_address_never_left_the_house():
     # Tailscale peers on one LAN try each other's router-mapped port on the house's public address every minute
     beats = [conn(T0 + i * 65, dst="203.0.113.9", port=1057) for i in range(12)]
-    assert len(run(Beaconing(), beats)) == 1
+    assert len(run(Beaconing(), beats)) == 1 and not hairpin(beats[0])
     try:
-        build({"network": {"local_nets": ["2001:db8:1::/48"], "public_ips": ["203.0.113.9"]}})
-        assert is_internal("203.0.113.9") and is_internal("2001:db8:1::5") and not is_internal("203.0.113.10")
-        assert run(Beaconing(), beats) == []
+        build({"network": {"public_ips": ["203.0.113.9", "myhouse.example.com", "198.51.100.0/24", None]}})
+        assert HOUSE_IPS == {"203.0.113.9"}                       # names, ranges and blanks are skipped, not fatal
+        assert hairpin(beats[0]) and hairpin({"id.orig_h": "203.0.113.9", "id.resp_h": "192.168.50.10"})
+        assert not is_internal("203.0.113.9")                     # not a LAN device: no new-device or admin-port cases
+        # the internet reaching the house's address (the router's IPS hits) is still outside traffic
+        assert not hairpin({"id.orig_h": "198.51.100.7", "id.resp_h": "203.0.113.9"})
+        assert hostrules.outside("203.0.113.9", 1057) is False and hostrules.outside("203.0.113.10", 443)
+        build({"network": {"public_ips": "203.0.113.9"}})          # one address without a list
+        assert HOUSE_IPS == {"203.0.113.9"}
     finally:
-        set_local_nets(())
+        set_house_ips(())
 
 
 def test_mdns_chatter_is_not_beaconing_and_link_local_is_not_a_new_device():

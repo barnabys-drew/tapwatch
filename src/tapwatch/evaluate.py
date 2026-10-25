@@ -11,7 +11,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from . import zeek
-from .detectors import Detector
+from .detectors import Detector, hairpin
 from .models import Case, Route, Verdict
 from .router import Thresholds, route, wants_ai
 from .summarizer import Assets, summarize
@@ -40,6 +40,8 @@ def run(log_dir, labels: dict, detectors: list[Detector], assets: Assets,
     seen_keys = set()
     def all_cases():
         for rec in zeek.replay(log_dir):
+            if hairpin(rec):
+                continue   # never left the house, as in the live pipeline
             for d in detectors:
                 yield from d.feed(rec)
         for d in detectors:
