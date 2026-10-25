@@ -4,7 +4,7 @@ their routing (router.long_horizon), the judge guardrail (#201) and the nightly 
 import json
 import queue
 import random
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -15,6 +15,7 @@ from tapwatch.router import route
 from tapwatch.store import Store
 from tapwatch.summarizer import Assets
 
+UTC = timezone.utc   # datetime.UTC is 3.11+; CI tests 3.10
 END = date(2026, 9, 30)
 IP, MAC = "192.168.50.10", "02:00:00:00:00:0a"
 DEV = f"mac:{MAC}"
