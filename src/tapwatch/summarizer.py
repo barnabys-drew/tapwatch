@@ -281,13 +281,13 @@ def _observed(c: Case, words: dict) -> str:
         it, arrives, resumes, them = ("it", "arrives", "resumes", "it") if one else ("they", "arrive", "resume", "them")
         return (f"{what} {how}; {it} normally {arrives} at least every {f.get('limit_minutes')} minutes. "
                 f"Until {it} {resumes}, the rules that read {them} are blind.")
-    if c.detector in ("slow_beacon", "slow_upload"):
+    if c.detector in ("slow_beacon", "slow_upload", "rare_dest", "dormant_wake", "routine_shift"):
         return _long_horizon(c)
     return c.title + "."
 
 
 def _long_horizon(c: Case) -> str:
-    """R30, R31 (longhaul.py): weeks of the device's daily summaries, numbers as words."""
+    """R30-R34 (longhaul.py): weeks of the device's daily summaries, numbers as words."""
     f = c.facts
     if c.detector == "slow_beacon":
         how = ("at about the same time of day" + (f", missing {f['missed_days']} day(s)" if f.get("missed_days") else "")
@@ -296,13 +296,42 @@ def _long_horizon(c: Case) -> str:
                 f"{_every(int(f.get('interval_s') or 0))}, {how}: {f.get('beats')} check-ins on {f.get('days_seen')} "
                 "different days. Timing that steady over days is what a slow command-and-control heartbeat looks "
                 "like; scheduled updaters and licence checks look the same.")
-    else:
+    elif c.detector == "slow_upload":
         text = (f"Over the last {f.get('window_days')} days it uploaded {f.get('mb')} MB to one destination, a "
                 f"little on {f.get('upload_days')} different days and never a large burst, about {f.get('ratio')} "
                 f"times more than it downloaded from it. In the {f.get('prior_days')} days before, it had sent "
                 f"that destination {f.get('prior_mb')} MB.")
         if f.get("peers"):
             text += f" {f['peers']} other device(s) in the house also used it."
+    elif c.detector == "rare_dest" and f.get("variant") == "peer":
+        text = (f"On {f.get('day')} it reached a country ({f.get('country')}) that none of the {f.get('peers')} other "
+                f"\"{f.get('role_word')}\" devices in the house reached in the last 30 days, and it hadn't either: "
+                f"{f.get('conns')} connection(s), {f.get('mb')} MB. Devices of one kind normally share their vendor's "
+                "servers; a different brand under the same label does not.")
+    elif c.detector == "rare_dest":
+        text = (f"On {f.get('day')} it made {f.get('conns')} connection(s) ({f.get('mb')} MB, ports "
+                f"{', '.join(str(p) for p in f.get('ports') or [])}) to a network (AS{f.get('asn')}, "
+                f"{f.get('country') or 'country unknown'}) by address alone, with no DNS name or TLS name, and no "
+                "other device in the house touched that network in the last 30 days, nor this one before. Peer-to-peer "
+                "games, calls and VPN-like relays look the same.")
+    elif c.detector == "dormant_wake":
+        new = [f"{len(f.get('new_asns') or [])} network(s) it never used before"]
+        if f.get("new_ports"):
+            new.append("port(s) " + ", ".join(str(p) for p in f["new_ports"]) + " it never used before")
+        text = (f"It had no connections for {f.get('quiet_days')} watched days (last active {f.get('last_active')}, "
+                f"with {f.get('active_before')} active days before that), and on {f.get('day')} came back talking to "
+                + " and ".join(new) + ", after leaving out popular names and names other devices in the house use. "
+                "A laptop back from a trip catching up on updates looks the same; a device that was taken and "
+                "returned does too.")
+    else:
+        words = {"hours": "the hours it is active", "new_ports": "the share of its traffic on ports it never used",
+                 "bytes": "its daily data volume", "new_port_every_day": "a port or protocol it never used"}
+        moved = [words.get(s.get("score"), s.get("score")) for s in f.get("shifts") or []]
+        text = (f"On each of the last {len(f.get('run') or [])} days, " + " and ".join(moved) + " moved beyond its own "
+                f"normal over the {f.get('baseline_days')} days before (about {f.get('baseline_mb')} MB a day; "
+                f"lately {', '.join(str(x) for x in f.get('daily_mb') or [])} MB). A new habit, a holiday or a "
+                "long download looks the same.")
+    if c.detector != "slow_beacon":
         if f.get("fixed_function"):
             text += f" The device is labelled \"{f['fixed_function']}\" in assets.yaml, a fixed-function device."
         if f.get("managed_device"):

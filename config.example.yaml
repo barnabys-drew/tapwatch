@@ -92,7 +92,8 @@ summaries:                           # per-device daily summaries for the 30-day
   enabled: true                      # `run` summarizes each finished day in the background, once a night
   hour: 4                            # local hour it starts (a day's last connections are logged after midnight)
   retention_days: 90                 # summaries older than this are deleted (0 = keep forever)
-  rules: true                        # then the long-horizon rules (R30 slow_beacon, R31 slow_upload) read them
+  rules: true                        # then the long-horizon rules (R30 slow_beacon, R31 slow_upload, R32 rare_dest,
+                                     # R33 dormant_wake, R34 routine_shift) read them
   mature_days: 14                    # watched days a device needs before those rules may fire
 digest_hour_utc: 13
 dedupe_seconds: 3600
