@@ -115,6 +115,33 @@ def test_encoded_download_from_a_document_app_is_must_alert():
     no_paths(c)
 
 
+def test_a_replayed_event_raises_no_second_case_even_after_an_address_change_and_a_restart():
+    """#303: after alerter restarts, the morning's encoded-PowerShell starts were alerted again, under the PC's
+    other addresses. The same event row read twice is one event, whatever address the PC has by then."""
+    from tapwatch.detectors import decode, encode
+    det = EncodedCommand(st())
+    line = start(T0, PS, EXPLORER, guid="{g7}", cmd_enc="1")
+    (first,) = run(det, line)
+    assert first.host == PC
+    assert run(det, addrs(T0 + 3600, "192.168.50.11"), line) == []          # new address, same event: nothing
+    later = EncodedCommand(EndpointState(PC))                                  # a restart: state saved and restored
+    later.restore(decode(encode(det.snapshot())))
+    assert run(later, line) == []
+    (again,) = run(later, start(T0 + 7200, PS, EXPLORER, guid="{g8}", cmd_enc="1"))   # a real new start still alerts
+    assert again.ts == T0 + 7200
+
+
+def test_the_event_memory_keeps_only_events_that_raised_a_case_and_stays_bounded(monkeypatch):
+    from tapwatch import hostrules
+    det = EncodedCommand(st())
+    run(det, start(T0, PS, EXPLORER, guid="{n1}"))                       # no signal: no case, nothing remembered
+    assert det.seen == {}
+    monkeypatch.setattr(hostrules, "SEEN_MAX", 4)
+    for i in range(7):
+        run(det, start(T0 + i, PS, EXPLORER, guid=f"{{e{i}}}", cmd_enc="1"))
+    assert len(det.seen) <= 4
+
+
 def test_one_strong_signal_alerts_and_hidden_window_makes_it_must_alert():
     (enc,) = run(EncodedCommand(st()), start(T0, PS, EXPLORER, cmd_enc="1"))
     assert (enc.base_severity, enc.must_alert) == (4, False)
