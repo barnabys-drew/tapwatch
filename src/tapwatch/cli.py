@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 import os
+import queue
 import signal
 import sys
 import time
@@ -23,7 +24,17 @@ from pathlib import Path
 
 import yaml
 
-from . import benchmark, config, detectors, evaluate, evidence, history, selfcheck, zeek
+from . import (
+    benchmark,
+    config,
+    detectors,
+    evaluate,
+    evidence,
+    history,
+    longhaul,
+    selfcheck,
+    zeek,
+)
 from .pipeline import Pipeline
 from .store import Store
 from .summarizer import summarize
@@ -101,6 +112,10 @@ def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
     sums = cfg.get("summaries") or {}  # per-device daily summaries (#193), built in the background each night
     nightly = history.NightlyClock(int(sums.get("hour", 4)), history.zone(cfg)) if sums.get("enabled", True) else None
     summarizing = None
+    # The long-horizon rules (#194, #195) run on the summary thread after its days are written and queue their cases;
+    # they are raised here, on this thread, because the pipeline (its database connection, the notifier) is not
+    # thread-safe (longhaul.py).
+    found: queue.Queue = queue.Queue()
     keep_days, next_prune = cfg.get("zeek_retention_days", 30), 0.0
     next_save, next_follow, next_tick = time.time() + STATE_SAVE_EVERY, 0.0, time.time() + 60
     for rec in zeek.Follower(args.zeek_dir + config.host_log_dirs(cfg)).follow(idle_ticks=True):
@@ -124,9 +139,17 @@ def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
                 log.info("#%s %s %s -> %s", case_id, case.detector, case.host, route.value)
         if digest.due(time.time()):
             p.send_digest()
+        while not found.empty():
+            handled = longhaul.admit(p, found.get_nowait())
+            if handled:
+                log.info("#%s %s %s -> %s", handled[0], handled[1].detector, handled[1].host, handled[3].value)
         if nightly and nightly.due(time.time()) and not (summarizing and summarizing.is_alive()):
             asn = next((d.asn for d in p.detectors if getattr(d, "asn", None)), None)   # the alerter's own table
-            summarizing = history.nightly(cfg, args.zeek_dir, lambda: Store(cfg.get("db_path", "tapwatch.db")), asn=asn)
+            # what the rules borrow from the live detectors is copied here, before the thread starts
+            then = longhaul.queue_into(found, cfg, longhaul.Context.from_pipeline(p, cfg)) \
+                if sums.get("rules", True) else None
+            summarizing = history.nightly(cfg, args.zeek_dir, lambda: Store(cfg.get("db_path", "tapwatch.db")), asn=asn,
+                                          then=then)
 
 
 class DigestClock:
@@ -249,6 +272,28 @@ def cmd_summarize(args, cfg) -> int:
     for r in history.summarize(store, cfg, args.zeek_dir, days):
         print(f"{r.day}  {r.devices:4d} devices  {r.dests:7d} destination rows  {r.records:9d} connections  "
               f"{r.seconds:6.1f} s")
+    return 0
+
+
+def cmd_longhaul(args, cfg) -> int:
+    """The long-horizon rules (R30, R31) over the summary tables as they stand: what they would raise now and how
+    it would route, and with --stats why the other candidates were skipped. Stores nothing: the measurement tool."""
+    from .router import route
+
+    store = Store(cfg.get("db_path", "tapwatch.db"))
+    res = longhaul.evaluate(store, cfg, longhaul.Context.from_config(cfg, store), mature_days=args.mature_days)
+    print(f"{res.days} watched day(s); {res.mature} of {res.devices} device(s) mature")
+    routes: dict[tuple, int] = {}
+    for case in res.cases:
+        r, _ = route(case, None, config.thresholds(cfg))
+        routes[(case.detector, r.value)] = routes.get((case.detector, r.value), 0) + 1
+        print(f"{r.value:6} {longhaul.describe(case)}")
+    for (detector, r), n in sorted(routes.items()):
+        print(f"{detector}: {n} {r}")
+    print(f"{len(res.cases)} case(s) would be raised")
+    if args.stats:
+        for why, n in sorted(res.skipped.items()):
+            print(f"  skipped {n:5d}  {why}")
     return 0
 
 
@@ -712,6 +757,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--from", dest="since", help="rebuild from this day (YYYY-MM-DD) ...")
     s.add_argument("--to", dest="until", help="... to this one, inclusive (default: the --from day)")
     s.set_defaults(fn=cmd_summarize)
+
+    s = sub.add_parser("longhaul", help="the long-horizon rules (R30, R31) over the daily summaries: print what they "
+                                        "would raise now, storing nothing (run raises them each night)")
+    s.add_argument("--mature-days", type=int, help="watched days a device needs first (default summaries.mature_days, 14)")
+    s.add_argument("--stats", action="store_true", help="also count why candidates were skipped")
+    s.set_defaults(fn=cmd_longhaul)
 
     s = sub.add_parser("judge", help="the learned judge (v0.4): build its training set, replay its guardrails")
     s.add_argument("action", choices=["backfill", "examples", "replay"],

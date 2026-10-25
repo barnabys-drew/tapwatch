@@ -280,7 +280,7 @@ true positives auto-closed.
 
 | Issue | What | Status |
 |---|---|---|
-| [#52](https://github.com/barnabys-drew/tapwatch/issues/52) | Long-horizon behavioral detections: 30 days of per-device history | designed 2026-10-20: daily summaries (#193), then R30–R35 (#194–#199) |
+| [#52](https://github.com/barnabys-drew/tapwatch/issues/52) | Long-horizon behavioral detections: 30 days of per-device history | designed 2026-10-20: daily summaries (#193), then R30–R35 (#194–#199). **Built 2026-10-25:** the summaries (#193), R30 `slow_beacon` (#194) and R31 `slow_upload` (#195), run nightly after the summaries, digest unless backed by another case on the device; on 11 home days R30 raised one case and R31 none as specified ([RESULTS](../eval/RESULTS.md#long-horizon-rules-r30-r31-on-11-days-of-home-summaries-2026-10-25)). Next: R32–R35, and a 30-day re-measure |
 | [#37](https://github.com/barnabys-drew/tapwatch/issues/37) | Learned judge: automate tier-1 triage from the owner's closed cases | designed 2026-10-20 (#200–#205). **Built 2026-10-25:** the training set (#200), guardrails (#201) and shadow judge (#202), which records "same device" and "any device" answers on every new case and never acts. On the live history 0 of 1,205 cases were eligible ([RESULTS](../eval/RESULTS.md#the-judges-guardrails-on-the-live-history-2026-10-25-201)). Next: the scorecard (#203) once there's shadow data |
 
 Each design issue is a sub-issue of its parent, with what it reads, the logic, expected false positives, a safe

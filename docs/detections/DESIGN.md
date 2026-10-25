@@ -984,6 +984,95 @@ privileged or Docker-socket container (3), and a new Linux listener outside loop
 mostly svchost. Measured on the WSL box: 40 SUID programs, 23 modules, no preload, no such container, 11 stable
 listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (stratum URLs, xmrig, `--donate-level`).
 
+### Long-horizon rules R30–R31: weeks of each device's history (built 2026-10-25, `longhaul.py`)
+- **Data:** the per-device daily summaries (#193, `history.py`): `device_day_dest` (per device, day, destination
+  and port: bytes each way, ASN, country and up to 48 connection-start times 30+ minutes apart), `device_day` and
+  `summary_days`. Never the raw logs: a month of conn.log is far too slow to rescan.
+- **When:** once a day. `run`'s nightly summary thread calls the rules once its days are written
+  (`history.nightly(then=...)`, `longhaul.queue_into`); they read on the thread's own database connection and put
+  their cases on a queue, which the run loop drains on the main thread into `Pipeline.handle` (`longhaul.admit`), so
+  dedupe, suppressions, routing, the shadow judge and notifications are the usual ones and nothing touches the
+  pipeline from the thread. What they borrow from the live detectors (popular list, benign beacon classes, dev
+  profile, Beaconing's reported destinations, the identity table) is copied before the thread starts.
+  `tapwatch longhaul [--mature-days N] [--stats]` runs the same evaluation now and prints what it would raise and why
+  candidates were skipped, storing nothing. `summaries.rules: false` turns them off.
+- **Maturity:** a device's rules wait for **14 watched days** (`summaries.mature_days`): summarized days on which the
+  sensor saw traffic in 12+ local hours (`summary_days.hours`), counted from the device's first summarized day. A
+  quiet device keeps maturing; a day the sensor was down or half-blind does not count.
+- **Routing (`router.long_horizon`):** digest, raised to **alert only when backed**: the same device has, in the 7
+  days before, a threat-list hit, a host case at digest or louder, or a short-window case at digest or louder to the
+  same destination (base domain; for a destination with no name, the same ASN, since AWS, Google and Cloudflare
+  host everyone). The backing cases are named in `backed_by`. A host case counts only at digest or louder: on the
+  dev PC a logged host case (the owner's agent work) comes every few hours and would back everything. A suppressed
+  backing case does not count, and neither does R48 (a standing condition, not a signal). A suppression, a code
+  ceiling (a managed device) and the learning period beat the backing; must_alert is untouched. Code-only.
+- **Correlation:** `hostrules.NEVER_PAIRED`: a five-minute pairing means nothing for a rule over weeks; the 7-day
+  backing above replaces it. No host context either (`source: history`): the case is about weeks, not a minute.
+- **Judge (#201):** a long-horizon case is never the judge's when it is backed, or when any other case on the same
+  device is still open or was first raised in the 7 days before it (`judge.backed_long_horizon`).
+- **Measured** on 11 days of home summaries (2026-10-14..24) with maturity lowered to 5 and 10 days: R30 one case,
+  R31 none as specified (no baseline before its window yet), one in a scaled-down run; see
+  [RESULTS](../../eval/RESULTS.md#long-horizon-rules-r30-r31-on-11-days-of-home-summaries-2026-10-25).
+
+### R30 Slow beacon: steady check-ins hours to days apart (`slow_beacon`) — **built** (#194)
+- **Threat:** a C2 implant or RAT that sleeps hours between check-ins (T1029 scheduled transfer, T1071 over HTTPS).
+  `beaconing` needs ten beats in a window held in memory; a heartbeat every 6 or 24 hours needs days of beats it
+  never collects. The live week's true positive was a 10-minute beacon (#395); a slower one would be invisible.
+- **Logic:** per (device, destination, port) over 30 days of `contact_times`: first contacts at least 1 h apart are
+  the beats. Fire when there are **≥ 6 gaps spanning ≥ 4 days, median gap 2–72 h**, and either **CV ≤ 0.2**
+  (`steady`) or every gap a **whole number of days ± 30 min** (`daily at the same time`: a daily job whose clock
+  drifts, or a day the device or sensor was off), with no more missed days than beats. Housekeeping UDP ports
+  (NTP, STUN, Tailscale) and the summaries' `other` row are skipped. One case per (device, destination) per 30 days
+  (the best port), and a destination `beaconing` already reported for the device (its `reported`, 7 days) is left
+  to it.
+- **Benign skips:** a benign beacon class (`BEACON_CLASSES` plus `beaconing.benign_classes`: push, EDR, time sync,
+  VPN relays), the popular list, a dev service from a `dev_profile` host (`DEV_DOMAINS`), a service the host polls
+  on purpose (`takeover.expected`).
+- **Facts:** interval, CV, regularity, beats, span and days seen, first and last day, port, ASN and country,
+  missed days, `device`, `dest`, `mature_days`, `backed_by`. Severity 3. Dedupe `dest:port`; suppressible like a
+  beaconing case (the destination is the indicator).
+- **FPs:** home: smart plugs, TVs and cameras checking firmware daily; a NAS's nightly backup to cloud storage; a
+  printer's daily status ping; an app's vendor check-in. Dev PC: scheduled CI pollers, nightly package mirror
+  syncs, an editor's daily licence check under a vendor domain outside the dev list. Measured: 20 (device,
+  destination) pairs on 9 devices pass the timing test in 11 home days; 19 are popular, the one left was a phone
+  app's vendor check-in every 3 h.
+- **Not covered:** a beacon that also carries ordinary traffic to the same destination (its gaps are irregular), a
+  laptop asleep at night (a 6-hourly beat with gaps of 6, 6 and 18 h fails the CV test), a beacon rotating across
+  base domains.
+- **Safe test:** from a test VM, a cron job that fetches a page from a server you control (192.0.2.10 in the docs)
+  every 6 h for 5 days (the issue said 2, but the rule needs its beats to span 4 days), on a device with 14 watched
+  days (or check it sooner with `tapwatch longhaul --mature-days 5`).
+  In CI: synthetic summaries (`tests/test_longhaul.py`).
+
+### R31 Low-and-slow upload to one destination over weeks (`slow_upload`) — **built** (#195)
+- **Threat:** exfiltration a little at a time (T1030 data transfer size limits, T1041). `upload_spike` fires above
+  500 MB and 10× the baseline in one hour, and since 2026-10-21 spreads a long connection's bytes over its life
+  (`_share_now`), so 20 MB a day, or 1.5 GB over one day-long connection, never reaches it.
+- **Logic:** per (device, destination) over the last **14 days** (`detectors.slow_upload.window_days`), the
+  destination being the base domain when named, else the **ASN** (rotating cloud addresses), else the address. Fire
+  when **≥ 100 MB uploaded** (`min_mb`), on **≥ 7 distinct days** with at least 1 MB, **no day reached
+  upload_spike's 500 MB floor** (so no hour could have; the summaries have no per-hour bytes per destination),
+  **upload/download ≥ 5**, and the destination carried **< 5 MB** from this device in the **30 days before** the
+  window: it is new as an upload target. That last test needs a baseline: 7+ watched days before the window
+  (`baseline_days`), so on top of maturity the rule needs about three weeks of history. One case per (device,
+  destination) per 30 days.
+- **Benign skips:** a known sync or backup service (`SYNC_DOMAINS`) or security vendor (`SECURITY_TELEMETRY`); a
+  sync network by ASN (`HourlyProfile.SYNC_ASNS`: Apple, Microsoft, Dropbox, Backblaze); a dev service from a dev
+  host; a popular destination other devices in the house also used in the window (peers). Popular but used by
+  this device alone stays a digest item: file-drop and storage sites are popular too.
+- **Severity:** 3, **4 when the device is fixed-function** (an assets.yaml role from `FIXED_ROLE_WORDS`: a camera
+  starting to upload somewhere new is the stream-hijack shape). A managed device (`MANAGED_ROLE_WORDS`) gets
+  `max_route: digest`, as `upload_spike`: its EDR telemetry to plain cloud addresses is the known shape. Unbacked,
+  both are digest items like any long-horizon case.
+- **Facts:** MB up, MB down, ratio, upload days, the daily MB series, first upload day, prior MB, peers, popular,
+  ASN and country, the addresses when unnamed, `fixed_function`, `managed_device`, `backed_by`.
+- **FPs:** home: a phone starting a new photo-backup app, a camera switching to a new cloud region, a game console
+  uploading clips. Dev PC: pushing to a new git host or registry outside `DEV_DOMAINS`, a new log/telemetry SaaS, a
+  cloud drive client added. Measured: in a scaled-down run (7-day window, 4-day baseline, 50 MB, 4 days) one case,
+  one device's steady upload to its vendor's cloud.
+- **Safe test:** from a test VM, upload 15 MB of random bytes a day to a server you control (198.51.100.20) for 8
+  days, with three weeks of summaries before; in CI, the synthetic-summary fixture.
+
 ### R36 A remote-access tool starts on a PC (`host_rmm`) — **built** (#39)
 - **Threat:** remote monitoring and management tools used as a way in (T1219): tech-support scams talk the
   victim into AnyDesk or Quick Assist, and ransomware crews install ScreenConnect, AnyDesk or Atera because they
@@ -1192,6 +1281,8 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R27 Linux temp, memory or shell connection (built) | osquery eBPF | alert | code-only |
 | — | R28 Suspicious command on Linux (built, baselined) | osquery eBPF exec + command-line signals | alert (temp chmod: digest) | code-only |
 | — | R29 A program reads lsass memory (built, baselined) | osquery + Sysmon event 10 | alert (must for temp/document) | code-only |
+| — | R30 Slow beacon, hours to days apart (built) | daily summaries (`contact_times`) | digest; alert when backed by another signal on the device | code-only |
+| — | R31 Low-and-slow upload to a new destination over weeks (built) | daily summaries (bytes per destination) | digest; alert when backed | code-only |
 | — | R36 A remote-access tool starts on a PC (built) | Sysmon event 1, eBPF exec | digest (installed), alert, must for temp/document | code-only |
 | — | R37 A tunnel is opened from a PC (built) | command-line signals | alert (agent-started: digest; must from temp) | code-only |
 | — | R38 Files staged or sent somewhere new (built) | command-line signals, destination | digest, alert when paired with an upload | code-only |

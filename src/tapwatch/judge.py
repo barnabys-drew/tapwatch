@@ -29,7 +29,7 @@ import time
 from datetime import datetime
 
 from .models import Case, Route, Verdict, device_id, main_indicator
-from .router import CODE_ONLY, agent_misused, critical
+from .router import CODE_ONLY, LONG_HORIZON, agent_misused, critical
 
 FEATURE_VERSION = 1
 MODEL_VERSION = "precedent-1"
@@ -46,6 +46,7 @@ MIN_LABEL_DAYS = 2
 MAX_WEEK_SHARE = 0.5          # one ISO week gives at most this share of those days
 MAX_DEVICE_SHARE = 0.5        # at the "any_device" width, one device gives at most this share of the precedents
 TP_LOOKBACK = 30 * 86400      # a true positive on the device this recently keeps the judge off it
+BACKED_WINDOW = 7 * 86400     # another case on the device this recent keeps the judge off a long-horizon case
 KEY_WORDS = {"domain": "destination", "program": "program", "ind": "indicator", "detector": "case type"}
 WIDTHS = ("device", "any_device")   # precedent key widths shadow mode records (see eligible)
 PRECEDENT_LINKS = 5           # case ids named in an explanation
@@ -165,6 +166,23 @@ def _week(ts: float) -> str:
     return f"{y}-W{w:02d}"
 
 
+def backed_long_horizon(db: sqlite3.Connection, row: sqlite3.Row, case: Case, before: float) -> str:
+    """#201's "a long-horizon rule backed by another signal": the rule's own backing (`backed_by`, longhaul.backers),
+    or any other case on the same device that is still open or was first raised in the BACKED_WINDOW before. Wider
+    than the router's backing on purpose: the router decides how loud, this only keeps the judge's hands off, and a
+    weeks-long lead next to anything else on the device is for the owner to read. "" when there is none."""
+    backed = (case.facts.get("backed_by") or [None])[0]
+    if isinstance(backed, dict):
+        return f"#{backed.get('id')}"
+    mac = case.facts.get("device_mac")
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only fixed text and '?' placeholders are joined; every value is bound
+    other = db.execute("SELECT id, status FROM cases WHERE id != ? AND detector NOT IN ('slow_beacon', 'slow_upload')"
+                       " AND (host = ?" + (" OR json_extract(facts, '$.device_mac') = ?" if mac else "") + ")"
+                       " AND (status != 'closed' OR first_ts BETWEEN ? AND ?) ORDER BY id DESC LIMIT 1",
+                       [row["id"], row["host"]] + ([mac] if mac else []) + [before - BACKED_WINDOW, before]).fetchone()
+    return f"#{other['id']}, {'open' if other['status'] != 'closed' else 'recent'}" if other else ""
+
+
 def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = None,
              width: str = "device") -> tuple[bool, str, list]:
     """May the judge suggest closing this case? (allowed, reason, precedent rows). Only examples labelled before
@@ -186,6 +204,8 @@ def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = No
         return False, "critical code-only alert", []
     if case.facts.get("correlated_best") == "alert":
         return False, "paired with an alert on the same device", []
+    if case.detector in LONG_HORIZON and (other := backed_long_horizon(db, row, case, before)):
+        return False, f"a long-horizon case backed by another case on this device ({other})", []
     f = features(row)
     if db.execute("SELECT 1 FROM judge_examples WHERE device=? AND label='true_positive' AND labelled_ts BETWEEN ? AND ?"
                   " LIMIT 1", (f["device"], before - TP_LOOKBACK, before)).fetchone():

@@ -369,11 +369,13 @@ class NightlyClock:
 
 
 def nightly(cfg: dict, log_dirs, store_factory, now: float | None = None,
-            asn: AsnTable | None = None) -> threading.Thread:
+            asn: AsnTable | None = None, then=None) -> threading.Thread:
     """Summarize the finished days not done yet, in a background thread so the alerter keeps reading meanwhile.
     The thread opens its own database connection (store_factory); each day is written in one short transaction,
-    which the alerter's writes wait for (Store's 10 s timeout) rather than fail."""
+    which the alerter's writes wait for (Store's 10 s timeout) rather than fail. `then(store)` runs on the same
+    thread once the days are written (the long-horizon rules, longhaul.queue_into); it must not touch the pipeline."""
     def work():
+        store = None
         try:
             store = store_factory()
             days = due_days(store.db, log_dirs, zone(cfg), time.time() if now is None else now, CATCH_UP)
@@ -382,6 +384,11 @@ def nightly(cfg: dict, log_dirs, store_factory, now: float | None = None,
                          r.day, r.devices, r.dests, r.records, r.seconds)
         except Exception:  # a failed summary must never take the alerter down
             log.exception("daily summaries failed")
+        if then is not None and store is not None:   # after a failed night too: the days already summarized still hold weeks of history
+            try:
+                then(store)
+            except Exception:
+                log.exception("long-horizon rules failed")
 
     t = threading.Thread(target=work, name="summarize", daemon=True)
     t.start()

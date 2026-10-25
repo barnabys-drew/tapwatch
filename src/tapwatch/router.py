@@ -41,7 +41,13 @@ CODE_ONLY = {"new_domain",
              "host_linux_cmd", "host_lsass", "host_rmm",
              "host_tunnel", "host_staging", "host_fim",
              # R48: whether a version is inside a known-exploited range is a fact from the feeds, never a judgement.
-             "vuln_kev"}
+             "vuln_kev",
+             # R30, R31 (longhaul.py): weeks of timing and byte counts are arithmetic, Jev's documented weak spot, and
+             # "is this destination normal for the device" is the question it is never asked.
+             "slow_beacon", "slow_upload"}
+
+# Long-horizon rules over the daily summaries (longhaul.py, #52): digest unless another signal backs them up.
+LONG_HORIZON = frozenset({"slow_beacon", "slow_upload"})
 
 
 def wants_ai(case: Case) -> bool:
@@ -67,6 +73,8 @@ def route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
           suppression: str | None = None, learning: str | None = None) -> tuple[Route, str]:
     """`learning` is the pipeline's label ("learning period (day 1 of 3)") while the install is new."""
     r, reason = _route_with_guardrails(case, verdict, t, suppression, learning)
+    if case.detector in LONG_HORIZON and not case.must_alert and not suppression:
+        return long_horizon(case, r, reason, learning)
     best = case.facts.get("correlated_best")
     if best in ("alert", "digest") and not case.must_alert and not suppression and not learning:
         # A host case and a network case on the same device within five minutes are one story (pipeline.correlate).
@@ -86,6 +94,24 @@ def route(case: Case, verdict: Verdict | None, t: Thresholds | None = None,
         if r is Route.DIGEST and not capped and not owner_likely(case):
             return Route.ALERT, f"paired with another case on the same device: {with_whom}"
     return r, reason
+
+
+def long_horizon(case: Case, r: Route, reason: str, learning: str | None) -> tuple[Route, str]:
+    """#194's routing for the long-horizon rules: weeks of history make a lead, not an incident, so the digest,
+    unless another signal on the same device backs it up within 7 days (`backed_by`, set by longhaul.backers: a
+    threat-list hit, or a host case or a short-window case to the same destination at digest or louder). Then an
+    alert, unless code capped the case (a managed device) or the install is still learning. Never reached for a
+    suppressed or must_alert case (route() checks first), and it never lowers a case below where code put it."""
+    backed = (case.facts.get("backed_by") or [None])[0]
+    if isinstance(backed, dict):
+        capped = any(c in ("log", "digest") for c in (case.facts.get("max_route"), case.facts.get("host_max_route")))
+        why = f"backed by #{backed.get('id')} ({backed.get('detector')}: {backed.get('why')}) within 7 days"
+        if not capped and not learning:
+            return Route.ALERT, f"long-horizon, {why}"
+        return min(r, Route.DIGEST, key=lambda x: RANK[x]), f"long-horizon, {why}; {reason}"
+    if r is Route.ALERT:
+        return Route.DIGEST, f"long-horizon: digest unless another signal on the device backs it up; {reason}"
+    return r, f"long-horizon: {reason}"
 
 
 def _route_with_guardrails(case: Case, verdict: Verdict | None, t: Thresholds | None,
