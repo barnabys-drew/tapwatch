@@ -342,6 +342,95 @@ def cmd_software(args, cfg) -> int:
     return 0
 
 
+def cmd_accounts(args, cfg) -> int:
+    """Sign in a Google account for the account check (consent once, refresh token kept on this machine)."""
+    from . import accounts as acc
+
+    d = acc.token_dir(cfg)
+    try:
+        if args.action == "list":
+            for label in acc.saved_labels(d):
+                mode = oct((d / f"google-{label}.json").stat().st_mode & 0o777)
+                try:
+                    what = ", ".join(acc.granted(acc.load_token(d, label))) or "no scopes"
+                except acc.AccountError as e:
+                    what = str(e)
+                print(f"{label:16s} {what}   ({mode})")
+            return 0
+        label = acc.check_label(args.label or "")
+        if args.action == "remove":
+            path = d / f"google-{label}.json"
+            if not path.exists():
+                print(f"no account {label!r}", file=sys.stderr)
+                return 1
+            try:   # best effort: also withdraw the grant at Google
+                acc.Http().post_form(acc.REVOKE_URL, {"token": acc.load_token(d, label)["refresh_token"]})
+            except acc.AccountError as e:
+                print(f"couldn't revoke at Google ({e}); remove it at myaccount.google.com/permissions", file=sys.stderr)
+            path.unlink()
+            print(f"removed {label}")
+            return 0
+        services = [s.strip() for s in args.services.split(",") if s.strip()]
+        unknown = [s for s in services if s not in acc.SCOPES]
+        if unknown or not services:
+            print(f"services: any of {', '.join(acc.SCOPES)}", file=sys.stderr)
+            return 2
+        cid, secret = acc.client()
+        url, verifier, state = acc.auth_request(cid, services)
+        print(f"1. Open this on any computer, signed in to the Google account you call {label!r}:\n\n{url}\n")
+        print("2. Approve. The browser then fails to load a 127.0.0.1 page: that's expected.")
+        print("3. Copy the whole address from the browser's address bar and paste it here.\n")
+        code = acc.code_from_redirect(input("address: "), state)
+        tok = acc.exchange(acc.Http(), cid, secret, code, verifier)
+        path = acc.save_token(d, label, {"refresh_token": tok["refresh_token"], "scope": tok.get("scope", ""),
+                                         "added": round(time.time())})
+        print(f"saved {label} ({path}, mode 600); add it under account_check.google in config.yaml")
+        return 0
+    except acc.AccountError as e:
+        print(e, file=sys.stderr)
+        return 1
+
+
+def cmd_account_check(args, cfg) -> int:
+    """Ask the configured Google accounts what was uploaded around an upload_spike case."""
+    from . import accounts as acc
+
+    store = Store(cfg.get("db_path", "tapwatch.db"))
+    row = store.get(args.case_id)
+    if row is None:
+        print(f"no case #{args.case_id}", file=sys.stderr)
+        return 1
+    window = acc.WINDOW if args.window is None else args.window
+    if window < 0:
+        print("--window can't be negative", file=sys.stderr)
+        return 2
+    hosts = json.loads(row["indicators"] or "[]")
+    if not args.force and not (row["detector"] == "upload_spike" and any(acc.google_upload_host(h) for h in hosts)):
+        print(f"case #{args.case_id} isn't an upload to a Google upload service (--force to check anyway)",
+              file=sys.stderr)
+        return 1
+    try:
+        # an upload_spike case is stamped at the end of the hour it measured, and counts that hour and the one
+        # before (detectors.HourlyProfile), so the uploads it saw happened in the two hours up to its time
+        result = acc.check(cfg, row["first_ts"] - 7200 - window, row["last_ts"] + window)
+    except acc.AccountError as e:
+        print(e, file=sys.stderr)
+        return 1
+    f = acc.facts(result)
+    text = acc.summary(f)
+    print(text)
+    if args.names:   # the terminal only: titles are never stored
+        for label, entry in result["accounts"].items():
+            for service, res in entry.items():
+                for r in res.get("rows", []) if isinstance(res, dict) else ():
+                    if r.get("title"):
+                        print(f"  {label} {service} {acc._hm(r['time'])} {acc.clean_title(r['title'])}")
+    if args.save:
+        store.add_fact(args.case_id, "account_check", f, text, actor="account-check")
+        print(f"saved to case #{args.case_id}")
+    return 0
+
+
 def cmd_mark(args, cfg) -> int:
     ok = Store(cfg.get("db_path", "tapwatch.db")).set_feedback(args.case_id, args.label)
     print("saved" if ok else f"no case #{args.case_id}")
@@ -502,6 +591,20 @@ def main(argv: list[str] | None = None) -> int:
         .set_defaults(fn=cmd_benchmark)
 
     sub.add_parser("digest", help="send the pending digest").set_defaults(fn=cmd_digest)
+
+    s = sub.add_parser("accounts", help="sign in Google accounts for the account check (docs/setup/account-check.md)")
+    s.add_argument("action", choices=["add", "list", "remove"])
+    s.add_argument("label", nargs="?", help="a name for the account, e.g. personal (never the address)")
+    s.add_argument("--services", default="drive,youtube,gmail", help="what to grant read access to (default: all)")
+    s.set_defaults(fn=cmd_accounts)
+
+    s = sub.add_parser("account-check", help="ask the Google accounts what was uploaded around an upload_spike case")
+    s.add_argument("case_id", type=int)
+    s.add_argument("--save", action="store_true", help="record the result on the case (counts and types, no names)")
+    s.add_argument("--names", action="store_true", help="also print file and video titles (terminal only)")
+    s.add_argument("--window", type=int, default=None, help="seconds either side of the case's hours (default 1800)")
+    s.add_argument("--force", action="store_true", help="check even if the case isn't a Google upload")
+    s.set_defaults(fn=cmd_account_check)
 
     s = sub.add_parser("mark", help="close a case as false/true positive")
     s.add_argument("case_id", type=int)
