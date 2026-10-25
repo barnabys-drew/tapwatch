@@ -13,12 +13,14 @@ tapwatch watches a copy of your router's traffic and finds what's odd: new devic
 DNS tunnelling, exposed services, rogue DHCP, scans, remote-control tools, IoT devices talking
 somewhere new. The router's syslog adds its IPS verdicts and admin logins; an osquery agent on a
 PC names the program behind a connection and catches encoded commands and shells spawned by
-documents. A first contact says what kind of site it is (offline lists, with an optional small
-model for the rest; odd TLS sessions and upload spikes carry the listed kind), and on the tapwatch
-PC a case says whether the owner's coding agent was behind it. An optional small AI model
+documents, and through an optional Fleet server the house's other computers run the same host
+rules. A first contact says what kind of site it is (offline lists, with an optional small model
+for the rest; odd TLS sessions and upload spikes carry the listed kind), and on the tapwatch PC a
+case says whether the owner's coding agent was behind it. An optional small AI model
 ([Jev](https://docs.typesafe.ai)) helps decide what's worth interrupting you for, and alerts
 reach your phone. One small box runs it all, with no SIEM; nothing leaves but your
-notifications, list downloads and the optional AI questions, and those see words, not packets.
+notifications, list downloads, a daily release check and the optional AI and account questions,
+and those see words, not packets.
 
 > **Start here.** Setting it up in an office or home with UniFi and a Windows PC, and new to all of
 > this? Follow [docs/setup/office-unifi.md](docs/setup/office-unifi.md): one installer
@@ -44,7 +46,7 @@ notifications, list downloads and the optional AI questions, and those see words
 flowchart LR
     M["Switch mirror port"] --> Z["Zeek<br/>JSON logs"]
     S["Router syslog<br/>(optional)"] --> Z
-    A["Endpoint agents<br/>osquery (optional)"] --> Z
+    A["Endpoint agents<br/>osquery, Fleet (optional)"] --> Z
     L["Offline lists<br/>Tranco · OUI · ASN · UT1 kinds"] --> D
     Z --> D["Detectors<br/>(plain code)"]
     D -. "unlisted domain, once<br/>(optional, 30-day cache)" .-> C["Categorizer<br/>small model"]
@@ -62,7 +64,7 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
 
 ## Highlights
 
-- **34 case types from 32 detectors** tuned for homes (table below). Each is plain Python with
+- **39 case types (22 network, 17 host)** tuned for homes (table below). Each is plain Python with
   tests and a written spec. Learned baselines survive restarts and follow the *device* (DHCP
   hostname, then MAC, then IP), so a laptop keeps its history when it moves between addresses.
 - **Sites named by kind.** First contacts, odd TLS sessions and upload spikes carry the kind of
@@ -84,13 +86,22 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
 - **Agent-aware host context.** For traffic from the tapwatch machine (matched by its DHCP name,
   not just its address), osquery names the program, and Claude Code session markers, the exec
   parent chain and transcripts show whether the owner asked for it. Process proof outranks
-  transcript context, and twelve host rules read the agent's own rows for shapes the wire can't
-  show.
+  transcript context.
+- **Endpoint rules on every computer.** 17 host rules (R17–R21, R23–R29, R36–R39, R48) read the osquery
+  agent's own rows for shapes the wire can't show, on the tapwatch PC and, through a
+  [Fleet server](docs/setup/fleet.md), on each of the house's other computers. A host case pairs with
+  a network case on the same device only when the host rule names that network rule.
 - **It watches itself.** Every feed it depends on (Zeek's logs, each endpoint agent's frequent
   queries) has a measured longest-allowed silence; a feed that stops is a case within minutes, not a
-  blind spot found days later. `tapwatch selfcheck` replays 18 scripted attack and false-positive
+  blind spot found days later. `tapwatch selfcheck` replays 37 scripted attack and false-positive
   shapes through the detectors as configured and reports a detection rate; CI runs it, and it is one
   command to run after a deploy.
+- **Updates you can undo, installs you can move.** On a checkout install (the Windows installer, the
+  systemd services, Omarchy), `tapwatch update` moves to the newest release, runs the self-check and
+  doctor, and goes back to the old version if anything fails; the daily digest says when there's a
+  newer one. Docker: `git pull`, then `docker compose -f deploy/docker-compose.yml up -d --build`.
+  `deploy/export-state.sh` and `tapwatch import-state` move a sensor to a new computer with its cases,
+  notes and learned baselines.
 - **A case desk with no JavaScript.** It's a queue, a case page with ±5 minutes of Zeek evidence,
   workflow, notes, an audit trail, expiring "suppress similar" rules and stats, including a
   week-by-week benchmark: noise rate, how often the model agreed with your dispositions, and how
@@ -139,7 +150,7 @@ a remote-control tool found on a work laptop, which the labels call benign and t
 about; two of its items are a phone's iCloud backup and a work laptop's EDR upload. The earlier run
 (2026-10-13) and what changed are in [eval/RESULTS.md](eval/RESULTS.md). The sample is small, so
 treat it as a sanity check, not a benchmark. The scripted self-check (`tapwatch selfcheck`) stands at
-27/27 attack shapes detected and 4/4 false-positive shapes quiet, and runs on every push to `dev`.
+32/32 attack shapes detected and 5/5 false-positive shapes quiet, and runs on every push to `dev`.
 
 ## What it catches
 
@@ -162,8 +173,10 @@ treat it as a sanity check, not a benchmark. The scripted self-check (`tapwatch 
 | `cleartext_auth` | HTTP basic auth, FTP logins, telnet, POP3/IMAP or MQTT without encryption |
 | `new_domain` | first contact with a rarely used domain, off the popular list or random-looking (code-routed; log-only, kept out of the queue by default) |
 | `scan` | one host probing many hosts or ports; a Wi-Fi client the router just moved between access points or dropped (its syslog) is held to the digest |
-| `udm_ips`, `udm_admin` | the router's own IPS verdicts, and admin logins (new source or repeated failures **always alert**), from its syslog; the feed is parsed against lines a real UniFi gateway sends |
-| `host_encoded_cmd`, `host_app_shell`, `host_temp_exec`, `host_lolbin`, `host_bad_sig`, `host_persist`, `host_destructive`, `host_recon`, `host_extension`, `host_linux_connect`, `host_linux_cmd`, `host_lsass` | on a PC with the [osquery agent](agents/README.md): an encoded or download-and-run command, a document app or browser starting a shell, a program in a temp folder, a built-in Windows tool, or a badly signed program connecting out, or a new task, service, startup item, cron job or WMI subscription that runs a script or a shell, a command that removes backups or logs, turns off Defender or adds an account, a burst of discovery commands, a program reading lsass memory, a new browser extension with sensitive access, and on Linux a temp-folder, in-memory or shell connection, a download-and-run, reverse-shell or history-clearing command, and new SSH keys or systemd units (download-and-run command combinations and the four downloader tools, certutil, bitsadmin, mshta and regsvr32, **always alert**) |
+| `udm_ips`, `udm_admin` | the router's own IPS verdicts, and admin logins (new source or repeated failures **always alert**; a login from outside names its network and country), from its syslog; the feed is parsed against lines a real UniFi gateway sends |
+| `feed_silence` | a feed it depends on (Zeek's logs, the router's syslog, an endpoint agent's frequent queries) stops for longer than its measured longest-allowed silence |
+| `host_encoded_cmd`, `host_app_shell`, `host_temp_exec`, `host_lolbin`, `host_bad_sig`, `host_persist`, `host_destructive`, `host_recon`, `host_extension`, `host_linux_connect`, `host_linux_cmd`, `host_lsass`, `host_rmm`, `host_tunnel`, `host_staging`, `host_fim` | on a PC with the [osquery agent](agents/README.md) (the tapwatch PC, or one enrolled in [Fleet](docs/setup/fleet.md)): an encoded or download-and-run command, a document app or browser starting a shell, a program in a temp folder, a built-in Windows tool, or a badly signed program connecting out, or a new task, service, startup item, cron job or WMI subscription that runs a script or a shell, a command that removes backups or logs, turns off Defender or adds an account, a burst of discovery commands, a program reading lsass memory, a new browser extension with sensitive access, and on Linux a temp-folder, in-memory or shell connection, a download-and-run, reverse-shell or history-clearing command, and new SSH keys or systemd units; a remote-access tool starting (renamed ones too, by their original file name), a tunnel being opened, files staged or sent somewhere new, and a persistence or privilege file changing (`ld.so.preload`, sudoers, shell start-up files, a file dropped in a Windows Startup folder) (download-and-run command combinations and the four downloader tools, certutil, bitsadmin, mshta and regsvr32, **always alert**) |
+| `vuln_kev` | installed software with a known-exploited vulnerability, from the agents' daily software inventory checked against the downloaded CISA KEV, OSV and NVD data (digest; while it's open, the device's other digest-level cases move up a severity level) |
 | `ioc_match`, `ids_alert` | your threat lists (**always alert**), the downloaded AdFection / Candiru spyware list (its C&C, validation and Candiru tiers **always alert**; its ad-delivery and older-campaign tiers are graded leads), and Suricata alerts if you run it |
 
 Design notes and rule specs (Sigma and SQL) are in [docs/detections/](docs/detections/DESIGN.md).
@@ -185,13 +198,20 @@ TAP_IFACE=<mirror NIC> docker compose -f deploy/docker-compose.yml up -d --build
 
 Add `--profile syslog` for the router syslog listener, or `--profile ids` for Suricata.
 
-**A Windows PC:** double-click `install-windows.cmd`. It sets up WSL, Ubuntu, Npcap, tapwatch, the
+**A Windows PC:** download the ZIP from the [latest release](https://github.com/barnabys-drew/tapwatch/releases/latest)
+and double-click `install-windows.cmd`. It sets up WSL, Ubuntu, Npcap, tapwatch, the
 endpoint agent and the services, restarting once, and finishes with `tapwatch doctor`
 ([the guide](docs/setup/office-unifi.md); each step by hand: [docs/setup/windows.md](docs/setup/windows.md)).
+An install from the release ZIP follows releases (`tapwatch update`, or double-click `update-windows.cmd`).
 
-**Omarchy or Arch Linux:** `deploy/omarchy/install.sh` from a checkout. It turns the computer into the sensor:
-packages, the mirror interface, no sleep, the services, the agent and `tapwatch doctor`. It can also move an
-existing install over with its cases and baselines ([the guide](docs/setup/omarchy.md)).
+**Moving an install to a new computer:** run `deploy/export-state.sh` on the old one. On Windows, put the
+`tapwatch-state.tar.gz` it makes next to `install-windows.cmd` and the installer takes it over; anywhere else,
+`tapwatch import-state tapwatch-state.tar.gz`. Cases, notes, suppressions and learned baselines come along, so
+there's no new learning period. Stop the old sensor once the new one runs.
+
+**Omarchy or Arch Linux (on hold):** `deploy/omarchy/install.sh` turns an Arch-based computer into the sensor
+([the guide](docs/setup/omarchy.md)). It works but is on hold and not the recommended path; use Docker or
+Windows.
 
 **Linux without Docker:** run tapwatch as systemd user services with
 `tapwatch service install --zeek-dir <dir>`.
@@ -199,7 +219,9 @@ existing install over with its cases and baselines ([the guide](docs/setup/omarc
 `init` writes `config.yaml`, `assets.yaml` and `.env` (secrets live only in `.env`), offers to
 download the public lists, and lists every VLAN's gateway you tell it about (one is strict, the
 rest are learned). If your LAN has a public IPv6 prefix, put it in `network.local_nets` so that
-traffic is watched too. Alerts can go to **ntfy** (phone push; `init` makes a private topic),
+traffic is watched too. If devices reach each other through the house's own public address (Tailscale peers,
+a port forward used from inside), put that address in `network.public_ips`, so the traffic is skipped instead
+of read as beaconing to an unnamed address. Alerts can go to **ntfy** (phone push; `init` makes a private topic),
 **Discord**, **Teams**, **email** or any **webhook**. The first 3 days are a learning period: the AI's alerts go to the daily digest instead of
 your phone while the baselines fill (always-alert rules still interrupt), so expect it to be quiet before it settles.
 
@@ -228,14 +250,17 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch who 42 --zeek-dir DIR` | ask the PC (osquery and agent transcripts) who made case 42's traffic |
 | `tapwatch explain [--apply]` | find repeat cases host context explains, and suggest or apply suppressions (the case desk's suppressions page lists the same suggestions with an Apply button) |
 | `tapwatch replay` / `tapwatch eval` | push finished logs through the pipeline, or score rules-only vs Jev on labelled traffic |
-| `tapwatch selfcheck` | detection rate on 18 scripted attack and false-positive shapes, rules only; exit 1 on a regression |
+| `tapwatch import-state FILE` | take over another computer's install from the file `deploy/export-state.sh` made |
+| `tapwatch selfcheck` | detection rate on 37 scripted attack and false-positive shapes, rules only; exit 1 on a regression |
 | `tapwatch benchmark` | week-by-week noise rate, Jev agreement and host-context accuracy from the case desk, as Markdown |
 | `tapwatch doctor [--send]` | check every part of the install (capture, mirror port, router logs, agents, alerts, AI keys, lists, disk, the Windows side) and say how to fix what isn't working; `--send` adds a test alert |
+| `tapwatch accounts add` / `tapwatch account-check 42` | opt-in: sign in your own Google accounts read-only, then ask them what case 42's upload to Google was ([the guide](docs/setup/account-check.md)) |
 | `tapwatch test-alert` / `tapwatch notify` | check your notification channels |
 
 Optional extras: [router syslog](docs/setup/router-syslog.md) adds the router's own IPS verdicts
-and admin logins, and the [endpoint agents](agents/README.md) (osquery) name the program behind a
-connection and feed the twelve host rules.
+and admin logins, the [endpoint agents](agents/README.md) (osquery) name the program behind a
+connection and feed the host rules, and a [Fleet server](docs/setup/fleet.md) brings in the agents on
+the house's other computers.
 
 ## What leaves the network
 
@@ -248,6 +273,11 @@ connection and feed the twelve host rules.
 - **Public list downloads** (`update-feeds`): downloads only, nothing is sent. The vulnerability check
   downloads whole public datasets (CISA KEV, OSV's dump for your Linux release) and asks NVD by CVE id, so the
   house's software list never leaves the box.
+- **Account check**, if you set it up (`tapwatch account-check`, on demand only; the alerter never calls
+  Google): read-only questions to your own Google accounts about the case's time window.
+- **Release check**: on a checkout install, once a day the alerter asks the git remote for its release tags, so the digest can say
+  a newer release exists (`update: {notify: false}` turns it off); `tapwatch update` fetches from it.
+  Nothing about the house is sent.
 - **Domain categorizer**, if enabled (`categories: {ai: true}`, off by default): the public registrable
   domain only (`example.com`), to Anthropic, once per domain, cached for 30 days, at most `per_hour` (default 60) an hour.
 
@@ -260,7 +290,8 @@ src/tapwatch/        the package
   cli.py               subcommands, wiring
   zeek.py              log replay and live follower (rotation-safe)
   detectors.py         every network detector, plus state encoding
-  hostrules.py         the five endpoint rules over the agent's osquery rows
+  hostrules.py         the endpoint rules over the agents' osquery rows (this PC and Fleet)
+  inventory.py, vulns.py, vulnkev.py   installed software, KEV/OSV/NVD data, R48
   categories.py        kind of site: offline UT1 lists, optional small-model lookup, cache
   hostctx.py           osquery and agent-transcript host context
   summarizer.py        case -> short IP-free text for the AI
@@ -271,13 +302,18 @@ src/tapwatch/        the package
   ui.py, evidence.py   case desk and Zeek evidence lookup
   notifiers.py         ntfy, Discord, Teams, email, webhook, Herdr
   syslogin.py          router CEF syslog listener
+  update.py            tapwatch update, rollback, the digest's release notice
+  migrate.py           import-state
+  accounts.py          the opt-in Google account check
+  doctor.py, selfcheck.py, benchmark.py
   wizard.py, service.py, feeds.py, explain.py, evaluate.py
 tests/               pytest suite (synthetic data only)
-deploy/              docker-compose, Zeek scripts, Windows keep-alive
+deploy/              docker-compose, Zeek scripts, Fleet server, Windows installer and keep-alive,
+                     export-state.sh, Omarchy install (on hold)
 agents/              osquery (and Sysmon) installers for endpoints
 eval/                capture replay, public-capture fetcher, watchdog, RESULTS.md
 docs/                architecture, detection design and rule specs, setup guides, roadmap
-tools/               personal-data gate
+tools/               personal-data gate, demo case desk
 ```
 
 ## Documentation
@@ -285,10 +321,10 @@ tools/               personal-data gate
 | Doc | What's in it |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | data flow, components, routing guardrails, host context, security model, design decisions |
-| [docs/detections/DESIGN.md](docs/detections/DESIGN.md) | the detection catalogue (R01–R21), with measured baselines and how Jev is used |
+| [docs/detections/DESIGN.md](docs/detections/DESIGN.md) | the detection catalogue (R01–R29, R36–R39, R48), with measured baselines and how Jev is used |
 | [docs/detections/rules/](docs/detections/rules/README.md) | Sigma and DuckDB SQL versions of the rules |
 | [eval/RESULTS.md](eval/RESULTS.md) | eval method, numbers, tuning history and caveats |
-| [docs/setup/](docs/README.md#setup-guides) | mirror port, router syslog, Windows |
+| [docs/setup/](docs/README.md#setup-guides) | a UniFi office, mirror port, router syslog, Windows, Fleet, account check |
 | [agents/README.md](agents/README.md) | endpoint agents (osquery, Sysmon) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | what's built and what's planned |
 | [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) | development, adding a detector, reporting vulnerabilities |
@@ -301,27 +337,34 @@ make test lint
 python3 tools/check_personal_data.py     # no personal data in tracked files
 ```
 
-CI runs the personal-data gate, ruff and pytest (synthetic data only) on every push to `dev`, and
-adds Semgrep and Trivy on PRs into `main`.
+CI runs the personal-data gate, ruff and pytest (synthetic data only, Python 3.10–3.14) on every push
+to `dev`, and adds Semgrep and Trivy on PRs into `main`. A `vX.Y.Z` tag makes the GitHub release, with
+the Windows installer ZIP attached.
 
 ## Status
 
-**v0.2.0**, running on a real home network since 2026-10-13, so expect rough edges.
+**[v0.3.0](https://github.com/barnabys-drew/tapwatch/releases/tag/v0.3.0)** (2026-10-25), the first release
+made by the release workflow and the first an install can move to with `tapwatch update`. It has run on a real
+home network since 2026-10-13, so expect rough edges.
 
 - **Installs verified from scratch:** the Linux paths (a bare container and the Compose stack, 2026-10-15)
   and the Windows path on a clean Windows 11 machine (2026-10-18: capture into Zeek and an alert to
   Discord, which found and fixed a Discord 403). The one-step Windows installer (`install-windows.cmd`)
-  and `tapwatch doctor` passed a clean Windows 11 machine on 2026-10-19.
+  and `tapwatch doctor` passed a clean Windows 11 machine on 2026-10-19. On 2026-10-24 `export-state.sh` and
+  `import-state` moved a running sensor to a new computer, cases and baselines included.
 - **Detection:** the network rules, the router's syslog (verified against a live UniFi gateway), and
-  the endpoint rules R17–R29 on Windows and Linux (the Linux set verified live on 2026-10-18). A scripted
+  the endpoint rules R17–R21, R23–R29 and R36–R39 on Windows and Linux (the Linux set verified live on 2026-10-18),
+  plus R48 known-exploited software. Other computers report through a Fleet server and get the same host
+  rules. A scripted
   detection-rate check runs in CI; a feed-silence rule watches every log source, the router included.
 - **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement and
   host-context accuracy week by week. The first live week ([results](eval/RESULTS.md)): about 5 alerts a day,
   nearly all noise while the baselines learn, 2 true positives (both digest items); host context answered on
   all 136 PC cases and named the program for 106, and its intent verdicts have not yet fired on real traffic.
 
-v0.2 (evidence outside one house) and v0.2.5 (easy install) are done. Next, per the [roadmap](docs/ROADMAP.md):
-more endpoint rules (v0.3) and learning from the owner's closed cases (v0.4). macOS waits until there's a Mac to test on.
+v0.2 (evidence outside one house), v0.2.5 (easy install) and v0.3 (endpoint rules) are done. Next, per the
+[roadmap](docs/ROADMAP.md): "which program" for network cases on the Fleet computers, then learning from the
+owner's closed cases (v0.4). The Omarchy/Arch install is on hold. macOS waits until there's a Mac to test on.
 
 ## License
 

@@ -29,12 +29,12 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 
 | Area | State |
 |---|---|
-| Network detection | **Solid.** 22 network case types, baselines that survive restarts, a scripted self-check at 27/27 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
+| Network detection | **Solid.** 22 network case types, baselines that survive restarts, a scripted self-check at 32/32 in CI. [Eval](../eval/RESULTS.md), re-run 2026-10-15: 2/7 infected hosts alerted with Jev vs 1/7 rules-only; a home night gave 10 items to read and 1–2 false alerts |
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
 | Linux install | **Solid.** `docker compose up`, verified end to end on a live interface. Zeek runs from a patched 9.0 LTS image as the user, not root ([#252](https://github.com/barnabys-drew/tapwatch/pull/252)). A native host install for Arch-based desktops (Omarchy, [#267](https://github.com/barnabys-drew/tapwatch/pull/267)) is on hold: the live sensor runs on Windows |
 | Windows install | **Passed on a clean machine.** The one-step installer went from the ZIP to a test alert on a fresh Windows 11 VM (v0.2.5, [#175](https://github.com/barnabys-drew/tapwatch/issues/175)), and `tapwatch doctor` names what's wrong. On 2026-10-24 it moved a running sensor to a new mini PC, cases and baselines included (`import-state`, [#272](https://github.com/barnabys-drew/tapwatch/pull/272)). The first outside install is next |
 | Host context (who on the PC made this traffic) | **A week of real data reviewed** (v0.2, [#4](https://github.com/barnabys-drew/tapwatch/issues/4)): a program named for 106 of 136 PC cases, consistent with the owner's review. The intent verdicts never fired on real traffic and stay unmeasured, so host context still does not lower alerts on its own |
-| Endpoint rules | **Built** on Windows (osquery + Sysmon) and Linux (osquery eBPF): R17–R29 and R36–R39, plus R48 known-exploited software. A host case and a network case on the same PC pair only when the host rule names that network rule (`hostrules.PAIRS`). v0.3 shipped 2026-10-25: R39's 4s alert after a quiet measured week |
+| Endpoint rules | **Built** on Windows (osquery + Sysmon) and Linux (osquery eBPF): R17–R21, R23–R29 and R36–R39, plus R48 known-exploited software. A host case and a network case on the same PC pair only when the host rule names that network rule (`hostrules.PAIRS`). v0.3 shipped 2026-10-25: R39's 4s alert after a quiet measured week |
 | Router syslog | **Verified on a live gateway** (2026-10-16). CEF events and firewall lines parsed as sent; admin logins checked against a real line, and an outside login names its network and country. IPS verdicts still await a real detection |
 | macOS | **Later.** Waiting on a tester with a Mac; it won't ship untested |
 

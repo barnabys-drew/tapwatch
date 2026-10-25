@@ -1,5 +1,9 @@
 # tapwatch on Omarchy (Arch Linux)
 
+> **On hold.** This install exists and worked in tests, but it isn't the supported path right now. On Linux,
+> run tapwatch with Docker Compose as in the [README](../../README.md); on a Windows PC, use
+> [the Windows installer](office-unifi.md).
+
 A computer running [Omarchy](https://omarchy.org), or plain Arch, as the sensor. This is simpler than the
 Windows path: Linux captures the mirror port itself, so there is no Npcap and no WSL. dumpcap reads the mirror
 interface and streams it into Zeek in Docker. The rest runs as the same systemd user services as on Windows,
@@ -50,8 +54,9 @@ cd ~/tapwatch && .venv/bin/tapwatch doctor --send
 On Linux, doctor also checks the mirror interface (link, no address), the `wireshark` group, and sleep.
 
 Run `deploy/omarchy/install.sh` again at any time (without `--import`): every step checks what is already done.
-That's also how to update (`git pull` first). It needs a terminal for its questions; over SSH use `ssh -t`, or
-every question is answered no.
+To update tapwatch itself, `.venv/bin/tapwatch update` (it rolls back if the new version fails its checks);
+`git pull` and running the installer again also works. The installer needs a terminal for its questions; over SSH
+use `ssh -t`, or every question is answered no.
 
 ## Moving an existing install
 
@@ -63,15 +68,15 @@ To keep the cases, suppressions and learned baselines, so the new sensor doesn't
    running while it does. The file holds your alert addresses and keys, so copy it directly (scp, USB stick)
    and delete it afterwards.
 2. On the new computer: `deploy/omarchy/install.sh --import tapwatch-state.tar.gz`.
-3. The installer lists the settings that named the old computer: `host_context.host`, `ui.host`, `ui.base_url`,
-   `ui.zeek_dirs` and `feeds_dir`. Point them at this computer in `config.yaml`, then
+3. The installer lists the settings that named the old computer, from `host_context.host`, `ui.host`, `ui.base_url`,
+   `ui.zeek_dirs`, `feeds_dir`, `smtp` and `fleet.results_log`. Point them at this computer in `config.yaml`, then
    `systemctl --user restart 'tapwatch-*'`. Doctor warns while `host_context.host` isn't this computer, because
    cases about the old one would be explained with this one's programs.
 4. Point the router's syslog at the new computer's address.
 5. Stop the old sensor, or both alert on everything: `systemctl --user disable --now 'tapwatch-*'`.
 
-The old computer's own agent keeps writing its local log. It reaches the new sensor once that computer reports
-to a Fleet server ([#14](https://github.com/barnabys-drew/tapwatch/issues/14)).
+The old computer's own agent keeps writing its local log. To keep it covered, enroll it in a Fleet server
+([fleet.md](fleet.md)), and its results reach the new sensor through Fleet.
 
 ## Not covered here
 
