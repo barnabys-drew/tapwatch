@@ -536,6 +536,7 @@ def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str
 <p><label class="f">Note<textarea name="note" maxlength="{MAX_NOTE}" placeholder="What did you find?"></textarea></label></p>
 <button>Save</button></form></div>"""
 
+    shadow = _judge_card(store.judge_decision(case_id))
     order = (params or {}).get("notes", ["oldest"])[0]
     order = order if order in NOTE_ORDERS else "oldest"
     notes = store.notes(case_id)
@@ -549,9 +550,28 @@ def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str
 
     return f"Case #{r['id']}", (
         f'<p class="sub"><a href="/">← Cases</a></p>{hero}<div class="tiles">{tiles}</div>{jev}'
-        f'<div class="grid2"><div>{workflow}{_suppress_form(r, facts, indicators, csrf)}</div>'
+        f'<div class="grid2"><div>{workflow}{shadow}{_suppress_form(r, facts, indicators, csrf)}</div>'
         f'<div><h2 id="notes">Notes</h2>{note_pills}{notes_html}</div></div>'
         f'{_evidence(r, zeek_dirs)}{_audit(store.audit_trail(case_id))}')
+
+
+def _judge_card(d) -> str:
+    """The shadow judge's answer (#202): what it would do and the cases it learned from. It never acts."""
+    if d is None:
+        return ""
+    try:
+        widths = json.loads(d["widths"] or "{}")
+    except ValueError:
+        widths = {}
+    labels = {"device": "Same device", "any_device": "Any device"}
+    rows = ""
+    for width, w in widths.items():
+        links = " ".join(f'<a href="/case/{int(i)}">#{int(i)}</a>' for i in w.get("precedent_ids", [])
+                         if isinstance(i, int))
+        verdict = "would close as noise" if w.get("eligible") else f"leave it: {w.get('reason')}"
+        rows += f"<dt>{e(labels.get(width, width))}</dt><dd>{e(verdict)}{' · ' + links if links else ''}</dd>"
+    return (f'<div class="card"><h2>Judge (shadow)</h2><p class="faint">What the learned judge would do. It only '
+            f'records this; nothing is closed. {e(d["model_version"])}</p><dl>{rows}</dl></div>')
 
 
 def _pct(v) -> str:

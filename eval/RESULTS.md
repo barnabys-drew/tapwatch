@@ -198,6 +198,44 @@ user would answer "home"). The one false alert is a WannaCry-capture host that i
 dataset's infected list; the rules alert on it without Jev too, so wording can't change it. Lowering the alert thresholds to
 compensate for `home` would be tuning on two cases.
 
+## The judge's guardrails on the live history (2026-10-25, #201)
+
+`tapwatch judge backfill` then `tapwatch judge replay` on a copy of the live sensor's database: 1,205 cases from
+2026-10-13 to 10-25. Each case is judged only with the closes made before it happened, and with today's facts, so
+this is an estimate.
+
+**Training set (#200).** The audit trail gave 1,199 examples. 715 count as precedent: 714 closes a triage session
+made at the owner's request, and 1 made by the owner directly. 484 are kept but don't count: 380 closes an AI
+session made on its own, and 104 closes on arrival by a suppression. The counted labels are 708 benign, 1 false
+positive and 6 true positives, so the judge can learn "routine" and nothing about "dangerous". That's why it only
+ever suggests closing.
+
+**Eligible: 0 of 1,205, at both key widths** ("same device", and "any device", which needs precedent from at least
+two devices with none giving more than half). **No true positive would have been eligible at either width.**
+
+| Why not (same device) | Cases |
+|---|---|
+| No earlier owner close of the same destination, program or indicator on this device | 992 |
+| A true positive on this device in the last 30 days | 126 |
+| Only closes the owner didn't make (an AI on its own, a suppression) | 23 |
+| Critical code-only alert, code floor, always-alert, misused agent | 48 |
+| Owner precedent, but on only 1–2 days (3 needed) | 16 |
+
+Two shapes of the history explain the zero:
+- **The owner closes in batches.** The median close came 12 hours after the case.
+- **Repeats are bursts.** The biggest repeating key, one program's encoded commands, happened on essentially two
+  days: a flood on 10-17 (partly the duplicate-alert bug fixed in #303) and a few on 10-24. Its 264 closes all came
+  after the flood, so no case in it had precedent when it happened.
+
+Loosening the rules shows how little exact precedent there is. Counting precedent over 2 days with no week cap made
+2 cases eligible; any single day made 16. No true positive became eligible either way.
+
+The shadow judge (#202) records both widths for every new case from now on, and the scorecard (#203) will show, per
+detector, whether a wider key ever would have closed a real case. Precedent counts the days its cases *happened*
+on, not the days they were closed. That's a change from #201's wording ("distinct labelling days"): batch closing
+would otherwise count a week of cases as one day. What the cap is for, one burst of activity training a habit, is
+about when things happened.
+
 ## What to keep in mind
 
 - **Small sample.** Six malware captures and one night at one home. Treat these as a sanity

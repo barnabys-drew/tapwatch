@@ -281,7 +281,7 @@ true positives auto-closed.
 | Issue | What | Status |
 |---|---|---|
 | [#52](https://github.com/barnabys-drew/tapwatch/issues/52) | Long-horizon behavioral detections: 30 days of per-device history | designed 2026-10-20: daily summaries (#193), then R30–R35 (#194–#199) |
-| [#37](https://github.com/barnabys-drew/tapwatch/issues/37) | Learned judge: automate tier-1 triage from the owner's closed cases | designed 2026-10-20: training set, guardrails, shadow judge, scorecard, auto-close, drift back-off (#200–#205) |
+| [#37](https://github.com/barnabys-drew/tapwatch/issues/37) | Learned judge: automate tier-1 triage from the owner's closed cases | designed 2026-10-20 (#200–#205). **Built 2026-10-25:** the training set (#200), guardrails (#201) and shadow judge (#202), which records "same device" and "any device" answers on every new case and never acts. On the live history 0 of 1,205 cases were eligible ([RESULTS](../eval/RESULTS.md#the-judges-guardrails-on-the-live-history-2026-10-25-201)). Next: the scorecard (#203) once there's shadow data |
 
 Each design issue is a sub-issue of its parent, with what it reads, the logic, expected false positives, a safe
 test and what it depends on. Open question on #204: the default keeps alert-routed cases out of auto-close.
@@ -306,7 +306,8 @@ A replay of all 1,198 cases on the live sensor, before any judge code, changed t
     on its own, and tapwatch's own closes, don't.
   - **Prerequisite:** record who decided at close time. #200 grows a `decided_by` field, and the CLI and skills
     pass it.
-  - **Open decision for the owner.**
+  - **Decided 2026-10-25:** desk closes, `tapwatch mark`, explain's Apply and closes made at the owner's request
+    count. An AI's own closes and suppression closes are kept but don't count (`judge.label_source`).
 - **Precedent before models.** With 9 positive examples, a trained model (gradient-boosted trees, logistic
   regression) adds risk and hides its reasons. The first judge is precedent matching: exact keys first, then
   widened keys as they qualify. A model stays optional, for later, if the scorecard shows precedent plateauing.

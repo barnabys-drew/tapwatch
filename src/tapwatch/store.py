@@ -12,7 +12,7 @@ import sqlite3
 import time
 from dataclasses import asdict
 
-from . import inventory
+from . import inventory, judge
 from .detectors import base_domain, suffix_match
 from .models import Case, Route, Verdict, device_id, main_indicator
 
@@ -98,6 +98,31 @@ CREATE TABLE IF NOT EXISTS agents (       -- what each agent says it runs (os_ve
     os_version TEXT NOT NULL,
     platform TEXT NOT NULL,
     seen_ts REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS judge_examples (  -- the judge's training set (#200): one per decided case, newest label wins
+    case_id INTEGER PRIMARY KEY,
+    labelled_ts REAL NOT NULL,
+    label TEXT NOT NULL,        -- the disposition
+    label_source TEXT NOT NULL, -- judge.label_source: owner | owner_request | explain count; ai | suppression don't
+    actor TEXT NOT NULL,
+    detector TEXT NOT NULL,
+    device TEXT NOT NULL,
+    key TEXT NOT NULL,          -- judge.key_for: program file name, registrable domain or indicator
+    features TEXT NOT NULL,     -- code facts at labelling time (JSON)
+    feature_version INTEGER NOT NULL   -- 0: backfilled from the audit trail with today's facts
+);
+CREATE INDEX IF NOT EXISTS judge_examples_key ON judge_examples(detector, device, key);
+CREATE TABLE IF NOT EXISTS judge_decisions (  -- shadow mode (#202): what the judge would do, never done
+    case_id INTEGER PRIMARY KEY,
+    ts REAL NOT NULL,
+    model_version TEXT NOT NULL,
+    eligible INTEGER NOT NULL,
+    ineligible_reason TEXT,
+    suggestion TEXT NOT NULL,   -- close_noise | leave
+    confidence REAL NOT NULL,
+    precedent_ids TEXT NOT NULL,   -- JSON list of case ids
+    explanation TEXT NOT NULL,
+    widths TEXT NOT NULL DEFAULT '{}'   -- JSON: the same answer at each precedent key width (judge.WIDTHS)
 );
 CREATE INDEX IF NOT EXISTS notes_case ON notes(case_id);
 CREATE INDEX IF NOT EXISTS audit_case ON audit(case_id);
@@ -344,6 +369,7 @@ class Store:
                 self.db.execute("UPDATE cases SET disposition=?, feedback=?, updated_ts=? WHERE id=?",
                                 (disposition, DISPOSITION_TO_FEEDBACK[disposition], now, case_id))
                 self._audit(case_id, actor, "disposition", row["disposition"], disposition, now)
+                judge.record_example(self.db, row, disposition, actor, now)   # the judge's training set (#200)
                 changed.append("disposition")
             if status:
                 self.db.execute("UPDATE cases SET status=?, updated_ts=? WHERE id=?", (status, now, case_id))
@@ -360,6 +386,9 @@ class Store:
     def _audit(self, case_id: int | None, actor: str, action: str, old, new, now: float) -> None:
         self.db.execute("INSERT INTO audit (case_id, ts, actor, action, old, new) VALUES (?,?,?,?,?,?)",
                         (case_id, now, actor, action, old, new))
+
+    def judge_decision(self, case_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM judge_decisions WHERE case_id=?", (case_id,)).fetchone()
 
     def notes(self, case_id: int) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM notes WHERE case_id=? ORDER BY ts, id", (case_id,)).fetchall()
