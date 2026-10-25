@@ -12,10 +12,14 @@ them as Markdown for eval/RESULTS.md.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime
 
-from .store import DISPOSITIONS
+from .store import DISPOSITIONS, OWNER_DISPOSITION
+
+log = logging.getLogger("tapwatch")
 
 NOISE = ("false_positive", "benign_expected")
 # Code's host-context answer against the owner's disposition. Only two answers claim anything about intent: the
@@ -29,7 +33,10 @@ HOSTILE_WHO = {"agent_misused"}
 def _rows(db: sqlite3.Connection) -> list[sqlite3.Row]:
     cur = db.cursor()
     cur.row_factory = sqlite3.Row  # on the cursor, not the caller's connection
-    return cur.execute("SELECT first_ts, route, disposition, verdict, facts FROM cases").fetchall()
+    # The owner's disposition only: a judge auto-close (#204) is not the owner's verdict (store.OWNER_DISPOSITION)
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- a fixed constant
+    return cur.execute(f"SELECT first_ts, route, {OWNER_DISPOSITION} AS disposition, verdict, facts FROM cases"
+                       ).fetchall()
 
 
 def _week(ts: float) -> str:
@@ -139,7 +146,8 @@ def _pct(v) -> str:
     return f"{v:.0%}" if isinstance(v, (int, float)) else "–"
 
 
-def markdown(db: sqlite3.Connection, now: float | None = None, judge_replay: bool = False) -> str:
+def markdown(db: sqlite3.Connection, now: float | None = None, judge_replay: bool = False,
+             qualify: Qualify | None = None) -> str:
     stamp = datetime.fromtimestamp(now).strftime("%Y-%m-%d") if now else datetime.now().strftime("%Y-%m-%d")
     lines = [f"### Benchmark {stamp}", "",
              "| week | cases | alerts | decided | noise rate | true positives | Jev agreement |", "|---|---|---|---|---|---|---|"]
@@ -157,7 +165,7 @@ def markdown(db: sqlite3.Connection, now: float | None = None, judge_replay: boo
               f"{k['cases']} cases would have routed one step louder" + (f" ({top})" if top else "")
               + (f", and up to {k['maybe']} more stored before their rule's severity was recorded" if k["maybe"] else "")
               + f"; the other {k['cases'] - k['rules_routed']} were routed by Jev, a suppression or a fixed rule."]
-    lines += ["", judge_markdown(db, judge_replay)]
+    lines += ["", judge_markdown(db, judge_replay, qualify)]
     return "\n".join(lines)
 
 
@@ -191,14 +199,58 @@ def judge_examples_markdown(db: sqlite3.Connection) -> str:
 
 # ---------------------------------------------------------------- the judge's scorecard (#203)
 
-# When a detector qualifies for auto-close at one key width (#204 reads this). Provisional: the owner decides the
-# real thresholds on #204. These are the numbers #203 itself proposed, the strictest on the table, because a judge
-# closing a real case is the failure the whole gate exists for: the live history had 9 true positives in 1,198
-# labels, so "0 true positives would-closed" over a few dozen cases is weak evidence on its own.
+# When a detector qualifies for auto-close at one key width (#204 reads this). The owner settled these on #204
+# (2026-10-25): the numbers #203 itself proposed, the strictest on the table, because a judge closing a real case is
+# the failure the whole gate exists for: the live history had 9 true positives in 1,198 labels, so "0 true positives
+# would-closed" over a few dozen cases is weak evidence on its own. They are the defaults for `judge.qualify` in
+# config.yaml (Qualify.from_config).
 QUALIFY_MIN_DECIDED = 50       # would-close cases the owner decided (counted sources only)
 QUALIFY_MIN_WEEKS = 4          # distinct ISO weeks those decided would-close cases fall in
 QUALIFY_MIN_AGREEMENT = 0.98   # share of them the owner also called noise
 QUALIFY_MAX_TP = 0             # true positives it would have closed: one is enough to disqualify
+
+
+@dataclass(frozen=True)
+class Qualify:
+    """The auto-close bar at one width, from `judge.qualify` in config.yaml, defaulting to the constants above."""
+    min_decided: int = QUALIFY_MIN_DECIDED
+    min_weeks: int = QUALIFY_MIN_WEEKS
+    min_agreement: float = QUALIFY_MIN_AGREEMENT
+    max_tp: int = QUALIFY_MAX_TP
+
+    @classmethod
+    def parse(cls, cfg: dict | None) -> tuple[Qualify, list[str]]:
+        """`judge: {qualify: {min_decided, min_weeks, min_agreement, max_true_positives}}`, missing keys defaulting.
+        Never raises: a malformed value keeps its strict default and is returned as a problem (judge.Settings keeps
+        auto-close off while there is one)."""
+        j = (cfg or {}).get("judge")
+        q = j.get("qualify") if isinstance(j, dict) else None
+        problems: list[str] = []
+        if q is not None and not isinstance(q, dict):
+            problems.append(f"qualify: {q!r} (a mapping)")
+        q = q if isinstance(q, dict) else {}
+
+        def num(key: str, default, lo, hi, whole: bool):
+            v = q.get(key, default)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi \
+                    or (whole and v != int(v)):
+                problems.append(f"qualify.{key}: {v!r} (a {'whole ' if whole else ''}number from {lo} to {hi})")
+                return default
+            return int(v) if whole else float(v)
+
+        return cls(min_decided=num("min_decided", QUALIFY_MIN_DECIDED, 0, 100_000, True),
+                   min_weeks=num("min_weeks", QUALIFY_MIN_WEEKS, 0, 520, True),
+                   min_agreement=num("min_agreement", QUALIFY_MIN_AGREEMENT, 0, 1, False),
+                   max_tp=num("max_true_positives", QUALIFY_MAX_TP, 0, 100_000, True)), problems
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> Qualify:
+        q, problems = cls.parse(cfg)
+        if problems:
+            log.warning("judge config: %s; using the default bar for those", "; ".join(problems))
+        return q
+
+
 WIDTH_WORDS = {"device": "same device", "any_device": "any device"}
 
 
@@ -260,21 +312,22 @@ def _finish(t: dict) -> dict:
     return t
 
 
-def _verdict(t: dict) -> list[str]:
+def _verdict(t: dict, q: Qualify) -> list[str]:
     """Why a detector does not qualify at one width; empty when it does."""
     why = []
-    if t["tp_closed"] > QUALIFY_MAX_TP:
+    if t["tp_closed"] > q.max_tp:
         why.append(f"would have closed {t['tp_closed']} true positive(s)")
-    if t["decided"] < QUALIFY_MIN_DECIDED:
-        why.append(f"{t['decided']} decided would-close cases, needs {QUALIFY_MIN_DECIDED}")
-    if t["weeks"] < QUALIFY_MIN_WEEKS:
-        why.append(f"{t['weeks']} week(s) of them, needs {QUALIFY_MIN_WEEKS}")
-    if t["agreement"] is not None and t["agreement"] < QUALIFY_MIN_AGREEMENT:
-        why.append(f"agreement {_pct(t['agreement'])}, needs {QUALIFY_MIN_AGREEMENT:.0%}")
+    if t["decided"] < q.min_decided:
+        why.append(f"{t['decided']} decided would-close cases, needs {q.min_decided}")
+    if t["weeks"] < q.min_weeks:
+        why.append(f"{t['weeks']} week(s) of them, needs {q.min_weeks}")
+    if t["agreement"] is not None and t["agreement"] < q.min_agreement:
+        why.append(f"agreement {_pct(t['agreement'])}, needs {q.min_agreement:.0%}")
     return why
 
 
-def judge(db: sqlite3.Connection, replay: bool = False) -> dict:
+def judge(db: sqlite3.Connection, replay: bool = False, qualify: Qualify | None = None,
+          since: float | None = None) -> dict:
     """#203: how the shadow judge would have done, at each precedent key width (judge.WIDTHS).
 
     Rows per ISO week (of the case's first time) and detector, a row per week for all detectors (detector None),
@@ -291,9 +344,14 @@ def judge(db: sqlite3.Connection, replay: bool = False) -> dict:
       is still one the judge would have hidden.
 
     Per detector, `qualifies` and `why` are the auto-close verdict at that width (#204 reads them): at least
-    QUALIFY_MIN_DECIDED decided would-close cases in at least QUALIFY_MIN_WEEKS ISO weeks, agreement of at least
-    QUALIFY_MIN_AGREEMENT, and no true positive it would have closed. The thresholds are provisional until the
-    owner settles them on #204.
+    `qualify.min_decided` decided would-close cases in at least `qualify.min_weeks` ISO weeks, agreement of at least
+    `qualify.min_agreement`, and no more than `qualify.max_tp` true positives it would have closed (Qualify: the
+    owner's defaults, or `judge.qualify` in config.yaml).
+
+    The judge's own closes (#204) are never scored as agreement: their disposition's actor is the judge, which
+    `judge.label_source` counts as nobody. Once the owner reopens one and decides it, it is the owner's label.
+
+    `since` scores only cases that happened at or after it: #205's fresh qualification window after a back-off.
 
     `replay` judges every stored case afresh (judge.eligible, seeing only the examples labelled before the case)
     instead of reading `judge_decisions`, so the numbers exist before weeks of shadow data. Facts are as stored
@@ -310,7 +368,10 @@ def judge(db: sqlite3.Connection, replay: bool = False) -> dict:
         rows = []   # an older database, before the judge's tables
     weeks: dict[tuple, dict] = {}
     dets: dict[tuple, dict] = {}
+    q = qualify or Qualify()
     for cid, ts, det, disp, source, answers in rows:
+        if since is not None and ts < since:
+            continue
         wk = _week(ts)
         for width, closes in answers.items():
             if closes is None:
@@ -333,7 +394,7 @@ def judge(db: sqlite3.Connection, replay: bool = False) -> dict:
                  for (w, wk, det), t in sorted(weeks.items(), key=lambda kv: (order[kv[0][0]], kv[0][1], kv[0][2] or ""))]
     det_rows = []
     for (w, det), t in sorted(dets.items(), key=lambda kv: (order[kv[0][0]], -kv[1]["cases"], kv[0][1])):
-        why = _verdict(_finish(t))
+        why = _verdict(_finish(t), q)
         det_rows.append({"width": w, "detector": det, **t, "qualifies": not why, "why": "; ".join(why) or "qualifies"})
     return {"replay": replay, "widths": judge_mod.WIDTHS, "weeks": week_rows, "detectors": det_rows}
 
@@ -353,18 +414,21 @@ def _tps(t: dict) -> str:
     return f"**{t['tp_closed']}** (" + ", ".join(f"#{i}" for i in t["tp_ids"][:10]) + ")"
 
 
-def judge_markdown(db: sqlite3.Connection, replay: bool = False) -> str:
+def judge_markdown(db: sqlite3.Connection, replay: bool = False, qualify: Qualify | None = None) -> str:
     """The scorecard as Markdown: per detector with its auto-close verdict, then week by week, at each width."""
-    s = judge(db, replay)
+    q = qualify or Qualify()
+    s = judge(db, replay, q)
     head = "#### Judge scorecard " + ("(replay: every case judged afresh from the examples before it)" if replay
                                      else "(shadow decisions)")
     if not s["detectors"]:
         return head + "\n\nNo judge decisions yet" + ("." if replay else
                                                        " (`tapwatch benchmark --judge-replay` estimates them).")
-    rule = (f"Qualifies for auto-close (provisional until #204): at least {QUALIFY_MIN_DECIDED} would-close cases the "
-            f"owner decided, in at least {QUALIFY_MIN_WEEKS} ISO weeks, agreement at least "
-            f"{QUALIFY_MIN_AGREEMENT:.0%}, and no true positive it would have closed. Agreement counts only the "
-            "owner's own dispositions; load saved is would-close over all cases judged.")
+    tps = "no true positive" if not q.max_tp else f"at most {q.max_tp} true positive(s)"
+    rule = (f"Qualifies for auto-close (`judge.qualify`): at least {q.min_decided} would-close cases the owner "
+            f"decided, in at least {q.min_weeks} ISO weeks, agreement at least {q.min_agreement:.0%}, and {tps} it "
+            "would have closed. Agreement counts only the owner's own dispositions, never the judge's own closes; "
+            "load saved is would-close over all cases judged. Qualifying alone closes nothing: auto-close is off "
+            "until `judge.auto_close` is on and the detector is in `judge.auto_close_detectors`.")
     cols = "| cases | would close | agreement | load saved | true positives it would have closed |"
     lines = [head, "", rule, "", "| detector | width " + cols + " weeks | qualifies |", "|---" * 9 + "|"]
     for d in s["detectors"]:
