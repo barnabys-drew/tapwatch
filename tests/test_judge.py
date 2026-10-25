@@ -228,3 +228,16 @@ def test_a_sensor_health_true_positive_does_not_keep_the_judge_off_the_device():
     # it still blocks its own key
     ok, reason, _ = judge.eligible(s.db, row(s, add(s, detector="feed_silence", indicators=("conn",))), before=NOW + 60)
     assert not ok and "true positive before" in reason
+
+
+def test_precedent_from_before_the_device_was_named_counts_unless_the_mac_had_another_name():
+    s = Store(":memory:")
+    mac = "02:00:00:00:00:0d"
+    history(s, [20, 12, 4], facts={"device_mac": mac})                      # closed while still mac:-keyed
+    named = {"device_mac": mac, "device_name": "Den-Tablet"}
+    ok, reason, prec = judge.eligible(s.db, row(s, add(s, facts=named)), before=NOW + 60)
+    assert ok and len(prec) == 3, reason
+    # the same MAC once carried another name (a dock): its mac:-keyed closes may be the other computer's
+    add(s, facts={"device_mac": mac, "device_name": "Work-Laptop"}, indicators=("other.example.net",))
+    ok, reason, _ = judge.eligible(s.db, row(s, add(s, facts=named)), before=NOW + 60)
+    assert not ok and "no owner precedent" in reason
