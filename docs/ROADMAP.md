@@ -34,7 +34,7 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 | Windows install | **Passed on a clean machine.** The one-step installer went from the ZIP to a test alert on a fresh Windows 11 VM (v0.2.5, [#175](https://github.com/barnabys-drew/tapwatch/issues/175)), and `tapwatch doctor` names what's wrong. On 2026-10-24 it moved a running sensor to a new mini PC, cases and baselines included (`import-state`, [#272](https://github.com/barnabys-drew/tapwatch/pull/272)). The first outside install is next |
 | Host context (who on the PC made this traffic) | **A week of real data reviewed** (v0.2, [#4](https://github.com/barnabys-drew/tapwatch/issues/4)): a program named for 106 of 136 PC cases, consistent with the owner's review. The intent verdicts never fired on real traffic and stay unmeasured, so host context still does not lower alerts on its own |
 | Endpoint rules | **Built** on Windows (osquery + Sysmon) and Linux (osquery eBPF): R17–R29 and R36–R39, plus R48 known-exploited software. A host case and a network case on the same PC pair only when the host rule names that network rule (`hostrules.PAIRS`). v0.3 closes after R39's first week |
-| Router syslog | **Verified on a live gateway** (2026-10-16). CEF events and firewall lines parsed as sent; admin logins checked against a real line. IPS verdicts still await a real detection |
+| Router syslog | **Verified on a live gateway** (2026-10-16). CEF events and firewall lines parsed as sent; admin logins checked against a real line, and an outside login names its network and country. IPS verdicts still await a real detection |
 | macOS | **Later.** Waiting on a tester with a Mac; it won't ship untested |
 
 ### 2026-10-22 to 10-24: the sensor moves to its own box, Fleet for the other computers
@@ -62,6 +62,10 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
   skipped before the rules, and the host rules don't count it as the internet. The review caught that calling
   the address a LAN device would have raised admin-port and new-device cases on it
   ([#285](https://github.com/barnabys-drew/tapwatch/pull/285)). It is set by hand: the router's logs never carry it
+- **Where a router login came from** (R11): a login to the router's admin from outside the house now names the
+  address, its network and country, from the offline ASN table, on the case and on the phone alert. A login
+  through the vendor's cloud or app can show the vendor's network, so the wording keeps that open
+  ([#289](https://github.com/barnabys-drew/tapwatch/pull/289)). A real outside login still has to be checked
 
 ### 2026-10-20 to 10-21: v0.3 built, vulnerable software, less noise
 
