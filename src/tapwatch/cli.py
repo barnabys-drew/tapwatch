@@ -183,8 +183,8 @@ def cmd_selfcheck(args, cfg) -> int:
 
 
 def cmd_benchmark(args, cfg) -> int:
-    """Week-by-week noise rate, Jev agreement and host-context accuracy from the case desk, as Markdown."""
-    print(benchmark.markdown(Store(cfg.get("db_path", "tapwatch.db")).db))
+    """Week-by-week noise rate, Jev agreement, host-context accuracy and the judge's scorecard, as Markdown."""
+    print(benchmark.markdown(Store(cfg.get("db_path", "tapwatch.db")).db, judge_replay=args.judge_replay))
     return 0
 
 
@@ -699,8 +699,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_selfcheck)
 
-    sub.add_parser("benchmark", help="week-by-week noise rate, Jev agreement and host-context accuracy (Markdown)") \
-        .set_defaults(fn=cmd_benchmark)
+    s = sub.add_parser("benchmark", help="week-by-week noise rate, Jev agreement, host-context accuracy and the "
+                                         "judge's scorecard (Markdown)")
+    s.add_argument("--judge-replay", action="store_true",
+                   help="score the judge by judging every stored case afresh from the examples labelled before it, "
+                        "instead of reading its shadow decisions (read-only; an estimate: facts are as stored now)")
+    s.set_defaults(fn=cmd_benchmark)
 
     sub.add_parser("digest", help="send the pending digest").set_defaults(fn=cmd_digest)
 
