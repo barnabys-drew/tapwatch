@@ -1044,7 +1044,7 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
 - **Route:** digest, alert when paired; code-only. **Safe test:** `rclone copy /etc/hostname testremote:` with a
   remote that doesn't exist (fails) → one digest item naming `testremote`.
 
-### R39 A persistence or credential file changes (`host_fim`) — designed (#167)
+### R39 A persistence or credential file changes (`host_fim`) — **built** (#167)
 - **Threat:** persistence and privilege through files rather than registered entries (T1546.004, T1574.006,
   T1548.003, T1547.001): a shell start-up file gaining a line, `/etc/ld.so.preload`, `sudoers`, a file dropped in
   a Windows Startup folder.
@@ -1063,10 +1063,13 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   or all-users, never the path (it holds the user name). Sysmon names the program that wrote it.
 - **Logic:** `ld.so.preload` or sudoers written → 4 (R23 still reports preload *content* at 5). A shell start-up
   file changed → 3. A Startup-folder file created by a shell, script host, LOLBin, document or mail app, or from a
-  temp folder → 4; by anything else (installers) → 3. Ships at digest for every kind until a week's volume is
-  measured; then the 4s alert.
-- **Baseline:** to measure: file-event volume on the dev PC (coding agents and editors touch dotfiles) and
-  Startup-folder writes in a week.
+  temp folder → 4; by anything else (installers) → 3. Shipped at digest for every kind until a week's volume was
+  measured; the 4s alert since v0.3 (`alert: false` under detectors.host_fim keeps the digest-only mode).
+- **Baseline (2026-10-20 to 10-25, the dev PC):** one case in the week, the safe test. The Windows agent logged no
+  Startup-folder writes beside about 8,000 process starts a day, and the WSL agent's `file_changes` query logged
+  none. A quiet week, not a blind one: the process-start feed through the same query was full. Since 10-24 the
+  sensor runs on a Windows mini PC with no Linux agent watched, so Linux file events cover no computer until one is
+  enrolled.
 - **Blind spot:** osquery's file monitoring can't say which program *read* a file, so "a credential file read by a
   program that doesn't own it" stays out (a later step, with an eBPF file-open query). WSL's inotify sees only
   Linux paths.
