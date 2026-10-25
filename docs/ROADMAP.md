@@ -266,6 +266,41 @@ true positives auto-closed.
 Each design issue is a sub-issue of its parent, with what it reads, the logic, expected false positives, a safe
 test and what it depends on. Open question on #204: the default keeps alert-routed cases out of auto-close.
 
+### The judge, measured against the live history (2026-10-25)
+
+A replay of all 1,198 cases on the live sensor, before any judge code, changed the plan in four places.
+
+- **Strict precedent covers about 10%.** Closing a case only after 3 earlier closes with the same detector,
+  device and thing (program path, or registrable domain), all benign or false positive, would have closed 114
+  cases, none of them true positives. But 86 of the 114 are `host_encoded_cmd`, partly a duplicate-alert bug, and
+  most noise doesn't repeat exactly (a different new domain each time). Real savings need **wider keys**: a
+  registrable domain or site category on any device, a program on any of the owner's PCs. Wider keys are also
+  where a real case hides (FluBot used `www.facebook.com`). So each widening is earned per detector through the
+  scorecard (#203), never assumed.
+- **The labels are lopsided:** 1,153 benign, 36 false positive, 9 true positive. The judge can learn "routine"
+  and can't learn "dangerous", so it only ever closes. It never escalates, scores risk or changes a route.
+- **Who decided matters.** Of the 1,198 dispositions, 716 were set through the CLI by triage sessions acting on
+  the owner's request, 379 by an AI triage session, 103 by tapwatch itself, and none in the case desk. Counting
+  all of them as owner labels would teach the judge an AI's triage and then automate it, a feedback loop.
+  - **Proposed rule:** closes made in the desk and closes the owner approved count as labels; closes an AI made
+    on its own, and tapwatch's own closes, don't.
+  - **Prerequisite:** record who decided at close time. #200 grows a `decided_by` field, and the CLI and skills
+    pass it.
+  - **Open decision for the owner.**
+- **Precedent before models.** With 9 positive examples, a trained model (gradient-boosted trees, logistic
+  regression) adds risk and hides its reasons. The first judge is precedent matching: exact keys first, then
+  widened keys as they qualify. A model stays optional, for later, if the scorecard shows precedent plateauing.
+
+**Before the judge.** Fix the noise sources it would otherwise learn to close. A judge that closes a bug's output
+hides the bug. First is the duplicate `host_encoded_cmd` after restarts. The on-demand checks are good precedent
+evidence and feed the judge: host context ("the PC says Chrome made it"), Fleet host context for the other
+computers (#14), and the account check ("Drive shows the upload").
+
+**Order:** #200 with `decided_by` and #201 with a replay of the history through the eligibility function (about a
+day, no behaviour change, and it gives per-detector numbers). Then the shadow judge (#202) and scorecard (#203)
+for 2 to 4 weeks. Auto-close (#204) only follows for detectors whose scorecard qualifies, then drift back-off
+(#205).
+
 ## v0.5: home XDR ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/5))
 
 The end goal: one story per device from every signal a home has, not just the wire. Each source is something a
