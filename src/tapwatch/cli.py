@@ -422,7 +422,13 @@ def cmd_account_check(args, cfg) -> int:
         print(e, file=sys.stderr)
         return 1
     mb = json.loads(row["facts"] or "{}").get("mb")
-    f = acc.facts(result, upload_bytes=mb * 1e6 if isinstance(mb, (int, float)) else None)
+    upload = mb * 1e6 if isinstance(mb, (int, float)) else None
+    f = acc.facts(result, upload_bytes=upload)
+    if f["outcome"] == "unexplained":   # a work or school account the check can't see? (#986)
+        zeek_dirs = args.zeek_dir or (cfg.get("ui") or {}).get("zeek_dirs") or []
+        markers = acc.managed_markers(zeek_dirs, row["host"], *result["window"])
+        if markers:
+            f = acc.facts(result, upload_bytes=upload, markers=markers)
     text = acc.summary(f)
     print(text)
     if args.names:   # the terminal only: titles are never stored
@@ -610,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--names", action="store_true", help="also print file and video titles (terminal only)")
     s.add_argument("--window", type=int, default=None, help="seconds either side of the case's hours (default 1800)")
     s.add_argument("--force", action="store_true", help="check even if the case isn't a Google upload")
+    s.add_argument("--zeek-dir", action="append",
+                   help="Zeek log dir to look for managed-account signs in (repeatable; default ui.zeek_dirs)")
     s.set_defaults(fn=cmd_account_check)
 
     s = sub.add_parser("mark", help="close a case as false/true positive")
