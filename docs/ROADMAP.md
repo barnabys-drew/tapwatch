@@ -197,12 +197,31 @@ agent's log locked down.
 open for R39: it ships at digest until a week of file-event volume is measured (from 2026-10-20, so around
 2026-10-27), and then its severity-4 cases alert.
 
+**Closing v0.3 (around 2026-10-27).** Four things, in order:
+1. **Fix the duplicate `host_encoded_cmd` alerts after a restart**
+   ([#303](https://github.com/barnabys-drew/tapwatch/issues/303)). The same agent-log events were re-alerted under
+   the PC's other addresses. This comes first so v0.4's judge doesn't learn to close a bug's output.
+2. **Review R39's week of file-event volume** and decide whether its severity-4 cases alert. Then close #39, #167
+   and #230–#232.
+3. **Releases and `tapwatch update`** ([#304](https://github.com/barnabys-drew/tapwatch/issues/304)):
+   - a GitHub Action makes tagged releases with a changelog and the Windows zip;
+   - `tapwatch update` fetches the latest release, installs dependencies, runs the self-check, restarts what the
+     change needs and runs doctor, and rolls back if anything fails;
+   - the digest notices a new version, but nothing updates on its own;
+   - installs follow releases. A dev install can follow `main`, as the owner's sensor does over SSH.
+
+   Over SSH this is a convenience for the owner's own sensor. For an outside install with no SSH, it's the only
+   sane way to ship a fix, so it lands before the first one.
+4. **Cut v0.3.0,** the first tagged release, made with that workflow.
+
 | Issue | What | Status |
 |---|---|---|
 | [#26](https://github.com/barnabys-drew/tapwatch/issues/26) | Framework: osquery process events, host detectors, network correlation | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): the agent's osquery logs are a log source and `hostrules.py` raises host cases. Host ↔ network correlation built 2026-10-17 (five-minute window, measured on the live history); persistence snapshots are R23. **Done** 2026-10-18: the results log is readable only by its owner ([#166](https://github.com/barnabys-drew/tapwatch/pull/166)). Since 2026-10-20 a host case pairs only with the network rules it names (`hostrules.PAIRS`, [#240](https://github.com/barnabys-drew/tapwatch/pull/240)) |
 | [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): R17–R21, 0 cases on 34.5 h of the main PC's agent log. Pass 2 started 2026-10-17 with R23, new persistence entries (tasks, services, startup items, cron, launchd), measured on 40 h: 6 digest items, 0 alerts. R24 the same day: backups, logs, Defender or accounts changed, 0 such starts in 40 h. 2026-10-18: R25 discovery bursts, R26 browser extensions, WMI subscriptions in R23. **Done** 2026-10-18 with R29, lsass memory reads ([#166](https://github.com/barnabys-drew/tapwatch/pull/166)), baseline measured |
 | [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | **done** 2026-10-18 ([#148](https://github.com/barnabys-drew/tapwatch/pull/148), [#155](https://github.com/barnabys-drew/tapwatch/pull/155), [#169](https://github.com/barnabys-drew/tapwatch/pull/169)): R27, R28, and R23 on Linux (SSH keys, systemd units, SUID programs, kernel modules, ld.so.preload, privileged containers, bind shells); baselines measured 2026-10-19 |
 | [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools) | **built** 2026-10-20: R36 remote-access tools (#230, [#235](https://github.com/barnabys-drew/tapwatch/pull/235)), R37 tunnels (#231) and R38 staging (#232, [#236](https://github.com/barnabys-drew/tapwatch/pull/236)); safe tests passed live ([#240](https://github.com/barnabys-drew/tapwatch/pull/240)). Drivers, DLL hijacks and the rest moved to #233 under Later |
+| [#303](https://github.com/barnabys-drew/tapwatch/issues/303) | Duplicate `host_encoded_cmd` cases after an alerter restart | open: v0.3 close, step 1 |
+| [#304](https://github.com/barnabys-drew/tapwatch/issues/304) | Releases and `tapwatch update`: tagged versions, one-command update with rollback, a digest notice | open: v0.3 close, step 3 |
 | [#167](https://github.com/barnabys-drew/tapwatch/issues/167) | R39: file-change monitoring for persistence and credential paths (osquery file_events, Sysmon event 11) | **built** 2026-10-20 ([#238](https://github.com/barnabys-drew/tapwatch/pull/238)), safe test passed live; digest-only until a week's file-event volume is measured |
 
 ## Later ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/2))
