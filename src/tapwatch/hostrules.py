@@ -1445,9 +1445,11 @@ class FileChanged(HostDetector):
     created in a Startup folder (Sysmon event 11, only the file name and per-user or all-users).
 
     Privilege files and a Startup-folder file written by a shell, script host, LOLBin, document or mail app, or a
-    program in Temp, Downloads or a shared folder would be 4; the rest 3. Until a week's volume is measured on a dev
-    PC, where editors and coding agents touch dotfiles, every case ships as a digest item with `would_alert` set
-    (`alert: true` under detectors.host_fim lifts that). R23 still reports ld.so.preload *content* at 5 and the
+    program in Temp, Downloads or a shared folder are 4 and alert; the rest 3. It shipped as digest-only until a
+    week's volume was measured on the dev PC, where editors and coding agents touch dotfiles: 2026-10-20 to 10-25 gave
+    one case (the safe test), no Startup-folder writes beside ~8,000 process starts a day, and no Linux file events,
+    so the 4s alert since v0.3 (`alert: false` under detectors.host_fim puts every case back in the digest, with
+    `would_alert` set). R23 still reports ld.so.preload *content* at 5 and the
     Startup folder hourly; this one is immediate and names the program on Windows. Blind spots: which program read a
     file (file monitoring can't say), and on WSL, Windows paths (inotify sees Linux paths only).
     """
@@ -1455,7 +1457,7 @@ class FileChanged(HostDetector):
     name = "host_fim"
     QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, FIM)
 
-    def __init__(self, state: EndpointState | None = None, reported_days: float = 1, alert: bool = False):
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 1, alert: bool = True):
         super().__init__(state, reported_days)
         self.alert = alert
 
