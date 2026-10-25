@@ -218,9 +218,12 @@ def _judge_rows(db: sqlite3.Connection, replay: bool) -> list[tuple]:
                 for r in cur.execute("SELECT case_id, label, label_source FROM judge_examples").fetchall()}
     answers: dict[int, dict] = {}
     if replay:   # what the judge would have said at the time: eligible() only sees examples labelled before the case
-        db.row_factory = sqlite3.Row   # eligible() reads rows by name, as judge.replay does
-        for row in cur.execute("SELECT * FROM cases ORDER BY first_ts").fetchall():
-            answers[row["id"]] = {w: judge.eligible(db, row, width=w)[0] for w in judge.WIDTHS}
+        before, db.row_factory = db.row_factory, sqlite3.Row   # eligible() reads rows by name, as judge.replay does
+        try:
+            for row in cur.execute("SELECT * FROM cases ORDER BY first_ts").fetchall():
+                answers[row["id"]] = {w: judge.eligible(db, row, width=w)[0] for w in judge.WIDTHS}
+        finally:
+            db.row_factory = before   # the caller's connection is left as it was
     else:
         for r in cur.execute("SELECT case_id, suggestion, widths FROM judge_decisions").fetchall():
             try:
@@ -294,13 +297,17 @@ def judge(db: sqlite3.Connection, replay: bool = False) -> dict:
 
     `replay` judges every stored case afresh (judge.eligible, seeing only the examples labelled before the case)
     instead of reading `judge_decisions`, so the numbers exist before weeks of shadow data. Facts are as stored
-    now, so a replay is an estimate. Read-only either way."""
+    now, so a replay is an estimate. It can be optimistic in one way: a training example keeps only a case's newest
+    label, so a true positive later relabelled as noise no longer blocks the cases that came while it stood (the
+    30-day device guard). Every other relabel makes a replay more cautious. Read-only either way."""
     from . import judge as judge_mod
 
     try:
         rows = _judge_rows(db, replay)
-    except sqlite3.OperationalError:   # an older database, before the judge's tables
-        rows = []
+    except sqlite3.OperationalError as e:
+        if "no such table" not in str(e) and "no such column" not in str(e):
+            raise   # a locked database is an error, not "no decisions yet"
+        rows = []   # an older database, before the judge's tables
     weeks: dict[tuple, dict] = {}
     dets: dict[tuple, dict] = {}
     for cid, ts, det, disp, source, answers in rows:
