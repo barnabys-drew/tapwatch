@@ -46,7 +46,16 @@ def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=Non
                     herdr=config.herdr(cfg) if notify else None,
                     herdr_ai_severity=(cfg.get("herdr") or {}).get("ai_severity", 3.5),
                     hostctx=config.hostctx(cfg), zeek_dirs=zeek_dirs,
-                    learning_seconds=float(cfg.get("learning_days", 3)) * 86400)
+                    learning_seconds=float(cfg.get("learning_days", 3)) * 86400,
+                    update_notice=_update_notice(cfg))
+
+
+def _update_notice(cfg: dict):
+    """The digest's daily "newer release" line (#304), cached next to the database."""
+    from . import update
+
+    state = Path(cfg.get("db_path", "tapwatch.db")).with_name(".update-check.json")
+    return lambda: update.notice(cfg, state)
 
 
 def _single_instance(db_path: str):
@@ -443,6 +452,36 @@ def cmd_account_check(args, cfg) -> int:
     return 0
 
 
+def cmd_update(args, cfg) -> int:
+    """Move this install to the newest release (or main), rolling back if the new version fails."""
+    from . import update
+
+    try:
+        p = update.plan(cfg)
+        print(f"this install: {p.current} ({p.channel})   newest: {p.target}")
+        if not p.needed:
+            print(f"already past {p.target} (this checkout is newer)" if p.ahead else "up to date")
+            return 0
+        for line in p.changes[:30]:
+            print(f"  - {line}")
+        if len(p.changes) > 30:
+            print(f"  ... and {len(p.changes) - 30} more")
+        if args.check:
+            return 0
+        try:
+            ok = args.yes or input("update now? the alerter restarts for a few seconds [y/N] ").strip().lower() == "y"
+        except (EOFError, KeyboardInterrupt):
+            ok = False
+        if not ok:
+            print("\nnot updated")
+            return 1
+        update.apply(cfg, args.config, p)
+        return 0
+    except update.UpdateError as e:
+        print(e, file=sys.stderr)
+        return 1
+
+
 def cmd_mark(args, cfg) -> int:
     ok = Store(cfg.get("db_path", "tapwatch.db")).set_feedback(args.case_id, args.label)
     print("saved" if ok else f"no case #{args.case_id}")
@@ -619,6 +658,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--zeek-dir", action="append",
                    help="Zeek log dir to look for managed-account signs in (repeatable; default ui.zeek_dirs)")
     s.set_defaults(fn=cmd_account_check)
+
+    s = sub.add_parser("update", help="update to the newest release (or main), rolling back if it fails")
+    s.add_argument("--check", action="store_true", help="only say whether there's a newer version and what changed")
+    s.add_argument("--yes", action="store_true", help="don't ask before updating")
+    s.set_defaults(fn=cmd_update)
 
     s = sub.add_parser("mark", help="close a case as false/true positive")
     s.add_argument("case_id", type=int)

@@ -52,8 +52,10 @@ class Pipeline:
                  client: JevClient | None = None, notifier: Notifier | None = None,
                  thresholds: Thresholds | None = None, dedupe_seconds: float = 3600,
                  base_url: str | None = None, herdr: HerdrNotifier | None = None, herdr_ai_severity: float = 3.5,
-                 hostctx: HostContext | None = None, zeek_dirs=None, learning_seconds: float = 0):
+                 hostctx: HostContext | None = None, zeek_dirs=None, learning_seconds: float = 0,
+                 update_notice=None):
         self.detectors, self.assets, self.store, self.base_url = detectors, assets, store, base_url
+        self.update_notice = update_notice   # () -> "" or "tapwatch vX.Y.Z is available ..." (update.notice)
         self.client, self.notifier = client, notifier
         self.herdr, self.herdr_ai_severity = herdr, herdr_ai_severity  # critical cases pop up in the terminal
         self.hostctx, self.zeek_dirs = hostctx, zeek_dirs  # "who on the PC did this", for the tapwatch PC
@@ -317,9 +319,16 @@ class Pipeline:
         from . import explain
         rows = self.store.pending_digest()
         sugg = explain.suggestions(self.store)
-        if not (rows or sugg) or not self.notifier:
+        try:
+            newer = self.update_notice() if self.update_notice else ""
+        except Exception:  # noqa: BLE001 -- a failed version check must never cost the digest
+            newer = ""
+        if not (rows or sugg or newer) or not self.notifier:
             return 0
         items = []
+        if newer:   # #304: notify only; the owner runs `tapwatch update` (it rolls back if the new version fails)
+            items.append({"heading": "A newer tapwatch release is available", "facts": {"What": newer},
+                          "untrusted": []})
         if sugg:  # #12: what host context explained, waiting for one press on the case desk
             items.append({"heading": f"{len(sugg)} suppression suggestion(s) from host context",
                           "facts": {"What": "repeated cases the PC checked and found benign, one program each",
@@ -332,7 +341,8 @@ class Pipeline:
                      "Seen": f"{row['hits']} time(s)", "Case": case_link(self.base_url, row["id"])}
             items.append({"heading": row["title"], "facts": facts, "untrusted": json.loads(row["indicators"])})
         # A digest of suggestions alone repeats daily while they wait (the digest clock): a reminder, on purpose.
-        parts = ([f"{len(rows)} item(s) to review"] if rows else []) + ([f"{len(sugg)} suggestion(s)"] if sugg else [])
+        parts = ([f"{len(rows)} item(s) to review"] if rows else []) + ([f"{len(sugg)} suggestion(s)"] if sugg else []) \
+            + (["update available"] if newer else [])
         self.notifier.send("tapwatch daily digest: " + ", ".join(parts), items)
         self.store.mark_digested([r["id"] for r in rows[:40]])
         return len(items)
