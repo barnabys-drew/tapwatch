@@ -255,7 +255,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch replay` / `tapwatch eval` | push finished logs through the pipeline, or score rules-only vs Jev on labelled traffic |
 | `tapwatch import-state FILE` | take over another computer's install from the file `deploy/export-state.sh` made |
 | `tapwatch selfcheck` | detection rate on 37 scripted attack and false-positive shapes, rules only; exit 1 on a regression |
-| `tapwatch benchmark` | week-by-week noise rate, Jev agreement and host-context accuracy from the case desk, as Markdown |
+| `tapwatch benchmark` | week-by-week noise rate, Jev agreement, host-context accuracy and the judge's scorecard from the case desk, as Markdown (`--judge-replay` scores the judge over history before there's shadow data) |
 | `tapwatch doctor [--send]` | check every part of the install (capture, mirror port, router logs, agents, alerts, AI keys, lists, disk, the Windows side) and say how to fix what isn't working; `--send` adds a test alert |
 | `tapwatch accounts add` / `tapwatch account-check 42` | opt-in: sign in your own Google accounts read-only, then ask them what case 42's upload to Google was ([the guide](docs/setup/account-check.md)) |
 | `tapwatch test-alert` / `tapwatch notify` | check your notification channels |
@@ -362,8 +362,8 @@ home network since 2026-10-13, so expect rough edges.
   plus R48 known-exploited software. Other computers report through a Fleet server and get the same host
   rules. A scripted
   detection-rate check runs in CI; a feed-silence rule watches every log source, the router included.
-- **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement and
-  host-context accuracy week by week. The first live week ([results](eval/RESULTS.md)): about 5 alerts a day,
+- **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement,
+  host-context accuracy and the shadow judge's scorecard week by week. The first live week ([results](eval/RESULTS.md)): about 5 alerts a day,
   nearly all noise while the baselines learn, 2 true positives (both digest items); host context answered on
   all 136 PC cases and named the program for 106, and its intent verdicts have not yet fired on real traffic.
 
