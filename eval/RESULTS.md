@@ -198,6 +198,52 @@ user would answer "home"). The one false alert is a WannaCry-capture host that i
 dataset's infected list; the rules alert on it without Jev too, so wording can't change it. Lowering the alert thresholds to
 compensate for `home` would be tuning on two cases.
 
+## The judge's guardrails on the live history (2026-10-25, #201)
+
+`tapwatch judge backfill` then `tapwatch judge replay` on a copy of the live sensor's database: 1,205 cases from
+2026-10-13 to 10-25. Each case is judged only with the closes made before it happened, and with today's facts, so
+this is an estimate.
+
+**Training set (#200).** The audit trail gave 1,199 examples. 715 count as precedent: 714 closes a triage session
+made at the owner's request, and 1 made by the owner directly. 484 are kept but don't count: 380 closes an AI
+session made on its own, and 104 of tapwatch's own (a suppression matched on arrival, or a patch resolved R48). The counted labels are 708 benign, 1 false
+positive and 6 true positives, so the judge can learn "routine" and nothing about "dangerous". That's why it only
+ever suggests closing.
+
+**Eligible: 0 of 1,205, at both key widths** ("same device", and "any device", which needs precedent from at least
+two devices with none giving more than half). **No true positive would have been eligible at either width.**
+
+| Why not (same device) | Cases |
+|---|---|
+| No earlier owner close of the same host name, program or indicator on this device | 995 |
+| A true positive on this device in the last 30 days | 126 |
+| Only closes the owner didn't make (an AI on its own, tapwatch's own) | 22 |
+| Critical code-only alert, code floor, always-alert, misused agent | 48 |
+| Owner precedent, but on only 1–2 days (3 needed) | 14 |
+
+Two shapes of the history explain the zero:
+- **The owner closes in batches.** The median close came 12 hours after the case.
+- **Repeats are bursts.** The biggest repeating key, one program's encoded commands, happened on essentially two
+  days: a flood on 10-17 (partly the duplicate-alert bug fixed in #303) and a few on 10-24. Its 264 closes all came
+  after the flood, so no case in it had precedent when it happened.
+
+Loosening the rules shows how little exact precedent there is. Precedent over 2 days, with no week cap and no
+labelling-day cap, made 2 cases eligible on the same device; any single day made 14 (3 at "any device"). No true
+positive became eligible either way.
+
+The shadow judge (#202) records both widths for every new case from now on, and the scorecard (#203) will show, per
+detector, whether a wider key ever would have closed a real case.
+
+**Two day caps, not one.** #201 asked for distinct *labelling* days, but the owner closes in batches, so a week of
+cases counts as one day. Counting only the days the cases *happened* fixes that, but the review found it lets one
+sitting teach the judge: an attacker chooses when its cases happen (a slow beacon once a day), and a single bulk
+close, explain Apply or triage session would label them all at once. So precedent needs both: cases on 3 distinct
+days, and owner closes on 2 distinct days.
+
+**Narrow keys.** The key is the full host name, not the registrable domain, so one tenant of trycloudflare.com or
+github.io doesn't vouch for another. A program is keyed by its full path when host context knows it. A true-positive
+label on the same key blocks the judge from any source, including an AI's or tapwatch's own.
+
 ## What to keep in mind
 
 - **Small sample.** Six malware captures and one night at one home. Treat these as a sanity
