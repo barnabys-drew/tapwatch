@@ -101,6 +101,25 @@ warmup_seconds: 86400                # first-seen rules stay quiet for the first
 learning_days: 3                     # AI alerts go to the digest this long after the first packet (always-alert
                                      # rules and agent misuse still interrupt); 0 = off. Survives restarts.
 
+judge:                               # the learned judge (v0.4, docs/ARCHITECTURE.md). It always runs in shadow mode,
+                                     # recording what it would close; the Stats page grades it per detector
+  auto_close: false                  # OFF by default: nothing is ever closed. true lets it close, but only for the
+  auto_close_detectors: []           # detectors you list here, each only while the scorecard says it qualifies.
+                                     # Start with one: [new_domain] closes at the same-device width only;
+                                     # {new_domain: [device, any_device]} also lets the wider key close it
+  auto_close_alerts: false           # alert-routed cases are never closed (true: closed after the alert is sent)
+  min_confidence: 0.8                # the judge's own confidence (3 of 3 earlier cases closed as noise = 0.8)
+  qualify:                           # when a detector qualifies at one width (the scorecard's "auto-close?")
+    min_decided: 50                  # would-close cases you decided yourself
+    min_weeks: 4                     # ...spread over at least this many ISO weeks
+    min_agreement: 0.98              # ...of which you called this share noise
+    max_true_positives: 0            # true positives it would have closed: one disqualifies
+  backoff:                           # it stops closing a detector by itself, says so in the digest, and resumes only
+    window_days: 14                  # after qualifying again on cases raised since. Over this many days: any case it
+    max_undo_rate: 0.02              # closed that you call a true positive, any true positive among cases it would
+                                     # have closed, or undoing more than this share of its closes (one undo in fewer
+                                     # than 50) stops it. Every close is on the case desk's Judge page with an Undo
+
 thresholds:
   min_confidence: 0.6
   page_prob: 0.7

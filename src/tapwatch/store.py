@@ -127,6 +127,30 @@ CREATE TABLE IF NOT EXISTS judge_decisions (  -- shadow mode (#202): what the ju
     explanation TEXT NOT NULL,
     widths TEXT NOT NULL DEFAULT '{}'   -- JSON: the same answer at each precedent key width (judge.WIDTHS)
 );
+CREATE TABLE IF NOT EXISTS judge_closures (  -- auto-close (#204): every case the judge closed, off by default
+    case_id INTEGER PRIMARY KEY,
+    ts REAL NOT NULL,
+    detector TEXT NOT NULL,
+    width TEXT NOT NULL,        -- the precedent key width it closed at (judge.WIDTHS)
+    model_version TEXT NOT NULL,
+    precedent_ids TEXT NOT NULL,   -- JSON list of case ids
+    explanation TEXT NOT NULL,
+    digested INTEGER NOT NULL DEFAULT 0,   -- listed in a digest's "what the judge closed" (#205)
+    undone_ts REAL,             -- the owner undid it, reopened it or called it a true positive (#205 counts these)
+    undone_by TEXT,
+    undone_how TEXT             -- undo | reopened | true_positive
+);
+CREATE INDEX IF NOT EXISTS judge_closures_detector ON judge_closures(detector, ts);
+CREATE TABLE IF NOT EXISTS judge_backoff (  -- #205: detectors the judge stopped auto-closing, and why
+    id INTEGER PRIMARY KEY,
+    detector TEXT NOT NULL,
+    since_ts REAL NOT NULL,
+    reason TEXT NOT NULL,
+    lifted_ts REAL,             -- it qualified again on cases raised after since_ts alone
+    lifted_reason TEXT,
+    announced_on INTEGER NOT NULL DEFAULT 0,    -- the digest said it stopped
+    announced_off INTEGER NOT NULL DEFAULT 0    -- the digest said it resumed
+);
 CREATE INDEX IF NOT EXISTS notes_case ON notes(case_id);
 CREATE INDEX IF NOT EXISTS audit_case ON audit(case_id);
 """
@@ -427,7 +451,13 @@ class Store:
                 self.db.execute("UPDATE cases SET updated_ts=? WHERE id=?", (now, case_id))
                 self._audit(case_id, actor, "note", None, note, now)
                 changed.append("note")
+            if status or disposition:   # the owner reopening a judge close, or calling it a true positive (#205)
+                judge.note_owner_change(self.db, case_id, actor, status, disposition, now)
         return changed
+
+    def undo_judge_close(self, case_id: int, actor: str) -> None:
+        """The case desk's one-click undo of a judge close (#204): back to investigating, disposition cleared."""
+        judge.undo_close(self, case_id, actor)
 
     def _audit(self, case_id: int | None, actor: str, action: str, old, new, now: float) -> None:
         self.db.execute("INSERT INTO audit (case_id, ts, actor, action, old, new) VALUES (?,?,?,?,?,?)",

@@ -107,6 +107,13 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
   week-by-week benchmark: noise rate, how often the model agreed with your dispositions, and how
   often host context's verdict matched them. The CSP allows no scripts, and every change carries a
   CSRF token.
+- **A learned judge, off until you switch it on.** It learns from the cases you closed yourself and
+  records, on every new case, whether it would close it as routine and which of your closes it is
+  copying. The stats page grades it per detector. Auto-close ships **off** (`judge.auto_close: false`).
+  When you turn it on, it closes cases only for the detectors you list in `judge.auto_close_detectors`,
+  and only while each one qualifies on its scorecard. It never closes always-alert or alert-routed
+  cases, and it never suppresses. Each close has a one-click Undo, and the daily digest lists what it
+  closed. If you undo its closes or call one a true positive, it stops on its own.
 - **Private by design.** The AI sees device *names*, never internal IPs, MACs or packet contents.
   Network strings are quoted as untrusted. A personal-data gate runs in CI.
 - **Few dependencies.** Standard-library Python plus PyYAML, SQLite, and Zeek in Docker. Runs
@@ -256,6 +263,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch import-state FILE` | take over another computer's install from the file `deploy/export-state.sh` made |
 | `tapwatch selfcheck` | detection rate on 37 scripted attack and false-positive shapes, rules only; exit 1 on a regression |
 | `tapwatch benchmark` | week-by-week noise rate, Jev agreement, host-context accuracy and the judge's scorecard from the case desk, as Markdown (`--judge-replay` scores the judge over history before there's shadow data) |
+| `tapwatch judge closed` / `tapwatch judge undo 42` | list everything the judge auto-closed and any back-off, or reopen case 42 the way the desk's Undo does (auto-close is off unless `judge.auto_close` is on in config.yaml; see its comments) |
 | `tapwatch doctor [--send]` | check every part of the install (capture, mirror port, router logs, agents, alerts, AI keys, lists, disk, the Windows side) and say how to fix what isn't working; `--send` adds a test alert |
 | `tapwatch accounts add` / `tapwatch account-check 42` | opt-in: sign in your own Google accounts read-only, then ask them what case 42's upload to Google was ([the guide](docs/setup/account-check.md)) |
 | `tapwatch test-alert` / `tapwatch notify` | check your notification channels |
@@ -364,7 +372,8 @@ home network since 2026-10-13, so expect rough edges.
   rules. A scripted
   detection-rate check runs in CI; a feed-silence rule watches every log source, the router included.
 - **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement,
-  host-context accuracy and the shadow judge's scorecard week by week. The first live week ([results](eval/RESULTS.md)): about 5 alerts a day,
+  host-context accuracy and the shadow judge's scorecard week by week. Judge auto-close and its back-off are
+  built and ship switched off; no detector has qualified on the live history yet. The first live week ([results](eval/RESULTS.md)): about 5 alerts a day,
   nearly all noise while the baselines learn, 2 true positives (both digest items); host context answered on
   all 136 PC cases and named the program for 106, and its intent verdicts have not yet fired on real traffic.
 

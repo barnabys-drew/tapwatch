@@ -53,8 +53,10 @@ class Pipeline:
                  thresholds: Thresholds | None = None, dedupe_seconds: float = 3600,
                  base_url: str | None = None, herdr: HerdrNotifier | None = None, herdr_ai_severity: float = 3.5,
                  hostctx: HostContext | None = None, zeek_dirs=None, learning_seconds: float = 0,
-                 update_notice=None):
+                 update_notice=None, autoclose: judge.AutoClose | None = None):
         self.detectors, self.assets, self.store, self.base_url = detectors, assets, store, base_url
+        # #204/#205: off by default (judge.Settings), and then it never reads the database or closes anything
+        self.autoclose = autoclose or judge.AutoClose()
         self.update_notice = update_notice   # () -> "" or "tapwatch vX.Y.Z is available ..." (update.notice)
         self.client, self.notifier = client, notifier
         self.herdr, self.herdr_ai_severity = herdr, herdr_ai_severity  # critical cases pop up in the terminal
@@ -171,6 +173,10 @@ class Pipeline:
                                    [alert_item(case, verdict, reason, self.assets, case_id, self.base_url)])
             except RuntimeError as e:
                 log.error("could not deliver alert #%s: %s", case_id, e)
+        try:  # auto-close (#204), after any alert went out; off unless judge.auto_close and the allow-list say so
+            self.autoclose.consider(self.store, case_id)
+        except Exception as e:  # noqa: BLE001 - a judge bug leaves the case open for the owner, as before
+            log.warning("judge auto-close failed on #%s: %s", case_id, e)
         return case_id, case, verdict, r
 
     def identify(self, case: Case) -> None:
@@ -342,12 +348,21 @@ class Pipeline:
     def send_digest(self) -> int:
         from . import explain
         rows = self.store.pending_digest()
+        # A digest case the judge closed (#204) is not one to read: the judge's section counts it instead.
+        judged = {r[0] for r in self.store.db.execute("SELECT case_id FROM judge_closures WHERE undone_ts IS NULL")}
+        quiet = [r for r in rows if r["status"] == "closed" and r["id"] in judged]
+        rows = [r for r in rows if not (r["status"] == "closed" and r["id"] in judged)]
         sugg = explain.suggestions(self.store)
         try:
             newer = self.update_notice() if self.update_notice else ""
         except Exception:  # noqa: BLE001 -- a failed version check must never cost the digest
             newer = ""
-        if not (rows or sugg or newer) or not self.notifier:
+        try:  # #205: drift back-off, and its lifting, are checked before the digest that announces them
+            self.autoclose.review(self.store.db)
+        except Exception as e:  # noqa: BLE001
+            log.warning("judge back-off review failed: %s", e)
+        judge_items, judge_done = judge.digest_section(self.store.db, lambda i: case_link(self.base_url, i))
+        if not (rows or sugg or newer or judge_items) or not self.notifier:
             return 0
         items = []
         if newer:   # #304: notify only; the owner runs `tapwatch update` (it rolls back if the new version fails)
@@ -359,6 +374,7 @@ class Pipeline:
                                     "Open": (self.base_url.rstrip("/") + "/suppressions#explained") if self.base_url
                                     else "tapwatch explain"},
                           "untrusted": []})
+        items += judge_items   # what the judge closed, and any back-off (#205)
         for row in rows[:40]:  # keep the card readable; the rest go in the next digest
             facts = {"Device": f"{self.assets.name(row['host'], json.loads(row['facts']))} ({row['host']})",
                      "Why": row["reason"],
@@ -366,7 +382,10 @@ class Pipeline:
             items.append({"heading": row["title"], "facts": facts, "untrusted": json.loads(row["indicators"])})
         # A digest of suggestions alone repeats daily while they wait (the digest clock): a reminder, on purpose.
         parts = ([f"{len(rows)} item(s) to review"] if rows else []) + ([f"{len(sugg)} suggestion(s)"] if sugg else []) \
+            + ([f"{len(judge_done['closures'])} closed by the judge"] if judge_done.get("closures") else []) \
+            + (["judge back-off"] if judge_done.get("off") or judge_done.get("on") else []) \
             + (["update available"] if newer else [])
         self.notifier.send("tapwatch daily digest: " + ", ".join(parts), items)
-        self.store.mark_digested([r["id"] for r in rows[:40]])
+        self.store.mark_digested([r["id"] for r in rows[:40] + quiet])
+        judge.mark_reported(self.store.db, judge_done)
         return len(items)

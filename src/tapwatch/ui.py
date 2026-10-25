@@ -32,7 +32,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from . import benchmark, evidence
+from . import benchmark, evidence, judge
 from .store import (
     DISPOSITIONS,
     STATUSES,
@@ -50,6 +50,7 @@ COOKIE = "tapwatch_sid"
 MAX_BODY = 64 * 1024
 MAX_NOTE = 10_000
 PAGE_SIZE = 200
+JUDGE_LIST = 500   # judge closes listed on the Judge page
 ROUTES = ("alert", "digest", "log")
 
 
@@ -231,7 +232,7 @@ button.danger:hover { background:color-mix(in srgb, var(--red) 12%, transparent)
 LOGO = ('<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
         'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 '
         '6 8 10 8 10z"/><path d="M8 12h2l1.5-3 2 6 1.5-3h1"/></svg>')
-NAV = (("/", "Cases"), ("/stats", "Stats"), ("/suppressions", "Suppressions"))
+NAV = (("/", "Cases"), ("/stats", "Stats"), ("/suppressions", "Suppressions"), ("/judge", "Judge"))
 
 
 STATS_REFRESH_S = 60  # the stats page reloads itself; pages with forms never do (they'd lose your typing)
@@ -536,7 +537,7 @@ def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str
 <p><label class="f">Note<textarea name="note" maxlength="{MAX_NOTE}" placeholder="What did you find?"></textarea></label></p>
 <button>Save</button></form></div>"""
 
-    shadow = _judge_card(store.judge_decision(case_id))
+    shadow = _judge_closed_card(store, r, csrf) + _judge_card(store.judge_decision(case_id))
     order = (params or {}).get("notes", ["oldest"])[0]
     order = order if order in NOTE_ORDERS else "oldest"
     notes = store.notes(case_id)
@@ -553,6 +554,102 @@ def render_case(store: Store, assets: Assets, case_id: int, zeek_dirs, csrf: str
         f'<div class="grid2"><div>{workflow}{shadow}{_suppress_form(r, facts, indicators, csrf)}</div>'
         f'<div><h2 id="notes">Notes</h2>{note_pills}{notes_html}</div></div>'
         f'{_evidence(r, zeek_dirs)}{_audit(store.audit_trail(case_id))}')
+
+
+def _links(ids) -> str:
+    return " ".join(f'<a href="/case/{int(i)}">#{int(i)}</a>' for i in ids if isinstance(i, int))
+
+
+def _judge_closed_card(store: Store, r, csrf: str) -> str:
+    """#204: the judge closed this case. Says why, names the precedent, and offers the one-click undo."""
+    c = judge.closure(store.db, r["id"])
+    if c is None:
+        return ""
+    try:
+        ids = json.loads(c["precedent_ids"] or "[]")
+    except ValueError:
+        ids = []
+    where = "same device" if c["width"] == "device" else "any device"
+    head = (f'<div class="card accent-digest"><h2>Closed by the judge</h2><p>{e(when(c["ts"]))} · auto-close at '
+            f'{e(where)} width · {e(c["model_version"])}</p><p>{e(c["explanation"])}</p>'
+            + (f'<p class="faint">Precedent: {_links(ids)}</p>' if ids else ""))
+    if c["undone_ts"] is not None:
+        how = {"undo": "undone", "reopened": "reopened", "true_positive": "called a true positive"}.get(
+            c["undone_how"], c["undone_how"])
+        return head + f'<p class="faint">{e(how)} by {e(c["undone_by"])} at {e(when(c["undone_ts"]))}</p></div>'
+    if r["status"] != "closed" or r["disposition"] != "benign_expected":
+        return head + "</div>"
+    return head + (f'<form method="post" action="/case/{r["id"]}/undo-judge">{csrf_field(csrf)}'
+                   '<button>Undo the judge\'s close</button> <span class="faint">back to investigating, its '
+                   'disposition cleared; the judge counts it against itself</span></form></div>')
+
+
+def render_judge(store: Store, settings: judge.Settings, csrf: str) -> tuple[str, str]:
+    """#204: everything the judge closed, newest first, grouped by day with an undo for each day; back-off state."""
+    rows = judge.closures(store.db, JUDGE_LIST)
+    backoffs = store.db.execute("SELECT * FROM judge_backoff ORDER BY id DESC LIMIT 20").fetchall()
+    open_n = sum(1 for r in rows if r["undone_ts"] is None)
+    undone = len(rows) - open_n
+    tiles = (tile(len(rows), "Closed by the judge", "violet", f"the newest {JUDGE_LIST}" if len(rows) >= JUDGE_LIST
+                  else "")
+             + tile(undone, "Undone or reopened", "amber" if undone else "green", "the owner disagreed")
+             + tile(sum(1 for b in backoffs if b["lifted_ts"] is None), "Backed off", "red", "detectors stopped"))
+    status = f'<div class="card"><h2>Auto-close</h2><p>{e(settings.summary())}.</p>'
+    if not settings.auto_close:
+        status += ('<p class="faint">Off by default. To turn it on for one detector, set <span class="mono">'
+                   'judge.auto_close: true</span> and list it in <span class="mono">judge.auto_close_detectors'
+                   '</span> in config.yaml, then restart <span class="mono">tapwatch run</span>. It still closes '
+                   'nothing until the scorecard on the Stats page says that detector qualifies.</p>')
+    status += "</div>"
+    bo = ""
+    if backoffs:
+        bo = ('<h2>Back-off</h2><div class="card flush scroll"><table><thead><tr><th>detector</th><th>stopped</th>'
+              '<th>why</th><th>resumed</th></tr></thead><tbody>' + "".join(
+                  f'<tr><td class="mono">{e(b["detector"])}</td><td class="tnum">{e(when(b["since_ts"]))}</td>'
+                  f'<td>{e(b["reason"])}</td><td>{e(when(b["lifted_ts"])) + " · " + e(b["lifted_reason"]) if b["lifted_ts"] else "not yet"}</td></tr>'
+                  for b in backoffs) + "</tbody></table></div>")
+    if not rows:
+        listing = '<div class="card empty">The judge has closed nothing.</div>'
+    else:
+        days: dict[str, list] = {}
+        for r in rows:
+            days.setdefault(datetime.fromtimestamp(r["ts"]).strftime("%Y-%m-%d"), []).append(r)
+        listing = ""
+        for day, rs in days.items():
+            live = [r for r in rs if r["undone_ts"] is None and r["status"] == "closed"
+                    and r["disposition"] == "benign_expected"]
+            undo_day = (f'<form method="post" action="/judge/undo-day">{csrf_field(csrf)}<input type="hidden" '
+                        f'name="day" value="{e(day)}"><button>Undo all {len(live)} from this day</button></form>'
+                        if live else "")
+            body = "".join(
+                f'<tr><td class="num"><a href="/case/{r["case_id"]}">#{r["case_id"]}</a></td>'
+                f'<td><a class="title" href="/case/{r["case_id"]}">{e(r["title"])}</a></td>'
+                f'<td class="mono">{e(r["detector"])}</td><td>{e(r["width"].replace("_", " "))}</td>'
+                f'<td>{badge(r["status"])}</td>'
+                f'<td>{e(r["undone_how"] + " by " + r["undone_by"]) if r["undone_ts"] else ""}</td>'
+                f'<td class="faint tnum">{e(when(r["ts"])[11:16])}</td></tr>' for r in rs)
+            listing += (f'<div class="bar"><h2>{e(day)} · {len(rs)}</h2>{undo_day}</div>'
+                        f'<div class="card flush scroll"><table><thead><tr><th class="num">#</th><th>case</th>'
+                        f'<th>detector</th><th>width</th><th>status</th><th>undone</th><th>closed</th></tr></thead>'
+                        f'<tbody>{body}</tbody></table></div>')
+    return "Judge", (f'<h1>What the judge closed</h1><p class="sub">Every case auto-close closed, and whether you undid '
+                     f'it · {open_n} still closed</p><div class="tiles">{tiles}</div>{status}{bo}{listing}')
+
+
+def _undo_day(store: Store, day: str, actor: str) -> list[str]:
+    """Undo every judge close made on `day` (local YYYY-MM-DD) that is still as the judge left it. Returns errors."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day or ""):
+        raise WorkflowError("pick a day")
+    errors = []
+    for r in judge.closures(store.db, limit=100_000):
+        if datetime.fromtimestamp(r["ts"]).strftime("%Y-%m-%d") != day or r["undone_ts"] is not None \
+                or r["status"] != "closed" or r["disposition"] != "benign_expected":
+            continue
+        try:
+            store.undo_judge_close(r["case_id"], actor)
+        except WorkflowError as err:
+            errors.append(str(err))
+    return errors
 
 
 def _judge_card(d) -> str:
@@ -742,7 +839,7 @@ def column_chart(values: list[int], labels: list[str], height: int = 170) -> str
             f'{"".join(parts)}</svg>')
 
 
-def render_stats(store: Store) -> tuple[str, str]:
+def render_stats(store: Store, qualify: benchmark.Qualify | None = None) -> tuple[str, str]:
     db = store.db
     total = db.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
     decided_all = db.execute("SELECT COUNT(*) FROM cases WHERE disposition IS NOT NULL").fetchone()[0]
@@ -882,14 +979,15 @@ def render_stats(store: Store) -> tuple[str, str]:
                      f"<h2>False-positive rate per detector</h2>{fp_html}"
                      f"<h2>Jev confidence vs disposition</h2>{conf_html}"
                      f"<h2>Host context: code, Jev and you</h2>{host_html}"
-                     f"<h2>Judge scorecard (shadow)</h2>{_judge_scorecard(db)}"
+                     f"<h2>Judge scorecard (shadow)</h2>{_judge_scorecard(db, qualify)}"
                      f"<h2>Suppression hits</h2>{sup_html}")
 
 
-def _judge_scorecard(db) -> str:
+def _judge_scorecard(db, qualify: benchmark.Qualify | None = None) -> str:
     """#203: the shadow judge graded against the owner, per detector and week at each key width (benchmark.judge;
     `tapwatch benchmark` prints the same). A true positive it would have closed is red: it disqualifies."""
-    s = benchmark.judge(db)
+    q = qualify or benchmark.Qualify()
+    s = benchmark.judge(db, qualify=q)
     if not s["detectors"]:
         return ('<div class="card empty">No judge decisions yet. The shadow judge records one for every new case; '
                 '<span class="mono">tapwatch benchmark --judge-replay</span> estimates the numbers from history.</div>')
@@ -928,10 +1026,12 @@ def _judge_scorecard(db) -> str:
             f'<th class="num">weeks</th><th>auto-close?</th></tr></thead><tbody>{det_rows}</tbody></table>'
             f'<p class="pad faint">What the judge would have closed as noise, never acted on. "You agreed": of the '
             f'would-close cases you decided yourself (not an AI or tapwatch), the share you also called noise. Load '
-            f'saved is would-close over all cases it judged. Qualifying for auto-close (provisional until #204): at '
-            f'least {benchmark.QUALIFY_MIN_DECIDED} would-close cases you decided, in at least '
-            f'{benchmark.QUALIFY_MIN_WEEKS} weeks, {benchmark.QUALIFY_MIN_AGREEMENT:.0%} agreement and no true '
-            f'positive it would have closed.</p></div>'
+            f'saved is would-close over all cases it judged; the judge\'s own closes never count as agreement. '
+            f'Qualifying for auto-close (judge.qualify): at least {q.min_decided} would-close cases you decided, in '
+            f'at least {q.min_weeks} weeks, {q.min_agreement:.0%} agreement and '
+            f'{"no true positive" if not q.max_tp else f"at most {q.max_tp} true positive(s)"} it would have '
+            f'closed. Qualifying closes nothing by itself: auto-close is off until judge.auto_close is on and you '
+            f'list the detector in judge.auto_close_detectors. <a href="/judge">What the judge closed</a>.</p></div>'
             f'<div class="card flush scroll"><table><thead><tr><th>week</th><th>width</th>{head}</tr></thead>'
             f'<tbody>{week_rows}</tbody></table><p class="pad faint">All detectors together, by the week each case '
             f'happened. <span class="mono">tapwatch benchmark</span> has every week per detector.</p></div>')
@@ -943,7 +1043,9 @@ class App:
     """Settings and session state shared by every request."""
 
     def __init__(self, db_path: str, assets: Assets, zeek_dirs=None, host: str = "127.0.0.1", port: int = 8765,
-                 token: str | None = None, base_url: str | None = None, tailscale_users=None):
+                 token: str | None = None, base_url: str | None = None, tailscale_users=None,
+                 judge_settings: judge.Settings | None = None):
+        self.judge = judge_settings or judge.Settings()   # #204: shown on the Judge page; the desk never closes
         # Behind `tailscale serve`: Tailscale authenticates, and the desk only listens on loopback.
         self.tailscale_users = {u.strip().lower() for u in tailscale_users or () if u.strip()} or None
         if self.tailscale_users:
@@ -996,7 +1098,7 @@ class App:
         return self.token is not None and hmac.compare_digest(self.token.encode(), given.encode())
 
 
-CASE_PATH = re.compile(r"^/case/(\d{1,12})(/update|/suppress)?$")
+CASE_PATH = re.compile(r"^/case/(\d{1,12})(/update|/suppress|/undo-judge)?$")
 SUPPRESSION_DELETE = re.compile(r"^/suppressions/(\d{1,12})/delete$")
 EXPLAIN_APPLY = re.compile(r"^/explain/([0-9a-f]{16})/apply$")
 
@@ -1050,7 +1152,8 @@ class Handler(BaseHTTPRequestHandler):
               refresh: int = 0) -> None:
         nonce = secrets.token_urlsafe(16)
         path = urlsplit(self.path).path
-        active = "/stats" if path == "/stats" else "/suppressions" if path.startswith("/suppressions") else "/"
+        active = "/stats" if path == "/stats" else "/suppressions" if path.startswith("/suppressions") \
+            else "/judge" if path.startswith("/judge") else "/"
         logged_in = self.app.token is not None and self.app.session_ok(sid)
         self._send(status, page(title, body, nonce, self.app.csrf(sid), logged_in, active, refresh),
                    nonce=nonce, set_sid=set_sid)
@@ -1116,10 +1219,12 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/":
                 title, body = render_queue(store, self.app.assets, params, csrf)
             elif url.path == "/stats":
-                title, body = render_stats(store)
+                title, body = render_stats(store, self.app.judge.qualify)
                 refresh = STATS_REFRESH_S
             elif url.path == "/suppressions":
                 title, body = render_suppressions(store, csrf)
+            elif url.path == "/judge":
+                title, body = render_judge(store, self.app.judge, csrf)
             elif (m := CASE_PATH.match(url.path)) and not m.group(2):
                 found = render_case(store, self.app.assets, int(m.group(1)), self.app.zeek_dirs, csrf, params)
                 if found is None:
@@ -1169,6 +1274,15 @@ class Handler(BaseHTTPRequestHandler):
                 store.update_case(case_id, actor, status=first.get("status"), disposition=first.get("disposition"),
                                   note=first.get("note", "")[:MAX_NOTE])
                 return self._send(303, location=f"/case/{case_id}")
+            if m and m.group(2) == "/undo-judge":   # #204: one click, audited, counted against the judge (#205)
+                case_id = int(m.group(1))
+                store.undo_judge_close(case_id, actor)
+                return self._send(303, location=f"/case/{case_id}")
+            if path == "/judge/undo-day":
+                errors = _undo_day(store, first.get("day", ""), actor)
+                if errors:
+                    return self._error(400, "Some closes weren't undone: " + "; ".join(errors), sid)
+                return self._send(303, location="/judge")
             if m and m.group(2) == "/suppress":
                 case_id = int(m.group(1))
                 rid = store.add_suppression(case_id, first.get("scope", ""), first.get("reason", "")[:500], actor,
