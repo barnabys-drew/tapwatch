@@ -281,7 +281,35 @@ def _observed(c: Case, words: dict) -> str:
         it, arrives, resumes, them = ("it", "arrives", "resumes", "it") if one else ("they", "arrive", "resume", "them")
         return (f"{what} {how}; {it} normally {arrives} at least every {f.get('limit_minutes')} minutes. "
                 f"Until {it} {resumes}, the rules that read {them} are blind.")
+    if c.detector in ("slow_beacon", "slow_upload"):
+        return _long_horizon(c)
     return c.title + "."
+
+
+def _long_horizon(c: Case) -> str:
+    """R30, R31 (longhaul.py): weeks of the device's daily summaries, numbers as words."""
+    f = c.facts
+    if c.detector == "slow_beacon":
+        how = ("at about the same time of day" + (f", missing {f['missed_days']} day(s)" if f.get("missed_days") else "")
+               if f.get("regularity") == "daily at the same time" else "at a steady interval")
+        text = (f"Over {f.get('span_days')} days it contacted the same outside server on port {f.get('port')} "
+                f"{_every(int(f.get('interval_s') or 0))}, {how}: {f.get('beats')} check-ins on {f.get('days_seen')} "
+                "different days. Timing that steady over days is what a slow command-and-control heartbeat looks "
+                "like; scheduled updaters and licence checks look the same.")
+    else:
+        text = (f"Over the last {f.get('window_days')} days it uploaded {f.get('mb')} MB to one destination, a "
+                f"little on {f.get('upload_days')} different days and never a large burst, about {f.get('ratio')} "
+                f"times more than it downloaded from it. In the {f.get('prior_days')} days before, it had sent "
+                f"that destination {f.get('prior_mb')} MB.")
+        if f.get("peers"):
+            text += f" {f['peers']} other device(s) in the house also used it."
+        if f.get("fixed_function"):
+            text += f" The device is labelled \"{f['fixed_function']}\" in assets.yaml, a fixed-function device."
+        if f.get("managed_device"):
+            text += f" The device is labelled \"{f['managed_device']}\", so its employer's tooling watches it."
+    for b in (f.get("backed_by") or [])[:1]:
+        text += f" Another case on the same device in the last week backs it up: {b.get('why')} (#{b.get('id')})."
+    return text
 
 
 PARENT_WORDS = {"document": "a document or mail app", "browser": "a browser", "shell": "another shell",

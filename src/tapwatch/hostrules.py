@@ -1537,7 +1537,10 @@ PAIRS: dict[str, frozenset[str]] = {
 # Network rules that pair with no host rule, on purpose: about the network or a device rather than a program on this PC.
 # A test holds every network rule to PAIRS or this set, so a new one can't be left out by accident.
 NEVER_PAIRED = frozenset({"new_device", "identity", "gateways", "mgmt_access", "cleartext_auth", "rogue_dhcp",
-                          "dns_bypass", "iot_drift", "udm_admin", "feed_silence", "off_hours", "upload_stopped"})
+                          "dns_bypass", "iot_drift", "udm_admin", "feed_silence", "off_hours", "upload_stopped",
+                          # R30, R31 decide over weeks, so a five-minute pairing means nothing: longhaul.backers looks
+                          # for another signal on the device over 7 days instead (router.long_horizon)
+                          "slow_beacon", "slow_upload"})
 
 
 def pairs_with(host_detector: str, network_detector: str) -> bool:

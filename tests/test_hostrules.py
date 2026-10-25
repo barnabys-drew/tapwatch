@@ -1210,9 +1210,12 @@ def test_every_network_rule_pairs_with_a_host_rule_or_is_listed_as_never():
     from pathlib import Path
 
     from tapwatch.hostrules import NEVER_PAIRED, PAIRS
-    src = Path(__file__).resolve().parents[1].joinpath("src", "tapwatch", "detectors.py").read_text()
+    src_dir = Path(__file__).resolve().parents[1].joinpath("src", "tapwatch")
+    src = src_dir.joinpath("detectors.py").read_text()
     names = set(_re.findall(r'^\s+name = "([a-z_]+)"', src, _re.MULTILINE)) | set(_re.findall(r'Case\("([a-z_]+)"', src))
     names -= {"base", "hourly"}   # an abstract class; HourlyProfile emits upload_spike, off_hours, upload_stopped
+    names |= set(_re.findall(r'Case\("([a-z_]+)"', src_dir.joinpath("longhaul.py").read_text()))   # R30, R31
+    assert {"slow_beacon", "slow_upload"} <= names
     paired = set().union(*PAIRS.values())
     assert names - paired - NEVER_PAIRED == set()
     assert not paired & NEVER_PAIRED
