@@ -42,12 +42,13 @@ CODE_ONLY = {"new_domain",
              "host_tunnel", "host_staging", "host_fim",
              # R48: whether a version is inside a known-exploited range is a fact from the feeds, never a judgement.
              "vuln_kev",
-             # R30, R31 (longhaul.py): weeks of timing and byte counts are arithmetic, Jev's documented weak spot, and
-             # "is this destination normal for the device" is the question it is never asked.
-             "slow_beacon", "slow_upload"}
+             # R30-R34 (longhaul.py): weeks of timing, byte counts, prevalence and score distributions are arithmetic,
+             # Jev's documented weak spot, and "is this destination normal for the device" is the question it is never
+             # asked.
+             "slow_beacon", "slow_upload", "rare_dest", "dormant_wake", "routine_shift"}
 
 # Long-horizon rules over the daily summaries (longhaul.py, #52): digest unless another signal backs them up.
-LONG_HORIZON = frozenset({"slow_beacon", "slow_upload"})
+LONG_HORIZON = frozenset({"slow_beacon", "slow_upload", "rare_dest", "dormant_wake", "routine_shift"})
 
 
 def wants_ai(case: Case) -> bool:

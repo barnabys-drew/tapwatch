@@ -984,7 +984,7 @@ privileged or Docker-socket container (3), and a new Linux listener outside loop
 mostly svchost. Measured on the WSL box: 40 SUID programs, 23 modules, no preload, no such container, 11 stable
 listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (stratum URLs, xmrig, `--donate-level`).
 
-### Long-horizon rules R30–R31: weeks of each device's history (built 2026-10-25, `longhaul.py`)
+### Long-horizon rules R30–R34: weeks of each device's history (built 2026-10-25, `longhaul.py`)
 - **Data:** the per-device daily summaries (#193, `history.py`): `device_day_dest` (per device, day, destination
   and port: bytes each way, ASN, country and up to 48 connection-start times 30+ minutes apart), `device_day` and
   `summary_days`. Never the raw logs: a month of conn.log is far too slow to rescan.
@@ -994,15 +994,22 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   dedupe, suppressions, routing, the shadow judge and notifications are the usual ones and nothing touches the
   pipeline from the thread. What they borrow from the live detectors (popular list, benign beacon classes, dev
   profile, Beaconing's reported destinations, the identity table) is copied before the thread starts.
-  `tapwatch longhaul [--mature-days N] [--stats]` runs the same evaluation now and prints what it would raise and why
-  candidates were skipped, storing nothing. `summaries.rules: false` turns them off.
+  `tapwatch longhaul [--mature-days N] [--stats] [--as-of DAY]` runs the same evaluation now (or as the night after
+  DAY would have: a replay) and prints what it would raise, why candidates were skipped and R34's score spread,
+  storing nothing. `summaries.rules: false` turns them off.
 - **Maturity:** a device's rules wait for **14 watched days** (`summaries.mature_days`): summarized days on which the
   sensor saw traffic in 12+ local hours (`summary_days.hours`), counted from the device's first summarized day. A
   quiet device keeps maturing; a day the sensor was down or half-blind does not count.
+- **Device keys change** (`mac:` to `name:` once a DHCP name is learned, or a fix to how connections are
+  attributed). R32–R34 read a device's history under every key today's identity table ties to the same MAC
+  (`longhaul.aliases`: a `name:` key whose DHCP name exactly one MAC announced), name the key seen last in the case
+  (`device_keys` lists the others), and look for an earlier case under any of them. A key nothing ties to an older
+  one starts a new history: not mature, so it can't fire, and it can't look dormant or new.
 - **Routing (`router.long_horizon`):** digest, raised to **alert only when backed**: the same device has, in the 7
   days before, a threat-list hit, a host case at digest or louder, or a short-window case at digest or louder to the
-  same destination (base domain; for a destination with no name, the same ASN, since AWS, Google and Cloudflare
-  host everyone). The backing cases are named in `backed_by`. A host case counts only at digest or louder: on the
+  same destination: the same base domain or the same address, never just the same ASN, since AWS, Google and
+  Cloudflare host everyone. R32 and R33 match on the addresses and names they found. The backing cases are named in
+  `backed_by`. A host case counts only at digest or louder: on the
   dev PC a logged host case (the owner's agent work) comes every few hours and would back everything. A suppressed
   backing case does not count, and neither does R48 (a standing condition, not a signal). A suppression, a code
   ceiling (a managed device) and the learning period beat the backing; must_alert is untouched. Code-only.
@@ -1012,7 +1019,10 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   device is still open or was first raised in the 7 days before it (`judge.backed_long_horizon`).
 - **Measured** on 11 days of home summaries (2026-10-14..24) with maturity lowered to 5 and 10 days: R30 one case,
   R31 none as specified (no baseline before its window yet), one in a scaled-down run; see
-  [RESULTS](../../eval/RESULTS.md#long-horizon-rules-r30-r31-on-11-days-of-home-summaries-2026-10-25).
+  [RESULTS](../../eval/RESULTS.md#long-horizon-rules-r30-r31-on-11-days-of-home-summaries-2026-10-25). R32–R34 on
+  the same days, replayed night by night: no case as specified or scaled down, after the media, peer-to-peer and
+  high-UDP-port skips the first replays called for; see
+  [RESULTS](../../eval/RESULTS.md#long-horizon-rules-r32-r34-replayed-over-the-same-home-days-2026-10-25).
 
 ### R30 Slow beacon: steady check-ins hours to days apart (`slow_beacon`) — **built** (#194)
 - **Threat:** a C2 implant or RAT that sleeps hours between check-ins (T1029 scheduled transfer, T1071 over HTTPS).
@@ -1072,6 +1082,87 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   one device's steady upload to its vendor's cloud.
 - **Safe test:** from a test VM, upload 15 MB of random bytes a day to a server you control (198.51.100.20) for 8
   days, with three weeks of summaries before; in CI, the synthetic-summary fixture.
+
+### R32 Rare nameless destination, unlike the household and the device's peers (`rare_dest`) — **built** (#196)
+- **Threat:** C2 or staging on a raw address (T1071, T1090), a proxyware or botnet SDK on a quiet device (T1496),
+  where no DNS answer or TLS name ever gives `new_domain` a name to judge. `iot_drift` learns each fixed-function
+  device alone for 7 days and never compares it with its peers.
+- **Logic:** per (device, ASN) on each of the last **2 days** (the newest, and the one before, rebuilt once its long
+  connections are logged): connections with **no name** (the summary's destination is an address) to a network that
+  **no other device in the house touched in 30 days** (any connection, named or not, counts as touching it), that
+  **this device didn't touch in the 30 days before**, and that the device didn't also reach by a name that day
+  (then it is `new_domain`'s). Fire on **≥ 3 connections or ≥ 1 MB** either way. **Peer variant:** a fixed-function
+  device (an assets.yaml role from `FIXED_ROLE_WORDS`) with **≥ 2 peers of the same role word** reaches a country none
+  of them, and not it either, reached in 30 days, with the same volume test. One case per (device, ASN) or (device,
+  country) per 30 days.
+- **Skips:** housekeeping UDP (`HOUSEKEEPING_UDP_PORTS`: NTP, STUN, Tailscale); **voice, video and game ports**
+  (`MEDIA_PORTS`: Zoom, Teams/Skype, FaceTime, Xbox Live, PlayStation, Steam, Discord, WhatsApp/Messenger calls,
+  `detectors.rare_dest.media`); a **peer-to-peer shape**, 5+ distinct remote ports above 1023 to the network in a day
+  (`p2p_ports`: a game or VPN peer gets a new port each session; a C2 server listens on one or two).
+- **Severity:** 2, 3 on a fixed-function device; the peer variant 3. A managed device (`MANAGED_ROLE_WORDS`) gets
+  `max_route: digest`. Digest unless backed by a case to one of the same addresses.
+- **Facts:** variant, `AS<n>` or `country:<cc>` as `dest`, ASN, country, connections, MB, top ports, household
+  devices, peers and role word, the addresses (`dests`), `device_keys` when the history spans keys.
+- **Departures from #196:** the volume test ignores the media ports (the issue wanted them excluded from the
+  measure); the P2P-shape skip is new, from the measurement; a network reached by name the same day is left out.
+- **FPs:** peer-to-peer games, calls and VPN-like relays to home ISPs (the two found on the home data, before the
+  skips), a console's CDN without SNI, a phone on a privacy relay; on the dev PC, test containers and SSH to a new
+  cloud VM by address. Peer variant: two brands of camera under one role word.
+- **Safe test:** from one test device, `curl -k https://<address>` of a server in a network no other device uses,
+  three times; in CI the same, and the peer fixture (two peer cameras, one off-country contact).
+
+### R33 Dormant device wakes up talking somewhere new (`dormant_wake`) — **built** (#197)
+- **Threat:** a dropped implant, or a device stolen and returned, coming back (T1200, T1078). `new_device` only
+  fires for a device it has never seen; one back after a month is "known".
+- **Logic:** a device's **first active day after ≥ 14 watched days without a connection** (`device_day` has no row
+  for it), judged on the last 2 days. Quiet is counted in **watched days only**: a day the sensor was down or saw
+  under 12 hours is neither quiet nor a break, so an outage never makes a device dormant, and a gap with no
+  summaries at all counts nothing. The device needs **≥ 14 active days in the 90 before** the quiet spell; its first
+  day ever (under any of its keys) has no day before it and is never a return. Its **first 24 hours back** (the wake
+  day and the next, when summarized) are compared with everything it did before the spell: fire on **≥ 3 networks
+  (ASN) or ≥ 1 port it never used**, after leaving out popular names and the benign classes, names 2+ other devices
+  in the house used in the last 30 days, and names it used before. A new port is off 53/80/123/443 and the
+  housekeeping ports, and TCP or UDP under 1024: as `iot_drift`, a high UDP port is peer-to-peer and media's. One
+  case per wake.
+- **Severity:** 2, 3 on a fixed-function device; managed: `max_route: digest`. Digest unless backed.
+- **Facts:** last active day, watched quiet days and calendar days, active days before, the new ASNs, ports and
+  names (the names are indicators), the addresses, what was left out and why.
+- **Departures from #197:** "the device role's known update services" is the household's names (2+ other devices,
+  30 days) plus the popular list and benign classes, since there is no per-role update list; high UDP ports don't
+  count as new ports (a measured return fired on seven of them).
+- **FPs:** a laptop back from travel, holiday lights, a guest phone that visits monthly, a console unused for weeks
+  downloading from a new CDN; a spare test machine booted for a release.
+- **Safe test:** CI: synthetic summaries with 20 silent days, then three new ASNs (and the sensor-outage and
+  new-device fixtures that must stay silent). Live: disconnect a test device for 14 days, reconnect it and browse to
+  two new sites.
+
+### R34 Routine shift: hours, protocols or volume off the device's own 30-day normal (`routine_shift`) — **built** (#198)
+- **Threat:** a takeover that changes what a device does over days (T1496 miners, proxyware, a PC now busy every
+  night, a TV speaking SSH), which `upload_spike` and `off_hours` (single hours) never see.
+- **Logic:** per mature device, the **last 3 days** each scored against the **30 days before them** (watched days
+  with connections only; ≥ 7 needed): (1) Jaccard distance between the day's active hours and its normal hours
+  (active on ≥ 25% of baseline days); (2) the share of the day's connections on ports, or Zeek protocols, it used on
+  no baseline day (`"quic,ssl"` and `"ssl,quic"` count as the same protocols); (3) the z-score of log10(daily bytes),
+  upward only, standard deviation floored at 0.1 (about 26%). Each score's **threshold is its floor (0.6, 0.2, 3.0)
+  or the device's own leave-one-out maximum over the baseline** (each baseline day against the others), whichever
+  is higher, so a phone whose hours always wander needs a bigger move than a camera. Fire when **one score is beyond
+  its threshold on all 3 days**. A fixed-function device also fires when **one port or protocol it never used appears
+  on all 3 days** (TCP, UDP under 1024, or a protocol other than the web's): a TV's 5 SSH connections among
+  thousands are never a share. Every run day must be watched. One case per device per 14 days.
+- **Severity:** 2, 3 on a fixed-function device; managed: `max_route: digest`. Digest unless backed.
+- **Timezone:** the hours bitmap is local (the `timezone` setting) when the summary is built; on a daylight-saving
+  change a device on a UTC schedule moves by one hour, which moves the Jaccard distance by a few hundredths.
+- **Facts:** which scores moved, their values and thresholds, the run days, baseline days, normal and recent hours,
+  new ports and protocols, daily MB against the baseline median.
+- **Departures from #198:** the thresholds aren't one per device from a 99th percentile yet: with 11 home days a
+  device's baseline holds at most 8 days. The per-device leave-one-out maximum is that percentile's stand-in
+  (with 30 samples the 99th percentile is the maximum); the floors sit between the home run's 90th and 99th
+  percentile of single device-days. Bytes fire upward only (a quieter device is `upload_stopped`'s). The persistent
+  new port branch is new, for the issue's own safe test.
+- **FPs:** school holidays or a new job moving hours, a new streaming habit, a crunch week of late builds, a long
+  model download, new corporate tooling on a work laptop.
+- **Safe test:** CI: a TV whose summaries gain port 22 for 3 days (and 2 days, which stays silent); live: on a test
+  machine, a nightly `curl` loop for 3 nights in hours it is normally idle.
 
 ### R36 A remote-access tool starts on a PC (`host_rmm`) — **built** (#39)
 - **Threat:** remote monitoring and management tools used as a way in (T1219): tech-support scams talk the
@@ -1283,6 +1374,9 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R29 A program reads lsass memory (built, baselined) | osquery + Sysmon event 10 | alert (must for temp/document) | code-only |
 | — | R30 Slow beacon, hours to days apart (built) | daily summaries (`contact_times`) | digest; alert when backed by another signal on the device | code-only |
 | — | R31 Low-and-slow upload to a new destination over weeks (built) | daily summaries (bytes per destination) | digest; alert when backed | code-only |
+| — | R32 Rare nameless destination, unlike the household and the device's peers (built) | daily summaries (ASN, country) + assets.yaml roles | digest; alert when backed | code-only |
+| — | R33 Dormant device wakes up talking somewhere new (built) | daily summaries (active days, destinations, ports) | digest; alert when backed | code-only |
+| — | R34 Routine shift off the device's own 30-day normal (built) | daily summaries (hours, ports, protocols, bytes) | digest; alert when backed | code-only |
 | — | R36 A remote-access tool starts on a PC (built) | Sysmon event 1, eBPF exec | digest (installed), alert, must for temp/document | code-only |
 | — | R37 A tunnel is opened from a PC (built) | command-line signals | alert (agent-started: digest; must from temp) | code-only |
 | — | R38 Files staged or sent somewhere new (built) | command-line signals, destination | digest, alert when paired with an upload | code-only |

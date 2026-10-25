@@ -1195,8 +1195,8 @@ def test_every_network_rule_pairs_with_a_host_rule_or_is_listed_as_never():
     src = src_dir.joinpath("detectors.py").read_text()
     names = set(_re.findall(r'^\s+name = "([a-z_]+)"', src, _re.MULTILINE)) | set(_re.findall(r'Case\("([a-z_]+)"', src))
     names -= {"base", "hourly"}   # an abstract class; HourlyProfile emits upload_spike, off_hours, upload_stopped
-    names |= set(_re.findall(r'Case\("([a-z_]+)"', src_dir.joinpath("longhaul.py").read_text()))   # R30, R31
-    assert {"slow_beacon", "slow_upload"} <= names
+    names |= set(_re.findall(r'Case\("([a-z_]+)"', src_dir.joinpath("longhaul.py").read_text()))   # R30-R34
+    assert {"slow_beacon", "slow_upload", "rare_dest", "dormant_wake", "routine_shift"} <= names
     paired = set().union(*PAIRS.values())
     assert names - paired - NEVER_PAIRED == set()
     assert not paired & NEVER_PAIRED

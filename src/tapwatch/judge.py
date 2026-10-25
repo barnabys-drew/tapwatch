@@ -181,10 +181,11 @@ def backed_long_horizon(db: sqlite3.Connection, row: sqlite3.Row, case: Case, be
         return f"#{backed.get('id')}"
     mac = case.facts.get("device_mac")
     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only fixed text and '?' placeholders are joined; every value is bound
-    other = db.execute("SELECT id, status FROM cases WHERE id != ? AND detector NOT IN ('slow_beacon', 'slow_upload')"
+    lh = sorted(LONG_HORIZON)
+    other = db.execute("SELECT id, status FROM cases WHERE id != ? AND detector NOT IN (" + ",".join("?" * len(lh)) + ")"
                        " AND (host = ?" + (" OR json_extract(facts, '$.device_mac') = ?" if mac else "") + ")"
                        " AND first_ts <= ? AND (status != 'closed' OR first_ts >= ?) ORDER BY id DESC LIMIT 1",
-                       [row["id"], row["host"]] + ([mac] if mac else []) + [before, before - BACKED_WINDOW]).fetchone()
+                       [row["id"], *lh, row["host"]] + ([mac] if mac else []) + [before, before - BACKED_WINDOW]).fetchone()
     return f"#{other['id']}, {'open' if other['status'] != 'closed' else 'recent'}" if other else ""
 
 
