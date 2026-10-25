@@ -9,6 +9,9 @@ iCloud has no usable API.
 
 Three outcomes, never two: something explains the upload; every account was fully checked and shows nothing
 ("unexplained"); or a check failed, stopped short or wasn't set up ("incomplete"), which says nothing either way.
+An unexplained upload whose device talked to a managed-account marker (MANAGED_MARKERS) in its Zeek DNS or TLS
+records around the upload becomes "possibly_managed_account": a work or school Google account on the device may
+explain it, and the check can't see that account.
 
 Opt-in and on demand (`tapwatch account-check <case>`, or the enrich-case skill): the alerter never calls Google.
 Read-only scopes. Accounts are labels in config; each one's refresh token sits in a mode-600 file outside the repo
@@ -53,6 +56,12 @@ CLIENT_ENV = ("TAPWATCH_GOOGLE_CLIENT_ID", "TAPWATCH_GOOGLE_CLIENT_SECRET")
 WINDOW = 1800          # seconds either side of the case's hours
 GMAIL_MAX_GETS = 100   # message lookups per label per check
 SMALL_SHARE = 0.25     # Gmail messages under this share of the upload's size don't explain it
+# Names only a managed (work or school) Google account makes a device look up or connect to. #986: a phone's
+# 1.56 GB upload that the personal accounts couldn't explain came from a Workspace account in Gmail on it, and the
+# phone reached ios-mdm.google.com, Google's iOS device management endpoint, during the upload. Add a name here
+# only once it has been seen doing the same.
+MANAGED_MARKERS = ("ios-mdm.google.com",)
+MARKER_ROWS = 20_000   # DNS and TLS rows read per log type when looking for a marker
 GMAIL_PAST_START = 5   # keep walking this many older messages: list order isn't promised, internalDate isn't send time
 
 
@@ -394,11 +403,25 @@ def check(cfg: dict, start: float, end: float, http: Http | None = None) -> dict
     return result
 
 
-def facts(result: dict, upload_bytes: float | None = None) -> dict:
+def managed_markers(zeek_dirs, host: str, start: float, end: float) -> list[str]:
+    """The MANAGED_MARKERS that `host` looked up (dns.log) or connected to by name (ssl.log) between start and end,
+    read with the case pages' evidence lookup. Empty when no Zeek logs are configured or found."""
+    from . import evidence
+    if not evidence.expand_dirs(zeek_dirs):
+        return []
+    found = evidence.lookup(zeek_dirs, host, (start + end) / 2, window=(end - start) / 2, limit=MARKER_ROWS,
+                            kinds=("dns", "ssl"))
+    names = {str(r.get(field) or "").lower().rstrip(".")
+             for kind, field in (("dns", "query"), ("ssl", "server_name")) for r in found[kind]["rows"]}
+    return [m for m in MANAGED_MARKERS if m in names]
+
+
+def facts(result: dict, upload_bytes: float | None = None, markers: list[str] | None = None) -> dict:
     """What goes into the case: per account and service, counts, types, times and sizes; no titles. `outcome` is
     explained (something in the window that could account for the upload), unexplained (everything fully checked,
     nothing that could) or incomplete. Drive and YouTube give no sizes, so any file or video there could; Gmail gives
-    sizes, so messages that add up to under SMALL_SHARE of the upload can't (#986: five small emails beside 1.5 GB)."""
+    sizes, so messages that add up to under SMALL_SHARE of the upload can't (#986: five small emails beside 1.5 GB). An
+    unexplained outcome with managed-account `markers` (managed_markers) becomes possibly_managed_account."""
     out: dict = {"window": result["window"], "checked": round(time.time()), "accounts": {}}
     if upload_bytes:
         out["upload_mb"] = round(upload_bytes / 1e6)
@@ -438,6 +461,8 @@ def facts(result: dict, upload_bytes: float | None = None) -> dict:
     elif mail_rows:
         out["too_small"] = True   # there was mail in the window, far smaller than the upload
     out["outcome"] = "explained" if found else "unexplained" if whole else "incomplete"
+    if out["outcome"] == "unexplained" and markers:
+        out["outcome"], out["managed_markers"] = "possibly_managed_account", list(markers)
     return out
 
 
@@ -482,7 +507,11 @@ def summary(f: dict) -> str:
                 parts.append(f"{name} shows {n} {NOUNS[service][n != 1]} at {span} UTC ({types}{size}){short}")
         lines.append(f"{label}: " + ("; ".join(parts) if parts else "no services granted"))
     lead = {"explained": "", "unexplained": "the accounts show nothing: unexplained. ",
-            "incomplete": "incomplete, so this says nothing either way. "}[f["outcome"]]
+            "incomplete": "incomplete, so this says nothing either way. "}.get(f["outcome"], "")
+    if f["outcome"] == "possibly_managed_account":
+        lead = (f"the accounts show nothing, but the device reached {', '.join(f['managed_markers'])}, which only a "
+                "managed (work or school) Google account does: possibly_managed_account. That account may explain "
+                "the upload, and this check can't see it. ")
     if f["outcome"] == "unexplained" and f.get("too_small"):
         up = f" the {f['upload_mb']} MB" if f.get("upload_mb") else " the"
         lead = f"nothing big enough to explain{up} upload: unexplained. "

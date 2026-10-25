@@ -21,11 +21,17 @@ Account check 21:29-00:29 UTC: personal: Drive shows 2 files created or uploaded
 YouTube shows nothing; Gmail shows nothing | work: Drive shows nothing; Gmail shows nothing
 ```
 
-There are three outcomes:
+There are three outcomes, plus a variant of the second:
 - **Explained:** something in the window could account for the upload. Drive and YouTube give no sizes, so any
   file or video there counts. Gmail gives sizes, so a few small emails beside a 1.5 GB upload don't: the summary
   then says there was "nothing big enough to explain" it.
 - **Unexplained:** every account was fully checked and shows nothing.
+- **Possibly managed account:** unexplained, but during the upload the device looked up or connected to a name
+  only a managed (work or school) Google account produces, such as `ios-mdm.google.com`, Google's iOS device
+  management endpoint. A work or school account on the device may explain the upload, and the check can't see
+  it. The device's DNS and TLS records come from the same Zeek logs the case pages read (`ui.zeek_dirs`, or
+  `--zeek-dir`); without them the outcome stays unexplained. The marker list is `MANAGED_MARKERS` in
+  `src/tapwatch/accounts.py`.
 - **Incomplete:** a check failed, stopped before covering the whole window, or no account is set up. Incomplete
   says nothing either way, so treat it as no answer.
 
@@ -41,6 +47,9 @@ prints Drive and YouTube titles to your terminal only.
 - **iCloud** has no usable API. Apple uploads stay network-only.
 - **Shared drives.** Drive Activity covers My Drive by default, and listing shared drives would need another
   scope. Uploads into a shared drive don't show up.
+- **Work or school accounts.** A managed Google Workspace account signed in on the device (in Gmail, say) can
+  upload just like a personal one, and the check can't sign in to it. The most it can do is notice the device
+  talking to Google's device management, as above.
 - **File sizes in Drive.** Drive Activity doesn't include them, and reading them would need another restricted
   scope. Gmail sizes are included.
 - **Message contents.** The Gmail metadata scope reads dates and sizes; tapwatch doesn't ask for anything else.

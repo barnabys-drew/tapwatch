@@ -122,10 +122,11 @@ def _covering(files: list[Path], start: float, end: float) -> list[Path]:
     return out
 
 
-def lookup(dirs, host: str, ts: float, window: float = WINDOW, limit: int = MAX_ROWS) -> dict:
+def lookup(dirs, host: str, ts: float, window: float = WINDOW, limit: int = MAX_ROWS,
+           kinds=EVIDENCE_LOGS) -> dict:
     """{"conn": {"rows": [...], "more": bool}, "dns": ..., "ssl": ...} for `host` within ±window of `ts`."""
     out = {}
-    for kind in EVIDENCE_LOGS:
+    for kind in kinds:
         rows, more = [], False
         for d in expand_dirs(dirs):
             for path in _covering(log_files(d, f"{kind}.log"), ts - window - SLACK, ts + window + SLACK):
