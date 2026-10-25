@@ -142,7 +142,7 @@ def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
         while not found.empty():
             try:  # one bad history case must not stop the sensor (review of #324)
                 handled = longhaul.admit(p, found.get_nowait())
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.exception("long-horizon case failed")
                 continue
             if handled:
