@@ -156,3 +156,31 @@ def markdown(db: sqlite3.Connection, now: float | None = None) -> str:
               + (f", and up to {k['maybe']} more stored before their rule's severity was recorded" if k["maybe"] else "")
               + f"; the other {k['cases'] - k['rules_routed']} were routed by Jev, a suppression or a fixed rule."]
     return "\n".join(lines)
+
+
+def judge_examples_markdown(db: sqlite3.Connection) -> str:
+    """#200: the judge's training set, examples per label source and per detector. Only owner, owner_request and
+    explain count as precedent (judge.COUNTED); the rest are kept for the record."""
+    cur = db.cursor()
+    cur.row_factory = sqlite3.Row
+    try:
+        rows = cur.execute("SELECT detector, label_source, label, COUNT(*) AS n FROM judge_examples"
+                           " GROUP BY detector, label_source, label").fetchall()
+    except sqlite3.OperationalError:   # an older database, before the judge's tables
+        return "No judge examples yet."
+    if not rows:
+        return "No judge examples yet (`tapwatch judge backfill` builds them from the audit trail)."
+    sources = sorted({r["label_source"] for r in rows})
+    by_det: dict[str, dict[str, int]] = {}
+    tps: dict[str, int] = {}
+    for r in rows:
+        by_det.setdefault(r["detector"], {}).setdefault(r["label_source"], 0)
+        by_det[r["detector"]][r["label_source"]] += r["n"]
+        if r["label"] == "true_positive":
+            tps[r["detector"]] = tps.get(r["detector"], 0) + r["n"]
+    out = ["| Detector | " + " | ".join(sources) + " | True positives |", "|---" * (len(sources) + 2) + "|"]
+    for det, counts in sorted(by_det.items(), key=lambda kv: -sum(kv[1].values())):
+        out.append(f"| {det} | " + " | ".join(str(counts.get(s, 0)) for s in sources) + f" | {tps.get(det, 0)} |")
+    total = {s: sum(c.get(s, 0) for c in by_det.values()) for s in sources}
+    out.append("| **all** | " + " | ".join(str(total[s]) for s in sources) + f" | {sum(tps.values())} |")
+    return "\n".join(out)

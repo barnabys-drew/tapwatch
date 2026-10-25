@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from . import detectors as det
-from . import evidence, hostrules, inventory, vulnkev, zeek
+from . import evidence, hostrules, inventory, judge, vulnkev, zeek
 from .hostctx import HostContext
 from .models import Case, Route, Verdict
 from .notifiers import HerdrNotifier, Notifier
@@ -153,6 +153,10 @@ class Pipeline:
             # trail, but arrives closed rather than as another "new" item to triage by hand.
             self.store.update_case(case_id, "tapwatch", status="closed", disposition="benign_expected",
                                    note=f"closed on arrival: matched suppression {suppression}")
+        try:  # shadow judge (#202): records what it would do, never acts; a bug here must not lose the alert below
+            judge.decide(self.store.db, case_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("shadow judge failed on #%s: %s", case_id, e)
         if self.herdr and critical(case, verdict, r, self.herdr_ai_severity):
             where = case_link(self.base_url, case_id) if self.base_url else f"case #{case_id}"
             try:
