@@ -350,9 +350,12 @@ def cmd_accounts(args, cfg) -> int:
     try:
         if args.action == "list":
             for label in acc.saved_labels(d):
-                granted = [s for s, scope in acc.SCOPES.items() if scope in acc.load_token(d, label).get("scope", "")]
                 mode = oct((d / f"google-{label}.json").stat().st_mode & 0o777)
-                print(f"{label:16s} {', '.join(granted) or 'no scopes'}   ({mode})")
+                try:
+                    what = ", ".join(acc.granted(acc.load_token(d, label))) or "no scopes"
+                except acc.AccountError as e:
+                    what = str(e)
+                print(f"{label:16s} {what}   ({mode})")
             return 0
         label = acc.check_label(args.label or "")
         if args.action == "remove":
@@ -397,6 +400,10 @@ def cmd_account_check(args, cfg) -> int:
     if row is None:
         print(f"no case #{args.case_id}", file=sys.stderr)
         return 1
+    window = acc.WINDOW if args.window is None else args.window
+    if window < 0:
+        print("--window can't be negative", file=sys.stderr)
+        return 2
     hosts = json.loads(row["indicators"] or "[]")
     if not args.force and not (row["detector"] == "upload_spike" and any(acc.google_upload_host(h) for h in hosts)):
         print(f"case #{args.case_id} isn't an upload to a Google upload service (--force to check anyway)",
@@ -405,7 +412,7 @@ def cmd_account_check(args, cfg) -> int:
     try:
         # an upload_spike case is stamped at the end of the hour it measured, and counts that hour and the one
         # before (detectors.HourlyProfile), so the uploads it saw happened in the two hours up to its time
-        result = acc.check(cfg, row["first_ts"] - 7200 - args.window, row["last_ts"] + args.window)
+        result = acc.check(cfg, row["first_ts"] - 7200 - window, row["last_ts"] + window)
     except acc.AccountError as e:
         print(e, file=sys.stderr)
         return 1
@@ -414,10 +421,10 @@ def cmd_account_check(args, cfg) -> int:
     print(text)
     if args.names:   # the terminal only: titles are never stored
         for label, entry in result["accounts"].items():
-            for service, rows in entry.items():
-                for r in rows if isinstance(rows, list) else ():
+            for service, res in entry.items():
+                for r in res.get("rows", []) if isinstance(res, dict) else ():
                     if r.get("title"):
-                        print(f"  {label} {service} {acc._hm(r['time'])} {r['title']}")
+                        print(f"  {label} {service} {acc._hm(r['time'])} {acc.clean_title(r['title'])}")
     if args.save:
         store.add_fact(args.case_id, "account_check", f, text, actor="account-check")
         print(f"saved to case #{args.case_id}")
@@ -595,7 +602,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("case_id", type=int)
     s.add_argument("--save", action="store_true", help="record the result on the case (counts and types, no names)")
     s.add_argument("--names", action="store_true", help="also print file and video titles (terminal only)")
-    s.add_argument("--window", type=int, default=1800, help="seconds either side of the case's hours (default 1800)")
+    s.add_argument("--window", type=int, default=None, help="seconds either side of the case's hours (default 1800)")
     s.add_argument("--force", action="store_true", help="check even if the case isn't a Google upload")
     s.set_defaults(fn=cmd_account_check)
 

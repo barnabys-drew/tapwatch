@@ -1,13 +1,14 @@
 # Account check: what was that upload to Google?
 
-`upload_spike` sees that a device sent, say, 1.5 GB to `content-storage-upload.googleapis.com`. That's
-Google's upload service, used by Drive, Gmail attachments and YouTube. The network can't say what the upload
+`upload_spike` sees that a device sent, say, 1.5 GB to `content-storage-upload.googleapis.com`. That's one of
+Google's upload endpoints. It has been seen carrying Drive, Gmail-attachment and YouTube uploads, but Google doesn't
+document which service uses it, so the check asks all three. The network can't say what the upload
 was, but the account can. The account check asks your own Google accounts, read-only, what was uploaded in the
 hours of the case:
 
 | Source | Scope (read-only) | What it gives |
 |---|---|---|
-| Drive Activity API v2 | `drive.activity.readonly` | files created or uploaded: when, how (upload, copy, new), file type |
+| Drive Activity API v2 | `drive.activity.readonly` | files the account itself created, uploaded or replaced with a new version in My Drive: when, how, file type |
 | YouTube Data API v3 | `youtube.readonly` | videos added to the channel's uploads |
 | Gmail API | `gmail.metadata` (restricted) | sent and draft messages: when, and size. Attachments over 25 MB become Drive links, which Drive Activity shows |
 
@@ -20,6 +21,12 @@ Account check 21:29-00:29 UTC: personal: Drive shows 2 files created or uploaded
 YouTube shows nothing; Gmail shows nothing | work: Drive shows nothing; Gmail shows nothing
 ```
 
+There are three outcomes:
+- **Explained:** something shows up in the window.
+- **Unexplained:** every account was fully checked and shows nothing.
+- **Incomplete:** a check failed, stopped before covering the whole window, or no account is set up. Incomplete
+  says nothing either way, so treat it as no answer.
+
 With `--save`, the result goes onto the case as an `account_check` fact plus a note, recorded in the audit
 trail. Only counts, file types, times and sizes are saved, never file names, subjects or recipients. `--names`
 prints Drive and YouTube titles to your terminal only.
@@ -30,6 +37,8 @@ prints Drive and YouTube titles to your terminal only.
   phone's photo backup can't be checked this way.
 - **My Activity** has no API, and it doesn't list Drive uploads anyway.
 - **iCloud** has no usable API. Apple uploads stay network-only.
+- **Shared drives.** Drive Activity covers My Drive by default, and listing shared drives would need another
+  scope. Uploads into a shared drive don't show up.
 - **File sizes in Drive.** Drive Activity doesn't include them, and reading them would need another restricted
   scope. Gmail sizes are included.
 - **Message contents.** The Gmail metadata scope reads dates and sizes; tapwatch doesn't ask for anything else.
@@ -69,3 +78,6 @@ prints Drive and YouTube titles to your terminal only.
 The refresh tokens are kept in `~/.local/state/tapwatch/accounts/` (one file per label, mode 600). `tapwatch
 accounts list` shows them, and `tapwatch accounts remove <label>` deletes one and withdraws it at Google. You can
 also remove tapwatch at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+
+Moving tapwatch to another computer (`deploy/export-state.sh`) carries `.env` but not the token folder. Add the
+accounts again there, or copy the folder over yourself and keep it mode 700.

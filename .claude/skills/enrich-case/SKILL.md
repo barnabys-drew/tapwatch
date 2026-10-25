@@ -34,9 +34,11 @@ If the case is an `upload_spike` and an indicator ends in `content-storage-uploa
 ```
 
 It prints one line per account and records counts, file types, times and sizes on the case, never names.
-Report it plainly. If something shows up: "Drive shows N uploads at HH:MM (types)". If every account shows
-nothing: "the accounts show nothing: unexplained". If it says no accounts or no client are configured, mention
-docs/setup/account-check.md and carry on without it. Don't run it with `--names` unless the user asks. It
+Report it plainly, using the outcome it prints:
+- **Something shows up:** "Drive shows N uploads at HH:MM (types)".
+- **"unexplained":** every account was fully checked and shows nothing. Say so.
+- **"incomplete":** a check failed, stopped short or isn't set up. That's no answer either way: don't count it as
+  unexplained. If no accounts or client are configured, mention docs/setup/account-check.md and carry on. Don't run it with `--names` unless the user asks. It
 can't see Google Photos backups, so a phone's photo backup stays unexplained by design.
 
 ## 2. External lookups (only public names and public IPs)

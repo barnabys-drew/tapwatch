@@ -1,10 +1,14 @@
 """Account check: ask the owner's own Google accounts what was uploaded around an upload_spike case.
 
 The network shows that a device sent 1.5 GB to Google's upload service, not what it was. The account knows. Drive
-Activity lists files created or uploaded in a time window, YouTube lists the channel's uploads, and Gmail's metadata
-lists sent and draft messages with their sizes (attachments up to 25 MB; bigger ones become Drive links, which
-Drive Activity sees). Nothing else answers it: My Activity has no API and leaves out Drive uploads, the Photos
-Library API only sees media the calling app created (since 2025), and iCloud has no usable API.
+Activity lists files the account itself created, uploaded or replaced with a new version in a time window, YouTube
+lists the channel's uploads, and Gmail's metadata lists sent and draft messages with their sizes (attachments up to
+25 MB; bigger ones become Drive links, which Drive Activity sees). Nothing else answers it: My Activity has no API
+and leaves out Drive uploads, the Photos Library API only sees media the calling app created (since 2025), and
+iCloud has no usable API.
+
+Three outcomes, never two: something explains the upload; every account was fully checked and shows nothing
+("unexplained"); or a check failed, stopped short or wasn't set up ("incomplete"), which says nothing either way.
 
 Opt-in and on demand (`tapwatch account-check <case>`, or the enrich-case skill): the alerter never calls Google.
 Read-only scopes. Accounts are labels in config; each one's refresh token sits in a mode-600 file outside the repo
@@ -39,12 +43,16 @@ SCOPES = {
 }
 API_HOSTS = ("https://oauth2.googleapis.com/", "https://driveactivity.googleapis.com/",
              "https://www.googleapis.com/youtube/", "https://gmail.googleapis.com/")
-# Upload endpoints of Google services an account check can explain (Drive, Gmail attachments, YouTube).
+# Google upload endpoints seen carrying Drive, Gmail-attachment and YouTube uploads from browsers and apps. Google
+# doesn't document which service uses which; the check asks every source either way.
 GOOGLE_UPLOAD_SUFFIXES = ("content-storage-upload.googleapis.com", "upload.youtube.com", "upload.video.google.com")
 LABEL = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+MIME = re.compile(r"^[a-z0-9][a-z0-9.+-]{0,40}/[a-z0-9][a-z0-9.+-]{0,80}$")   # anything else is someone's free text
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 CLIENT_ENV = ("TAPWATCH_GOOGLE_CLIENT_ID", "TAPWATCH_GOOGLE_CLIENT_SECRET")
 WINDOW = 1800          # seconds either side of the case's hours
 GMAIL_MAX_GETS = 100   # message lookups per label per check
+GMAIL_PAST_START = 5   # keep walking this many older messages: list order isn't promised, internalDate isn't send time
 
 
 class AccountError(RuntimeError):
@@ -56,18 +64,38 @@ def google_upload_host(name: str) -> bool:
     return any(name == s or name.endswith("." + s) for s in GOOGLE_UPLOAD_SUFFIXES)
 
 
+def clean_type(t: str) -> str:
+    t = (t or "").lower()
+    return t if MIME.match(t) else "other"
+
+
+def clean_title(t: str) -> str:
+    return CONTROL.sub("", t or "")[:120]
+
+
 # ---------------------------------------------------------------- HTTP (https to Google's API hosts only)
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None   # a redirect would carry the bearer token to wherever it points; the allowlist must hold
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
 
 class Http:
     def _open(self, req: urllib.request.Request) -> dict:
+        url = req.full_url.split("?")[0]
         if not req.full_url.startswith(API_HOSTS):
-            raise AccountError(f"refusing to call {req.full_url.split('?')[0]}: not a Google API host")
+            raise AccountError(f"refusing to call {url}: not a Google API host")
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- https to API_HOSTS only, checked above
+            with _OPENER.open(req, timeout=30) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- https to API_HOSTS only, checked above; redirects refused
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as e:
-            detail = e.read()[:300].decode("utf-8", "replace")
-            raise AccountError(f"{req.full_url.split('?')[0]}: HTTP {e.code} {detail}") from e
+            detail = CONTROL.sub(" ", e.read()[:300].decode("utf-8", "replace"))
+            raise AccountError(f"{url}: HTTP {e.code} {detail}") from e
+        except (OSError, ValueError) as e:   # DNS, refused, timeout, reset; a body that isn't JSON
+            raise AccountError(f"{url}: {type(e).__name__}: {e}") from e
 
     def post_form(self, url: str, form: dict) -> dict:
         return self._open(urllib.request.Request(url, data=urllib.parse.urlencode(form).encode(), method="POST"))
@@ -138,11 +166,13 @@ def exchange(http: Http, client_id: str, secret: str, code: str, verifier: str) 
 
 
 def save_token(directory: Path, label: str, data: dict) -> Path:
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(directory, 0o700)
+    if not directory.exists():
+        directory.mkdir(parents=True, mode=0o700)
+        os.chmod(directory, 0o700)   # mkdir's mode is masked by the umask
     path = directory / f"google-{check_label(label)}.json"
     tmp = path.with_suffix(".part")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp.unlink(missing_ok=True)      # a leftover would keep its old mode
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as fh:
         json.dump(data, fh)
     os.replace(tmp, path)
@@ -153,7 +183,18 @@ def load_token(directory: Path, label: str) -> dict:
     path = directory / f"google-{check_label(label)}.json"
     if not path.exists():
         raise AccountError(f"no token for {label!r}: run `tapwatch accounts add {label}`")
-    return json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        raise AccountError(f"{path} is unreadable ({e}); remove it and add the account again") from e
+    if not isinstance(data, dict) or not data.get("refresh_token"):
+        raise AccountError(f"{path} holds no refresh token; remove it and add the account again")
+    return data
+
+
+def granted(saved: dict) -> list[str]:
+    scopes = set((saved.get("scope") or "").split())
+    return [s for s, scope in SCOPES.items() if scope in scopes]
 
 
 def saved_labels(directory: Path) -> list[str]:
@@ -161,15 +202,21 @@ def saved_labels(directory: Path) -> list[str]:
 
 
 def access_token(http: Http, client_id: str, secret: str, refresh_token: str) -> str:
-    tok = http.post_form(TOKEN_URL, {"client_id": client_id, "client_secret": secret,
-                                     "refresh_token": refresh_token, "grant_type": "refresh_token"})
+    try:
+        tok = http.post_form(TOKEN_URL, {"client_id": client_id, "client_secret": secret,
+                                         "refresh_token": refresh_token, "grant_type": "refresh_token"})
+    except AccountError as e:
+        if "invalid_grant" in str(e):   # Google's answer for a revoked or expired refresh token: HTTP 400
+            raise AccountError("Google refused the saved sign-in (revoked, or expired: a consent screen left in "
+                               "Testing expires them after 7 days); add the account again") from e
+        raise
     if not tok.get("access_token"):
-        raise AccountError("Google refused the refresh token (revoked, or expired: a consent screen left in "
-                           "Testing expires them after 7 days); add the account again")
+        raise AccountError("Google returned no access token; add the account again")
     return tok["access_token"]
 
 
 # ---------------------------------------------------------------- the three sources
+# Each returns (rows, complete): complete is False when it stopped before covering the whole window.
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -179,81 +226,110 @@ def _ts(iso: str) -> float:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
 
 
-def drive_activity(http: Http, token: str, start: float, end: float, max_pages: int = 5) -> list[dict]:
-    """Files created or uploaded in Drive between start and end: time, how, file type (and title, never stored)."""
-    body = {"filter": f'time >= "{_iso(start)}" AND time <= "{_iso(end)}" AND detail.action_detail_case:CREATE',
+def _own(act: dict) -> bool:
+    """The account itself did it: a collaborator's file in a shared folder explains nothing about this device."""
+    return any(((a.get("user") or {}).get("knownUser") or {}).get("isCurrentUser") for a in act.get("actors", []))
+
+
+def drive_activity(http: Http, token: str, start: float, end: float, max_pages: int = 5) -> tuple[list[dict], bool]:
+    """Files the account created, uploaded or replaced with a new version in My Drive between start and end. Shared
+    drives aren't covered (Drive Activity's default scope is My Drive, and listing shared drives needs another
+    scope). Edits count only for uploaded files: an edit to a Google Doc is typing, not an upload."""
+    body = {"filter": f'time >= "{_iso(start)}" AND time <= "{_iso(end)}" AND detail.action_detail_case:(CREATE EDIT)',
             "pageSize": 100}
     out = []
     for _ in range(max_pages):
         page = http.post_json("https://driveactivity.googleapis.com/v2/activity:query", token, body)
         for act in page.get("activities", []):
             when = act.get("timestamp") or (act.get("timeRange") or {}).get("endTime")
-            create = (act.get("primaryActionDetail") or {}).get("create") or {}
-            how = "upload" if "upload" in create else "copy" if "copy" in create else "new"
+            detail = act.get("primaryActionDetail") or {}
+            if not when or not _own(act):
+                continue
+            create = detail.get("create")
+            how = ("upload" if "upload" in create else "copy" if "copy" in create else "new") if create is not None \
+                else "new version" if "edit" in detail else ""
+            if not how:
+                continue
             for target in act.get("targets", []):
                 item = target.get("driveItem")
-                if item is not None and when:
-                    out.append({"time": _ts(when), "how": how, "type": item.get("mimeType", ""),
-                                "title": item.get("title", "")})
+                if item is None:
+                    continue
+                kind = item.get("mimeType", "")
+                if how == "new version" and kind.startswith("application/vnd.google-apps."):
+                    continue
+                out.append({"time": _ts(when), "how": how, "type": clean_type(kind), "title": item.get("title", "")})
         if not page.get("nextPageToken"):
-            break
+            return out, True
         body["pageToken"] = page["nextPageToken"]
-    return out
+    return out, False
 
 
-def youtube_uploads(http: Http, token: str, start: float, end: float) -> list[dict]:
-    """Videos added to the channel's uploads list between start and end (newest first, one page)."""
+def youtube_uploads(http: Http, token: str, start: float, end: float) -> tuple[list[dict], bool]:
+    """Videos added to the channel's uploads list between start and end (newest first; one page of 50)."""
     ch = http.get("https://www.googleapis.com/youtube/v3/channels", token, {"part": "contentDetails", "mine": "true"})
     items = ch.get("items") or []
-    if not items:
-        return []   # the account has no channel
-    playlist = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    playlist = (((items[0] if items else {}).get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads")
+    if not playlist:
+        return [], True   # the account has no channel, so no uploads
     page = http.get("https://www.googleapis.com/youtube/v3/playlistItems", token,
                     {"part": "snippet", "playlistId": playlist, "maxResults": 50})
-    out = []
+    out, oldest = [], None
     for it in page.get("items", []):
         sn = it.get("snippet") or {}
-        if sn.get("publishedAt") and start <= _ts(sn["publishedAt"]) <= end:
-            out.append({"time": _ts(sn["publishedAt"]), "type": "video", "title": sn.get("title", "")})
-    return out
+        if not sn.get("publishedAt"):
+            continue
+        t = _ts(sn["publishedAt"])
+        oldest = t if oldest is None else min(oldest, t)
+        if start <= t <= end:
+            out.append({"time": t, "type": "video", "title": sn.get("title", "")})
+    # complete when the page reached back past the window, or there was nothing more to page through
+    return out, not page.get("nextPageToken") or (oldest is not None and oldest < start)
 
 
-def gmail_messages(http: Http, token: str, start: float, end: float) -> list[dict]:
+def gmail_messages(http: Http, token: str, start: float, end: float) -> tuple[list[dict], bool]:
     """Sent and draft messages dated between start and end, with their sizes. The metadata scope can't search,
-    so it walks each label newest first and stops at the window's start; nothing but the date and size is read."""
+    so it walks each label from the newest, until GMAIL_PAST_START messages older than the window have gone by;
+    nothing but the date and size is read. Hitting GMAIL_MAX_GETS first means the window wasn't reached."""
     base = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
-    out = []
+    out, complete = [], True
     for label in ("SENT", "DRAFT"):
-        gets, page_token = 0, None
-        while gets < GMAIL_MAX_GETS:
+        gets, older, page_token, reached = 0, 0, None, False
+        while not reached:
             params = {"labelIds": label, "maxResults": 25, **({"pageToken": page_token} if page_token else {})}
             page = http.get(base, token, params)
-            older = False
             for m in page.get("messages", []):
                 if gets >= GMAIL_MAX_GETS:
                     break
                 msg = http.get(f"{base}/{m['id']}", token, {"format": "minimal"})
                 gets += 1
-                when = int(msg.get("internalDate", "0")) / 1000
+                when = int(msg.get("internalDate") or 0) / 1000
                 if when < start:
-                    older = True
-                    break
-                if when <= end:
-                    out.append({"time": when, "type": label.lower(), "bytes": int(msg.get("sizeEstimate", 0))})
+                    older += 1
+                    if older >= GMAIL_PAST_START:
+                        reached = True
+                        break
+                elif when <= end:
+                    out.append({"time": when, "type": label.lower(), "bytes": int(msg.get("sizeEstimate") or 0)})
             page_token = page.get("nextPageToken")
-            if older or not page_token:
+            if reached or not page_token:
+                break   # past the window, or the whole label was read
+            if gets >= GMAIL_MAX_GETS:
+                complete = False
                 break
-    return out
+    return out, complete
 
 
 # ---------------------------------------------------------------- the check
 
+SOURCES = {"drive": drive_activity, "youtube": youtube_uploads, "gmail": gmail_messages}
+
+
 def _services(cfg: dict, label: str, saved: dict) -> list[str]:
-    granted = {s for s, scope in SCOPES.items() if scope in (saved.get("scope") or "").split()}
+    have = granted(saved)
     for a in (cfg.get("account_check") or {}).get("google") or ():
         if isinstance(a, dict) and a.get("label") == label and a.get("services"):
-            return [s for s in a["services"] if s in granted]
-    return [s for s in SCOPES if s in granted]
+            return [s for s in a["services"] if s in have]
+    return have
 
 
 def accounts(cfg: dict) -> list[str]:
@@ -273,9 +349,9 @@ def check(cfg: dict, start: float, end: float, http: Http | None = None) -> dict
             saved = load_token(token_dir(cfg), label)
             token = access_token(http, cid, secret, saved["refresh_token"])
             for service in _services(cfg, label, saved):
-                fn = {"drive": drive_activity, "youtube": youtube_uploads, "gmail": gmail_messages}[service]
                 try:
-                    entry[service] = fn(http, token, start, end)
+                    rows, complete = SOURCES[service](http, token, start, end)
+                    entry[service] = {"rows": rows, "complete": complete}
                 except AccountError as e:
                     entry[service] = {"error": str(e)}
         except AccountError as e:
@@ -285,25 +361,37 @@ def check(cfg: dict, start: float, end: float, http: Http | None = None) -> dict
 
 
 def facts(result: dict) -> dict:
-    """What goes into the case: per account and service, counts, types, times and sizes; no titles."""
-    out = {"window": result["window"], "checked": round(time.time()), "accounts": {}}
+    """What goes into the case: per account and service, counts, types, times and sizes; no titles. `outcome` is
+    explained (something in the window), unexplained (everything fully checked, nothing there) or incomplete."""
+    out: dict = {"window": result["window"], "checked": round(time.time()), "accounts": {}}
+    found, whole = False, bool(result["accounts"])
     for label, entry in result["accounts"].items():
         if "error" in entry:
             out["accounts"][label] = {"error": entry["error"][:200]}
+            whole = False
             continue
         acc = {}
-        for service, rows in entry.items():
-            if isinstance(rows, dict):
-                acc[service] = {"error": rows["error"][:200]}
+        for service, res in entry.items():
+            if "error" in res:
+                acc[service] = {"error": res["error"][:200]}
+                whole = False
                 continue
+            rows = res["rows"]
             s: dict = {"count": len(rows)}
+            if not res["complete"]:
+                s["complete"] = False
+                whole = False
             if rows:
+                found = True
                 s["types"] = dict(Counter(r["type"] or "unknown" for r in rows).most_common(5))
                 s["first"], s["last"] = round(min(r["time"] for r in rows)), round(max(r["time"] for r in rows))
                 if any("bytes" in r for r in rows):
                     s["bytes"] = sum(r.get("bytes", 0) for r in rows)
             acc[service] = s
+        if not acc:
+            whole = False   # an account with no services granted checked nothing
         out["accounts"][label] = acc
+    out["outcome"] = "explained" if found else "unexplained" if whole else "incomplete"
     return out
 
 
@@ -314,31 +402,35 @@ def _hm(ts: float) -> str:
 NOUNS = {"drive": ("file created or uploaded", "files created or uploaded"),
          "youtube": ("video uploaded", "videos uploaded"),
          "gmail": ("sent or draft message", "sent or draft messages")}
+NAMES = {"drive": "Drive", "youtube": "YouTube", "gmail": "Gmail"}
 
 
 def summary(f: dict) -> str:
     """One line per account, for the terminal, the case note and the skill: "personal: Drive shows 2 ..."."""
-    lines, found = [], False
+    w = f["window"]
+    head = f"Account check {_hm(w[0])}-{_hm(w[1])} UTC: "
+    if not f["accounts"]:
+        return head + "incomplete: no Google accounts are set up (docs/setup/account-check.md)."
+    lines = []
     for label, acc in f["accounts"].items():
         if "error" in acc:
             lines.append(f"{label}: couldn't check ({acc['error']})")
             continue
         parts = []
         for service, s in acc.items():
-            name = {"drive": "Drive", "youtube": "YouTube", "gmail": "Gmail"}[service]
+            name = NAMES[service]
+            short = "" if s.get("complete", True) else " (stopped before covering the whole window)"
             if "error" in s:
                 parts.append(f"{name} couldn't be checked ({s['error']})")
             elif not s["count"]:
-                parts.append(f"{name} shows nothing")
+                parts.append(f"{name} shows nothing{short}")
             else:
-                found = True
                 n = s["count"]
-                noun = NOUNS[service][n != 1]
                 span = _hm(s["first"]) if s["first"] == s["last"] else f"{_hm(s['first'])}-{_hm(s['last'])}"
                 types = ", ".join(f"{c} {t}" for t, c in s["types"].items())
                 size = f", {s['bytes'] / 1e6:.1f} MB" if s.get("bytes") else ""
-                parts.append(f"{name} shows {n} {noun} at {span} UTC ({types}{size})")
+                parts.append(f"{name} shows {n} {NOUNS[service][n != 1]} at {span} UTC ({types}{size}){short}")
         lines.append(f"{label}: " + ("; ".join(parts) if parts else "no services granted"))
-    w = f["window"]
-    head = f"Account check {_hm(w[0])}-{_hm(w[1])} UTC: " + ("" if found else "the accounts show nothing: unexplained. ")
-    return head + " | ".join(lines)
+    lead = {"explained": "", "unexplained": "the accounts show nothing: unexplained. ",
+            "incomplete": "incomplete, so this says nothing either way. "}[f["outcome"]]
+    return head + lead + " | ".join(lines)
