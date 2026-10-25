@@ -131,6 +131,17 @@ def test_a_replayed_event_raises_no_second_case_even_after_an_address_change_and
     assert again.ts == T0 + 7200
 
 
+def test_the_event_memory_keeps_only_events_that_raised_a_case_and_stays_bounded(monkeypatch):
+    from tapwatch import hostrules
+    det = EncodedCommand(st())
+    run(det, start(T0, PS, EXPLORER, guid="{n1}"))                       # no signal: no case, nothing remembered
+    assert det.seen == {}
+    monkeypatch.setattr(hostrules, "SEEN_MAX", 4)
+    for i in range(7):
+        run(det, start(T0 + i, PS, EXPLORER, guid=f"{{e{i}}}", cmd_enc="1"))
+    assert len(det.seen) <= 4
+
+
 def test_one_strong_signal_alerts_and_hidden_window_makes_it_must_alert():
     (enc,) = run(EncodedCommand(st()), start(T0, PS, EXPLORER, cmd_enc="1"))
     assert (enc.base_severity, enc.must_alert) == (4, False)

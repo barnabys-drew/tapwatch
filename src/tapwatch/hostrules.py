@@ -99,6 +99,7 @@ FIM = "file_changes"   # R39: the Linux agent's inotify query over the file_path
 # after a restart. Host rules remember the events that raised a case for SEEN_TTL and skip a repeat (#303).
 EVENT_QUERIES = frozenset({SYSMON, BPF, PROCS, FIM})
 SEEN_TTL = 3 * DAY
+SEEN_MAX = 20000   # per rule: past it, entries older than SEEN_TTL go, then the oldest
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
@@ -295,7 +296,7 @@ class HostDetector(Detector):
         self.reported: dict = {}
         self.ttl = reported_days * DAY
         self.seen: dict[str, float] = {}   # fingerprints of event rows that raised a case (EVENT_QUERIES)
-        self._event = ""                   # the event row being judged, while row() runs
+        self._event: tuple | None = None   # (query, row) being judged while row() runs; hashed only if it emits
 
     def feed(self, rec: dict) -> list[Case]:
         if rec.get("_type") != OSQUERY:
@@ -320,11 +321,11 @@ class HostDetector(Detector):
                                                               _basename(c.get("parent_path") or ""),
                                                               flags_of(c), folder_class(path)))
             if name in self.QUERIES:
-                self._event = _fingerprint(name, c) if name in EVENT_QUERIES else ""
+                self._event = (name, c) if name in EVENT_QUERIES else None
                 try:
                     out += self.row(name, c, _row_ts(c, ts))
                 finally:
-                    self._event = ""
+                    self._event = None
         return out
 
     def row(self, query: str, c: dict, ts: float) -> list[Case]:  # pragma: no cover - interface
@@ -340,19 +341,20 @@ class HostDetector(Detector):
         """One case. `indicator` is the program (or "parent > child"): an attacker-chosen string, so it travels as
         an indicator (quoted, defanged, suppressible), and the store dedupes on it for an hour. `key` is the
         situation a digest-level case is reported once per `reported_days`."""
-        if self._event:
-            seen = f"{self._event}|{title}|{indicator}"
-            if seen in self.seen:
-                return []   # this very event already raised this case: a replayed log line, not a new start
-            self.seen[seen] = ts
-            if len(self.seen) > 20000:
-                self.seen = {k: t for k, t in self.seen.items() if ts - t < SEEN_TTL}
+        seen = f"{_fingerprint(*self._event)}|{title}|{indicator}" if self._event else ""
+        if seen in self.seen:
+            return []   # this very event already raised this case: a replayed log line, not a new start
         if severity < 4 and not must_alert:
             if still_reported(self.reported, key, ts, self.ttl):
                 return []
             self.reported[key] = ts
             if len(self.reported) > 2000:
                 self.reported = prune_reported(self.reported, ts, self.ttl)
+        if seen:   # remembered only when it raises a case, so a rule's suppressed repeats don't fill it
+            self.seen[seen] = ts
+            if len(self.seen) > SEEN_MAX:
+                kept = {k: t for k, t in self.seen.items() if ts - t < SEEN_TTL}
+                self.seen = dict(sorted(kept.items(), key=lambda kv: kv[1])[-SEEN_MAX // 2:])
         return [Case(self.name, self.state.host, ts, title, {"source": "endpoint", **facts}, [indicator],
                      must_alert=must_alert, base_severity=severity)]
 
