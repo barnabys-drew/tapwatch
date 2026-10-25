@@ -4,6 +4,11 @@
 --disable_events=false
 --enable_bpf_events=true
 --enable_file_events=true
+# The eBPF publisher hands events over through one perf ring per CPU of (2^exp + 1) pages, mapped into
+# the worker: the default exp 10 is 4 MB a CPU, 64 MB on 16 cores, and on such a PC the worker sat at
+# 175-185 MB against the watchdog's 200 MB, so ordinary swings got it killed every few hours (2026-10-25).
+# 9 halves the ring; osquery drains it at least once a second, which 2 MB a CPU covers.
+--bpf_perf_event_array_exp=9
 # Events wait in osquery's database between scheduled runs; drop them after an hour if unread.
 --events_expiry=3600
 --events_max=200000
