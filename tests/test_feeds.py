@@ -96,6 +96,7 @@ def test_asn_lookup_skips_unrouted_and_ipv6(tmp_path):
     feeds.update(str(tmp_path), fetch=fake_fetch)
     t = feeds.AsnTable.load(str(tmp_path / "ip2asn-v4.tsv.gz"))
     assert t.lookup("1.0.0.7") == (13335, "US")
+    assert t.network("1.0.0.7") == {"asn": 13335, "network": "EXAMPLE", "country": "US"} and t.network("1.0.2.1") is None
     assert t.lookup("1.0.2.1") is None and t.lookup("2001:db8::1") is None and t.lookup("9.9.9.9") is None
     assert feeds.AsnTable.load(None) is None
 

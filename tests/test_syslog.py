@@ -4,6 +4,7 @@ REAL_* lines are sanitized copies of what a UDM Pro (UniFi Network 10.6.106) act
 2026-10-15: addresses moved to 192.168.50.x, MACs to 02:00:00:00:00:0N, names made generic.
 """
 
+import ipaddress
 import json
 import socket
 import threading
@@ -200,6 +201,34 @@ def test_router_admin_new_place_and_failure_burst():
     fails = [udm(ts=T0 + 900 + i, name="Admin login failed", suser="admin", src="198.51.100.4") for i in range(5)]
     out = [c for f in fails for c in det.feed(f)]
     assert len(out) == 1 and out[0].facts["count"] == 5 and out[0].must_alert
+
+
+def test_an_outside_admin_login_says_whose_network_and_which_country():
+    from tapwatch.feeds import AsnTable
+    from tapwatch.pipeline import alert_item
+    from tapwatch.summarizer import Assets, summarize
+    asn = AsnTable([int(ipaddress.IPv4Address("203.0.113.0"))], [int(ipaddress.IPv4Address("203.0.113.255"))],
+                   [64500], ["NL"], {64500: "EXAMPLE-HOSTING"})
+    det = UdmAdmin(Warmup(0), asn=asn)
+    login = udm(name="Admin Accessed UniFi Network", UNIFIadmin="owner", UNIFIaccessMethod="web", UNIFIcategory="System")
+    (outside,) = det.feed(dict(login, src="203.0.113.9"))
+    f = outside.facts
+    assert (f["src"], f["asn"], f["network"], f["country"], f["from_lan"]) == ("203.0.113.9", 64500, "EXAMPLE-HOSTING", "NL", False)
+    assert '203.0.113.9 ("EXAMPLE-HOSTING", country NL), on the internet or the vendor\'s cloud' in summarize(outside, Assets())
+    # the phone alert says it too, not only the case page (review of #289)
+    assert alert_item(outside, None, "always alerts", Assets(), 7)["facts"]["From"] == "203.0.113.9 (EXAMPLE-HOSTING, NL)"
+    (inside,) = det.feed(dict(login, src="192.168.50.30"))
+    assert "network" not in inside.facts and "a device on the home network" in summarize(inside, Assets())
+    assert "From" not in alert_item(inside, None, "always alerts", Assets(), 8)["facts"]
+    (unknown,) = det.feed(dict(login, src="198.51.100.4"))                     # not in the table
+    assert (unknown.facts["asn"], unknown.facts["network"]) == (None, "") and "an unknown network" in summarize(unknown, Assets())
+    (mapped,) = det.feed(dict(login, src="::ffff:203.0.113.20"))               # an IPv4 address written as IPv6
+    assert (mapped.facts["src"], mapped.facts["country"]) == ("203.0.113.20", "NL")
+    (nosrc,) = det.feed(dict(login, UNIFIadmin="other", src="unknown"))        # no usable source: no place, old wording
+    assert "src" not in nosrc.facts and "the internet or the vendor's cloud" in summarize(nosrc, Assets())
+    fails = [udm(ts=T0 + 900 + i, name="Admin login failed", suser="admin", src="203.0.113.50") for i in range(5)]
+    (burst,) = [c for x in fails for c in det.feed(x)]
+    assert burst.facts["country"] == "NL" and "failed logins" in summarize(burst, Assets())
 
 
 def test_a_port_forward_audit_line_keeps_its_settings_fields():

@@ -207,17 +207,20 @@ def update(directory: str, fetch=_fetch, ecosystems: dict[str, set[str]] | None 
 
 
 class AsnTable:
-    """IPv4 address -> (ASN, country) from iptoasn.com's range file, by binary search."""
+    """IPv4 address -> (ASN, country) from iptoasn.com's range file, by binary search; `names` has each network's
+    registered name, once per ASN."""
 
-    def __init__(self, starts: list[int], ends: list[int], asns: list[int], countries: list[str]):
+    def __init__(self, starts: list[int], ends: list[int], asns: list[int], countries: list[str],
+                 names: dict[int, str] | None = None):
         self.starts, self.ends, self.asns, self.countries = starts, ends, asns, countries
+        self.names = names or {}
 
     @classmethod
     def load(cls, path: str | None) -> AsnTable | None:
         if not path or not Path(path).exists():
             return None
         opener = gzip.open if str(path).endswith(".gz") else open
-        starts, ends, asns, countries = [], [], [], []
+        starts, ends, asns, countries, names = [], [], [], [], {}
         with opener(path, "rt", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 parts = line.rstrip("\n").split("\t")
@@ -230,7 +233,16 @@ class AsnTable:
                     continue
                 asns.append(int(parts[2]))
                 countries.append(parts[3])
-        return cls(starts, ends, asns, countries)
+                if len(parts) > 4 and asns[-1] not in names:
+                    names[asns[-1]] = parts[4].strip()
+        return cls(starts, ends, asns, countries, names)
+
+    def network(self, ip: str) -> dict | None:
+        """{"asn", "network", "country"} for a public IPv4 address, or None when it's not in the file."""
+        hit = self.lookup(ip)
+        if hit is None:
+            return None
+        return {"asn": hit[0], "network": self.names.get(hit[0], ""), "country": hit[1]}
 
     def lookup(self, ip: str) -> tuple[int, str] | None:
         try:

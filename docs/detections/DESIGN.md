@@ -479,6 +479,10 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   ≥5 failures in 10 min; any SSH login; any config change within 30 min of a new-source login.
 - **Baseline:** 30 days of admin sources (few).
 - **Dedupe:** `udm_admin|user|source`.
+- **Where from (2026-10-24):** a source outside the house carries its address, network name, ASN and country from
+  the offline ASN table (`asn_file`, nothing looked up online), and the alert names them. A login through UniFi's
+  cloud or app can show the vendor's network rather than the person's, so a cloud provider here is not proof of
+  a stranger, and a household ISP is not proof it was the owner.
 - **FPs:** A new phone or laptop of yours, and UniFi cloud (remote management) logins. Tag "via UniFi
   cloud" separately.
 - **Route:** ALERT, **code-only, `must_alert`.** Whether the owner did it is a fact only the

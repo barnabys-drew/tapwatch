@@ -15,7 +15,7 @@ from .models import Case, Route, Verdict
 from .notifiers import HerdrNotifier, Notifier
 from .router import RANK, Thresholds, critical, route, wants_ai
 from .store import Store
-from .summarizer import Assets, summarize
+from .summarizer import Assets, clean_untrusted, summarize
 from .triage import JevClient, TriageError
 
 log = logging.getLogger("tapwatch")
@@ -35,6 +35,9 @@ def alert_item(case: Case, verdict: Verdict | None, reason: str, assets: Assets,
         "When": datetime.fromtimestamp(case.ts, timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "Why": reason,
     }
+    if case.facts.get("src") and "network" in case.facts:   # where a router login from outside came from (R11)
+        net = clean_untrusted(case.facts["network"]) or "unknown network"
+        facts["From"] = f"{case.facts['src']} ({net}" + (f", {case.facts['country']}" if case.facts.get("country") else "") + ")"
     if verdict:
         facts["AI read"] = (f"{verdict.category} (confidence {verdict.category_confidence:.0%}), "
                             f"routine {verdict.routine:.0%}")
