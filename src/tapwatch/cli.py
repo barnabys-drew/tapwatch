@@ -47,7 +47,7 @@ def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=Non
                     herdr_ai_severity=(cfg.get("herdr") or {}).get("ai_severity", 3.5),
                     hostctx=config.hostctx(cfg), zeek_dirs=zeek_dirs,
                     learning_seconds=float(cfg.get("learning_days", 3)) * 86400,
-                    update_notice=_update_notice(cfg))
+                    update_notice=_update_notice(cfg), fleet_hostctx=config.fleet_hostctx(cfg))
 
 
 def _update_notice(cfg: dict):

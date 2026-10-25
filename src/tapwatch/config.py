@@ -198,6 +198,14 @@ def fleet_results_log(cfg: dict) -> str | None:
     return ((cfg.get("fleet") or {}).get("results_log")) or None
 
 
+def fleet_hostctx(cfg: dict):
+    """Host context for the computers enrolled in Fleet (#14 part 2), from `fleet.results_log`; None without it."""
+    from .hostctx import FleetContexts
+
+    log = fleet_results_log(cfg)
+    return FleetContexts(log) if log else None
+
+
 def hostctx(cfg: dict) -> HostContext | None:
     """`host_context: {host: <this PC's IP>}`: ask osquery and Claude Code transcripts who made a case's traffic."""
     h = cfg.get("host_context") or {}

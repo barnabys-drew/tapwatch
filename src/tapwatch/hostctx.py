@@ -91,7 +91,8 @@ SIGS = "process_signatures"  # Windows, every 5 minutes: authenticode result per
 SIG_KEEP = 2000              # program paths whose signature an index keeps (a snapshot is a few dozen)
 QUERIES = ("outbound_connections", "outbound_connections_ctx", "sysmon_events", "bpf_connections",
            "bpf_process_events", SIGS)
-QUERY_KEYS = tuple(f'"{q}"'.encode() for q in QUERIES)
+# The name's end only: an agent logging on its own writes "sysmon_events", one enrolled in Fleet "pack/Global/sysmon_events".
+QUERY_KEYS = tuple(f'{q}"'.encode() for q in QUERIES)
 BPF = "bpf_connections"   # Linux/WSL: every outgoing connection from osquery's eBPF publisher, as it happens
 PROCS = "bpf_process_events"  # Linux/WSL: every exec, with its parent pid, so a gone process's chain is still known
 # Parent-chain walk for a connection whose process left no markers (it had exited before osquery read
@@ -116,7 +117,12 @@ CMD_DESTRUCTIVE = {"shadow": "shadow copies or backups removed", "recovery": "Wi
 # The PC's own addresses (agents/config/osquery.conf `host_addresses`, a snapshot every 5 minutes). DHCP moves the
 # PC, so the configured IP is only a fallback for when no agent reports them.
 ADDRS = "host_addresses"
-ADDR_KEY = f'"{ADDRS}"'.encode()
+ADDR_KEY = f'{ADDRS}"'.encode()
+
+
+def _query(rec: dict) -> str:
+    """A results-log record's query name, without Fleet's pack prefix (pack/Global/sysmon_events -> sysmon_events)."""
+    return str(rec.get("name") or "").rsplit("/", 1)[-1]
 ADDR_WINDOW = 900             # an address is the PC's for cases within 15 minutes of a snapshot that holds it
 ADDR_KEEP = 6000              # snapshots kept in memory: about 8 days from two agents
 REJECTED_NAMES_MAX = 16       # distinct DHCP names warned about once each when they differ from the PC's own
@@ -526,8 +532,9 @@ class OwnerIndex:
                 out.append(o)
         return out
 
-    def read_log(self, path: Path, since: float) -> None:
-        """osquery results log (JSON lines, differential): 'added' opens an interval, 'removed' closes it."""
+    def read_log(self, path: Path, since: float, agent: str | None = None) -> None:
+        """osquery results log (JSON lines, differential): 'added' opens an interval, 'removed' closes it. `agent`:
+        only that Fleet host's rows (its hostIdentifier), for a log that carries every enrolled computer's."""
         try:
             size = path.stat().st_size
             fh = path.open("rb")
@@ -549,17 +556,19 @@ class OwnerIndex:
                     rec = json.loads(line)
                 except ValueError:
                     continue
-                if not isinstance(rec, dict) or rec.get("name") not in QUERIES:
+                if not isinstance(rec, dict) or (name := _query(rec)) not in QUERIES:
+                    continue
+                if agent is not None and rec.get("hostIdentifier") != agent:
                     continue
                 ts = float(rec.get("unixTime") or 0)
                 if ts < since:
                     continue
                 rows = rec.get("snapshot") if rec.get("action") == "snapshot" else [rec.get("columns") or {}]
-                if rec["name"] == SYSMON:
+                if name == SYSMON:
                     for c in rows or ():
                         self._sysmon(c, ts)
                     continue
-                if rec["name"] == SIGS:  # one row per program path with a socket; joined to the owners in resolve()
+                if name == SIGS:  # one row per program path with a socket; joined to the owners in resolve()
                     for c in rows or ():
                         if c.get("path"):
                             self.signatures[str(c["path"]).lower()] = ((c.get("signature") or "").lower(),
@@ -567,11 +576,11 @@ class OwnerIndex:
                     if len(self.signatures) > SIG_KEEP:
                         self.signatures = dict(list(self.signatures.items())[-SIG_KEEP:])
                     continue
-                if rec["name"] == PROCS:  # one row per exec(): pid -> parent, for the chain walk in resolve()
+                if name == PROCS:  # one row per exec(): pid -> parent, for the chain walk in resolve()
                     for c in rows or ():
                         self._exec(c)
                     continue
-                if rec["name"] == BPF:  # one row per connect(): an instant, like Sysmon's
+                if name == BPF:  # one row per connect(): an instant, like Sysmon's
                     for c in rows or ():
                         if not c.get("path"):  # started before osqueryd: eBPF never saw it start (snapshots cover it)
                             continue
@@ -734,7 +743,7 @@ def first_label(name: str | None) -> str:
 class HostContext:
     def __init__(self, host: str, osquery_bin=None, results_logs=(), transcripts: str | None = None,
                  runner=subprocess.run, timeout: float = 20.0, powershell: str | None = None,
-                 hostname: str | None = None):
+                 hostname: str | None = None, agent: str | None = None):
         # One binary or several: on a Windows PC with WSL, both osqueryi (Linux processes) and
         # osqueryi.exe (Windows processes) answer for the same IP address.
         bins = osquery_bin if isinstance(osquery_bin, (list, tuple)) else [osquery_bin] if osquery_bin else []
@@ -750,6 +759,7 @@ class HostContext:
         self.powershell, self._sigs = powershell, {}
         self._snaps: list[tuple[float, frozenset]] = []   # (time, addresses) from the agents' host_addresses
         self._addr_pos: dict[str, tuple[int, int]] = {}   # results log -> (inode, bytes read)
+        self.agent = agent   # a Fleet host's hostIdentifier: read only its rows from the shared Fleet log
 
     def _snapshot_logs(self) -> list[Path]:
         logs = [p.with_name(p.name.replace("results", "snapshots")) for p in self.results_logs if "results" in p.name]
@@ -779,7 +789,9 @@ class HostContext:
                     continue
                 try:
                     rec = json.loads(line)
-                    rows = rec["snapshot"] if rec.get("name") == ADDRS else None
+                    if self.agent is not None and rec.get("hostIdentifier") != self.agent:
+                        continue
+                    rows = rec["snapshot"] if _query(rec) == ADDRS else None
                     ts = float(rec.get("unixTime") or 0)
                 except (ValueError, KeyError, TypeError, AttributeError):
                     continue
@@ -865,7 +877,7 @@ class HostContext:
         idx = OwnerIndex()
         for p in self._snapshot_logs():  # osquery's filesystem logger writes snapshot queries (process_signatures) apart
             if p in self.results_logs or p.exists():  # a missing snapshots file is not a missing agent: no note
-                idx.read_log(p, since)
+                idx.read_log(p, since, self.agent)
         for c in self.live() if live else ():
             idx.add(c.get("remote_address", ""), c.get("remote_port"), _owner(c))
         idx.resolve()  # after the live rows: a running agent's live row can be the chain's marker-bearing end
@@ -965,3 +977,64 @@ class HostContext:
         if idx.notes:
             facts["host_notes"] = idx.notes[:2]
         return facts
+
+
+FLEET_DISCOVER = 600         # seconds between looks for newly enrolled computers in the Fleet log
+
+
+class FleetContexts:
+    """Host context for the other computers, the ones enrolled in Fleet (#14 part 2).
+
+    Fleet's filesystem logger writes every computer's results to one log, each row tagged with the agent's
+    hostIdentifier and its hostname (decorations). That is the same data a PC's own agent logs, so each computer
+    gets a HostContext that reads only its rows: its addresses (host_addresses) to tell which computer a case's
+    address is, and its connections, process starts and DNS lookups to name the program. What a remote computer
+    can't have: live osquery checks (only what it logged), PowerShell signature lookups (only what its agent
+    recorded), and coding-agent transcripts (those live on the tapwatch PC)."""
+
+    def __init__(self, results_log, clock=time.time):
+        self.path, self.clock = Path(results_log), clock
+        self.agents: dict[str, HostContext] = {}
+        self._looked = 0.0
+        self._pos: tuple[int, int] = (0, 0)   # (inode, bytes read): after the first look, only what was appended
+
+    def _discover(self) -> None:
+        now = self.clock()
+        if now - self._looked < FLEET_DISCOVER:
+            return
+        self._looked = now
+        try:
+            st = self.path.stat()
+            ino, pos = self._pos
+            if ino != st.st_ino or st.st_size < pos:   # first look, or the log was rotated: the same tail host context reads
+                pos = max(0, st.st_size - LOG_TAIL)
+            with self.path.open("rb") as fh:
+                fh.seek(pos)
+                data = fh.read(st.st_size - pos)
+        except OSError:
+            return
+        end = data.rfind(b"\n") + 1   # a half-written last line waits for the next look
+        self._pos = (st.st_ino, pos + end)
+        data = data[:end]
+        for line in data.splitlines():
+            if b'"hostIdentifier"' not in line:
+                continue
+            try:
+                rec = json.loads(line)
+                uid = rec["hostIdentifier"]
+                name = (rec.get("decorations") or {}).get("hostname") or ""
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            if isinstance(uid, str) and uid and uid not in self.agents:
+                # no transcripts (they live on the tapwatch PC), no live osquery, no PowerShell: the log is all there is
+                self.agents[uid] = HostContext("", results_logs=[self.path], transcripts=str(self.path / "no-transcripts"),
+                                               hostname=str(name), agent=uid)
+
+    def find(self, ip: str, ts: float, device_name: str | None = None) -> HostContext | None:
+        """The enrolled computer that had `ip` at `ts` (by its own reported addresses, and its name when the DHCP
+        name is known), or None."""
+        self._discover()
+        for ctx in self.agents.values():
+            if ctx.is_this_pc(ip, ts, device_name):
+                return ctx
+        return None
