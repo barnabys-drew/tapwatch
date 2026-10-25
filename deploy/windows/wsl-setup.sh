@@ -64,7 +64,12 @@ app)
     export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
     # The same branch as the ZIP the installer came from: a ZIP of one branch with the code of another fails
     # (a dev ZIP's installer passed `init --answers` to main's tapwatch, which didn't have it yet).
-    if [ -d tapwatch/.git ]; then
+    # A release ZIP names a tag (vX.Y.Z), not a branch: check that release out, detached (`tapwatch update` moves it on).
+    if [[ "$branch" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ -d tapwatch/.git ]; then
+        say "Updating tapwatch (release $branch)"
+        git -C tapwatch fetch -q --tags --force origin
+        git -C tapwatch checkout -q --detach "$branch"
+    elif [ -d tapwatch/.git ]; then
         say "Updating tapwatch ($branch)"
         git -C tapwatch fetch -q origin "$branch"
         if git -C tapwatch rev-parse --verify -q "refs/heads/$branch" >/dev/null; then

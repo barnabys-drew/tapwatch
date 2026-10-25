@@ -220,6 +220,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch ui` | the case desk at http://127.0.0.1:8765/ (set `TAPWATCH_UI_TOKEN` for other devices) |
 | `tapwatch digest` | send the pending digest now (it also goes out daily) |
 | `tapwatch mark 42 fp` | close case 42 as a false (`fp`) or true (`tp`) positive |
+| `tapwatch update` | move to the newest release (`--check` only looks): shows what changed, installs, runs the self-check, restarts what the change needs and runs doctor, and goes back to the old version if any of it fails. The daily digest says when there's a newer release. Windows: double-click `update-windows.cmd` |
 | `tapwatch update-feeds` | refresh the public lists: Tranco, IEEE MAC vendors, iptoasn, UT1 site categories, the Public Suffix List, the AdFection / Candiru indicators, and the vulnerability data for the agents' software (CISA KEV, OSV, NVD; weekly is plenty) |
 | `tapwatch software [--vulns]` | each endpoint agent's installed software from its daily snapshot, and with `--vulns` what the downloaded vulnerability data matches |
 | `tapwatch syslog` | receive the router's CEF syslog into `udm.log` |

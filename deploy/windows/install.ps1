@@ -35,6 +35,10 @@ $RepoUrl = "https://github.com/barnabys-drew/tapwatch"
 $Here = Split-Path -Parent $PSScriptRoot | Split-Path -Parent          # the unzipped repo
 # GitHub names a branch's ZIP folder tapwatch-<branch>; inside Ubuntu, tapwatch is downloaded from that same branch.
 $Branch = if ((Split-Path -Leaf $Here) -match '^tapwatch-(.+)$') { $Matches[1] } else { "main" }
+# A release ZIP's folder is tapwatch-vX.Y.Z (the installer clones that tag). GitHub's automatic "Source code" ZIP on
+# the same release page drops the v (tapwatch-X.Y.Z): put it back, so either download installs the release.
+if ($Branch -match '^\d+\.\d+\.\d+$') { $Branch = "v$Branch" }
+$IsRelease = $Branch -match '^v\d+\.\d+\.\d+$'
 # QuickEdit off for this window: a click in a console window otherwise freezes the program ("Select" in the title)
 # until Esc, which looks exactly like a hung installer.
 try {
@@ -153,7 +157,8 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 $free = (Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':'))).Free / 1GB
 if ($free -lt 20) { Stop-Install ("Only {0:N0} GB free on {1}; tapwatch needs about 20 GB." -f $free, $env:SystemDrive) }
 Note "Windows build $build, virtualization on, $([int]$free) GB free"
-if ($Branch -ne "main") { Warn "Installing the '$Branch' branch (a test version), from this folder's name." }
+if ($IsRelease) { Note "Installing tapwatch $Branch (a release), from this folder's name." }
+elseif ($Branch -ne "main") { Warn "Installing the '$Branch' branch (a test version), from this folder's name." }
 $route = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1
 $gateway = if ($route) { $route.NextHop } else { "" }
 $thisIp = if ($route) { (Get-NetIPAddress -InterfaceIndex $route.ifIndex -AddressFamily IPv4 | Select-Object -First 1).IPAddress } else { "" }

@@ -1,0 +1,28 @@
+name: Release
+
+# A vX.Y.Z tag becomes a GitHub release (#304): notes generated from the PRs merged since the previous tag, and the
+# Windows installer ZIP. The ZIP's folder is named tapwatch-<tag>, which the Windows installer reads to clone that
+# same tag inside Ubuntu, so an install from a release ZIP follows releases. Installs update with `tapwatch update`.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Windows installer ZIP and the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG"; exit 1; }
+          git archive --format=zip --prefix="tapwatch-$TAG/" -o "tapwatch-$TAG.zip" "$TAG"
+          gh release create "$TAG" "tapwatch-$TAG.zip" --verify-tag --generate-notes --title "tapwatch $TAG"
