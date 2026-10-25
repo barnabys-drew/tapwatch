@@ -26,7 +26,9 @@ outgoing connections, 7,423 DNS lookups. The per-rule comments cite what each wo
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -92,6 +94,11 @@ NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", 
          "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd",
          "host_lsass", "host_rmm", "host_tunnel", "host_staging", "host_fim", "vuln_kev")
 FIM = "file_changes"   # R39: the Linux agent's inotify query over the file_paths in osquery.conf
+# Queries whose every row is one event (a process start, a connection, a file change). The same row read twice is
+# the same event read twice: a log replayed after the follower took a drvfs rewrite for a rotation, or re-read
+# after a restart. Host rules remember the events that raised a case for SEEN_TTL and skip a repeat (#303).
+EVENT_QUERIES = frozenset({SYSMON, BPF, PROCS, FIM})
+SEEN_TTL = 3 * DAY
 # R23: the agent's hourly differential queries over the places programs register to run again (osquery.conf).
 PERSIST_QUERIES = {"scheduled_tasks": "scheduled task", "auto_start_services": "service",
                    "startup_items": "startup item", "crontab": "cron job", "launchd_run_at_load": "launch agent",
@@ -281,12 +288,14 @@ class HostDetector(Detector):
     `reported_days`; alerts rely on the store's one-hour dedupe, so a repeat is counted, not re-sent."""
 
     QUERIES: ClassVar[tuple[str, ...]] = ()
-    PERSIST: ClassVar[tuple[str, ...]] = ("reported",)
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "seen")
 
     def __init__(self, state: EndpointState | None = None, reported_days: float = 7):
         self.state = state or EndpointState()
         self.reported: dict = {}
         self.ttl = reported_days * DAY
+        self.seen: dict[str, float] = {}   # fingerprints of event rows that raised a case (EVENT_QUERIES)
+        self._event = ""                   # the event row being judged, while row() runs
 
     def feed(self, rec: dict) -> list[Case]:
         if rec.get("_type") != OSQUERY:
@@ -311,7 +320,11 @@ class HostDetector(Detector):
                                                               _basename(c.get("parent_path") or ""),
                                                               flags_of(c), folder_class(path)))
             if name in self.QUERIES:
-                out += self.row(name, c, _row_ts(c, ts))
+                self._event = _fingerprint(name, c) if name in EVENT_QUERIES else ""
+                try:
+                    out += self.row(name, c, _row_ts(c, ts))
+                finally:
+                    self._event = ""
         return out
 
     def row(self, query: str, c: dict, ts: float) -> list[Case]:  # pragma: no cover - interface
@@ -327,6 +340,13 @@ class HostDetector(Detector):
         """One case. `indicator` is the program (or "parent > child"): an attacker-chosen string, so it travels as
         an indicator (quoted, defanged, suppressible), and the store dedupes on it for an hour. `key` is the
         situation a digest-level case is reported once per `reported_days`."""
+        if self._event:
+            seen = f"{self._event}|{title}|{indicator}"
+            if seen in self.seen:
+                return []   # this very event already raised this case: a replayed log line, not a new start
+            self.seen[seen] = ts
+            if len(self.seen) > 20000:
+                self.seen = {k: t for k, t in self.seen.items() if ts - t < SEEN_TTL}
         if severity < 4 and not must_alert:
             if still_reported(self.reported, key, ts, self.ttl):
                 return []
@@ -335,6 +355,12 @@ class HostDetector(Detector):
                 self.reported = prune_reported(self.reported, ts, self.ttl)
         return [Case(self.name, self.state.host, ts, title, {"source": "endpoint", **facts}, [indicator],
                      must_alert=must_alert, base_severity=severity)]
+
+
+def _fingerprint(query: str, c: dict) -> str:
+    """One event row, whatever address the PC has when it is read: the query and every column, hashed."""
+    raw = json.dumps([query, c], sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
 def _row_ts(c: dict, rec_ts: float) -> float:
@@ -669,7 +695,7 @@ class NewPersistence(HostDetector):
 
     name = "host_persist"
     QUERIES: ClassVar[tuple[str, ...]] = tuple(PERSIST_QUERIES)
-    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "known")
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "seen", "known")
 
     def __init__(self, state: EndpointState | None = None, reported_days: float = 7, warmup: Warmup | None = None):
         super().__init__(state, reported_days)
@@ -1210,7 +1236,7 @@ class RemoteAccessTool(HostDetector):
 
     name = "host_rmm"
     QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
-    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "known", "since")
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "seen", "known", "since")
 
     def __init__(self, state: EndpointState | None = None, reported_days: float = 7,
                  learn_days: float = RMM_LEARN_DAYS, expected: dict[str, set[str]] | None = None,
@@ -1362,7 +1388,7 @@ class FilesStaged(HostDetector):
 
     name = "host_staging"
     QUERIES: ClassVar[tuple[str, ...]] = (SYSMON, PROCS)
-    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "known", "since")
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "seen", "known", "since")
 
     def __init__(self, state: EndpointState | None = None, reported_days: float = 7,
                  learn_days: float = STAGING_LEARN_DAYS):
