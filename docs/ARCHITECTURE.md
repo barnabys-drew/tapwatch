@@ -254,7 +254,10 @@ device + any host under the indicator's registrable domain, that domain on any d
 device + program (with host context). Each needs a reason and can expire. "Device" means the
 device identity (`name:<DHCP hostname>`, else `mac:<address>`, else the IP, from the Identity
 detector), so a rule follows a laptop between addresses; rules made before that are keyed by IP
-and still match it. A case that matches a rule
+and still match it, as do rules made under the device's MAC before its DHCP name was learned, while that MAC has never carried another name (a dock or USB adapter moves between computers). A host
+case names the PC by the address its agent picked; when Zeek knows no MAC there, the PC's other
+reported addresses name the device, if they all agree (`Pipeline.identify`). WSL's mirrored-mode
+address (10.255.255.254) is never a PC's host: every such PC shares it. A case that matches a rule
 arrives closed as `benign_expected` (logged, counted in the stats, not queued).
 `match_suppression` never matches a `must_alert` case, and the router checks that too.
 
@@ -349,7 +352,7 @@ Everything lives in one SQLite file (`db_path`, default `tapwatch.db`):
 | `notes`, `audit` | the case workflow and who changed what |
 | `suppressions` | scope, reason, expiry, hit count |
 | `software`, `agents` | each endpoint agent's latest software snapshot and the OS it reports, for R48 and `tapwatch software` |
-| `device_day`, `device_day_dest`, `summary_days` | per-device daily summaries for the 30-day rules (#193, `history.py`): each device's connections, bytes, active hours, ports and services per local day, and per destination (base domain or address) and port its ASN, country, bytes and up to 48 start times; `summary_days` says which days were read and over how many hours. `run` builds the day just finished each night, `tapwatch summarize --backfill` the last 30 days; kept 90 days (`summaries.retention_days`) |
+| `device_day`, `device_day_dest`, `summary_days` | per-device daily summaries for the 30-day rules (#193, `history.py`): each device's connections, bytes, active hours, ports and services per local day, and per destination (base domain or address) and port its ASN, country, bytes and up to 48 start times; `summary_days` says which days were read and over how many hours. A MAC with no name yet takes the one DHCP name it announced, on two days or more and no other, in the 30 days around the day; once it announces one, its `mac:` days within two days of a named lease move to it, so a device keeps one history without an older run of days (perhaps another computer on the same dock) being renamed. `run` builds the day just finished each night, `tapwatch summarize --backfill` the last 30 days; kept 90 days (`summaries.retention_days`) |
 
 - **Learned state survives restarts.** Each detector lists its learned attributes in `PERSIST`
   (sliding windows are left out on purpose, except beaconing's beat times: a slow heartbeat needs hours of

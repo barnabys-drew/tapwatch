@@ -117,6 +117,11 @@ KNOWN_MAX = 5000             # entries remembered per PC (a PC has a few hundred
 LAN_PREFIXES = ("192.168.", "10.")   # where home LANs live; 172.16/12 is where Hyper-V and WSL put their switches
 PC_UNKNOWN = "this PC"               # the case's host until an agent snapshot or host_context.host names the address
 CONFIGURED_HOLD = 3600   # s: the configured address holds while a snapshot listed it this recently
+# WSL's own internal address in mirrored networking mode (its DNS tunnel and loopback to Windows), which the WSL
+# agent lists with the PC's real ones. Every such PC has the same one and no packet carries it onto the LAN, so it
+# never names a device: as a host it split one PC's cases between its name and this address (measured 2026-10-25).
+WSL_INTERNAL = "10.255.255.254"
+ALIAS_WINDOW = 900       # s: an address a snapshot listed this recently is still one of the PC's (snapshots every 5 min)
 
 
 def folder_class(path: str) -> str:
@@ -212,6 +217,7 @@ class EndpointState:
         self.lan_nets = {".".join(g.split(".")[:3]) for g in (gateways or ()) if g.count(".") == 3}
         self._routed = False   # once an address on a router's net was seen, a snapshot without one keeps it
         self._configured_seen: float | None = None   # when a snapshot last listed `host_context.host`; None: none yet
+        self.seen_addrs: dict[str, float] = {}   # address -> when a snapshot last listed it (for Case.aliases)
         self.starts: dict[str, Start] = {}
         self.latest = 0.0
         # Signatures arrive every 5 minutes per program path (process_signatures), connections every minute
@@ -223,8 +229,13 @@ class EndpointState:
     def host(self) -> str:
         return self._host or self.unknown
 
+    def aliases(self) -> tuple[str, ...]:
+        """The PC's other addresses, as its agents listed them lately (both agents on a PC with WSL), sorted."""
+        return tuple(sorted(a for a in self.seen_addrs if a != self._host))
+
     def update_addresses(self, rows: list[dict], ts: float = 0.0) -> None:
-        addrs = {str(r.get("address")) for r in rows if r.get("address")}
+        addrs = {str(r.get("address")) for r in rows if r.get("address")} - {WSL_INTERNAL}
+        self.seen_addrs = {a: t for a, t in self.seen_addrs.items() if ts - t <= ALIAS_WINDOW} | dict.fromkeys(addrs, ts)
         if self.configured and self.configured in addrs:
             self._host, self._configured_seen = self.configured, ts
             return
@@ -356,7 +367,7 @@ class HostDetector(Detector):
                 kept = {k: t for k, t in self.seen.items() if ts - t < SEEN_TTL}
                 self.seen = dict(sorted(kept.items(), key=lambda kv: kv[1])[-SEEN_MAX // 2:])
         return [Case(self.name, self.state.host, ts, title, {"source": "endpoint", **facts}, [indicator],
-                     must_alert=must_alert, base_severity=severity)]
+                     must_alert=must_alert, base_severity=severity, aliases=self.state.aliases())]
 
 
 def _fingerprint(query: str, c: dict) -> str:

@@ -354,6 +354,25 @@ def test_pc_address_follows_the_agents_snapshots_and_prefers_the_lan():
     assert fallback.host == "10.0.0.5"                                                      # never on the router's net: the old order
 
 
+def test_wsl_internal_address_never_becomes_the_host_and_cases_carry_the_pcs_other_addresses():
+    """WSL in mirrored mode lists 10.255.255.254 with the PC's real addresses. Without network.gateways, or for a
+    Fleet agent restored from saved state (no routed address seen yet), it sorted ahead of 192.168.x and became the
+    host, so one PC's host cases were keyed half on its name and half on that address (measured 2026-10-25)."""
+    s = EndpointState("")
+    d = EncodedCommand(s)
+    d.feed(addrs(T0, "10.255.255.254", "192.168.50.77", "172.28.0.1"))
+    assert s.host == "192.168.50.77"
+    d.feed(addrs(T0 + 300, "10.255.255.254", "172.28.5.2"))                               # the WSL agent alone
+    assert s.host == "192.168.50.77"
+    fresh = EndpointState("")
+    EncodedCommand(fresh).feed(addrs(T0, "10.255.255.254"))
+    assert fresh.host == "this PC"                                                          # better unknown than shared
+    (c,) = run(d, start(T0 + 400, PS, WORD, cmd_enc="1", cmd_dl="1"))
+    assert c.host == "192.168.50.77" and c.aliases == ("172.28.0.1", "172.28.5.2")         # both agents' addresses
+    d.feed(addrs(T0 + 2000, "192.168.50.77"))
+    assert s.aliases() == ()                                                                 # older than ALIAS_WINDOW
+
+
 def test_wsl_nat_snapshot_never_moves_the_host_off_the_lan():
     """Two agents report for one PC: WSL in NAT mode lists only its 172.x address. Taking it at face value gave
     about half the cases the wrong host (review of PR #87), splitting dedupe keys and suppressions."""
@@ -1283,3 +1302,57 @@ def test_noise_cut_review_dll_location_keeps_the_alert_and_the_hold_covers_a_res
     assert fresh.host == PC
     q = _conf_query("sysmon_events")
     assert "AS cmd_dllpath" in q
+
+
+def test_the_one_off_rekey_moves_old_wsl_address_cases_only_to_a_single_pc():
+    from tapwatch.models import Case
+    from tools import rekey_wsl_cases
+
+    s = Store(":memory:")
+    pc = {"source": "endpoint", "device_mac": "02:00:00:00:00:51", "device_name": "Study-PC"}
+    other = {"source": "endpoint", "device_mac": "02:00:00:00:00:52"}
+
+    def add(host, ts, facts, detector="host_lolbin"):
+        return s.add(Case(detector, host, ts, "t", dict(facts), [f"tool{ts}.exe"]), "state", None, Route.DIGEST,
+                     "r")
+
+    add("192.168.50.51", T0, pc)
+    split = add("10.255.255.254", T0 + 600, {"source": "endpoint"})
+    alone = add("10.255.255.254", T0 + 30 * 86400, {"source": "endpoint"})     # no PC case within the hour
+    add("192.168.50.52", T0 + 60 * 86400, other)
+    add("192.168.50.51", T0 + 60 * 86400 + 60, pc)
+    two = add("10.255.255.254", T0 + 60 * 86400 + 120, {"source": "endpoint"})  # two PCs nearby: no guess
+    # Every mirrored-mode PC shares the address: an R48 case names its agent, and only that agent's cases count,
+    # though the Study-PC's host case is the one next to it in time
+    add("192.168.50.52", T0 + 90 * 86400, {**other, "agent": "agent-b"}, "vuln_kev")
+    by_agent = add("10.255.255.254", T0 + 700, {"source": "endpoint", "agent": "agent-b"}, "vuln_kev")
+    unknown = add("10.255.255.254", T0 + 800, {"source": "endpoint", "agent": "agent-c"}, "vuln_kev")
+    s.update_case(split, "ui owner", status="closed", disposition="benign_expected")
+    changes, left = rekey_wsl_cases.plan(s.db)
+    assert [(c, k) for c, _, k, _ in changes] == [(split, "name:study-pc"), (by_agent, "mac:02:00:00:00:00:52")]
+    assert [c for c, _ in left] == [alone, two, unknown]
+    rekey_wsl_cases.apply(s.db, changes)
+    facts = json.loads(s.get(split)["facts"])
+    assert facts["device_name"] == "Study-PC" and s.get(split)["host"] == "10.255.255.254"
+    (device, features), = s.db.execute("SELECT device, features FROM judge_examples WHERE case_id=?", (split,))
+    assert device == json.loads(features)["device"] == "name:study-pc"
+    for case_id in (alone, two, unknown):
+        assert "device_mac" not in json.loads(s.get(case_id)["facts"])
+    assert rekey_wsl_cases.plan(s.db) == ([], left)                             # a second run changes nothing
+
+
+def test_the_rekey_dry_run_lists_every_case_and_writes_nothing(tmp_path, capsys):
+    from tapwatch.models import Case
+    from tools import rekey_wsl_cases
+
+    s = Store(str(tmp_path / "t.db"))
+    s.add(Case("host_lolbin", "192.168.50.51", T0, "t", {"device_name": "Study-PC"}, ["a.exe"]), "s", None,
+          Route.DIGEST, "r")
+    cid = s.add(Case("host_lolbin", "10.255.255.254", T0 + 60, "t", {}, ["b.exe"]), "s", None, Route.DIGEST, "r")
+    lone = s.add(Case("host_lolbin", "10.255.255.254", T0 + 86400, "t", {}, ["c.exe"]), "s", None, Route.DIGEST, "r")
+    assert rekey_wsl_cases.main([str(tmp_path / "t.db")]) == 0
+    out = capsys.readouterr().out
+    assert f"#{cid} -> name:study-pc (endpoint cases within 60 min)" in out
+    assert f"#{lone} left on the address (endpoint cases within 60 min: none)" in out
+    assert "1 case(s) to move to 1 device(s); 1 left on the address" in out and "applied" not in out
+    assert "device_name" not in json.loads(Store(str(tmp_path / "t.db")).get(cid)["facts"])
