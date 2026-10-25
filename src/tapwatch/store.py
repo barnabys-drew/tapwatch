@@ -498,9 +498,21 @@ class Store:
                         time.time())
         return True
 
-    def match_suppression(self, case: Case, now: float | None = None) -> str | None:
+    def mac_rule_holds(self, mac: str, name, mac_names=()) -> bool:
+        """Whether a rule made under mac:<address>, before a name was learned, still means the device now named
+        `name`: only while that MAC has never been tied to another name, by the Identity (`mac_names`) or on any
+        case. A MAC is not always one machine: a dock or a USB adapter moves between computers, and a rule made for
+        the laptop on it must not close the next computer's cases (review of #326)."""
+        known = {str(n).lower() for n in mac_names}
+        known |= {r[0] for r in self.db.execute(
+            "SELECT DISTINCT lower(json_extract(facts, '$.device_name')) FROM cases WHERE json_extract(facts,"
+            " '$.device_mac') = ? AND json_extract(facts, '$.device_name') IS NOT NULL", (mac,))}
+        return known <= {str(name).lower()}
+
+    def match_suppression(self, case: Case, now: float | None = None, mac_names=()) -> str | None:
         """Return the label of the first live rule matching this case (and count the hit), else None.
 
+        `mac_names` is every DHCP name the case's MAC has announced as far as the caller knows (Identity.names_of).
         Never matches must_alert cases; the router double-checks this too."""
         if case.must_alert:
             return None
@@ -509,7 +521,14 @@ class Store:
         live = self.db.execute("SELECT * FROM suppressions WHERE detector=? AND (expires_ts IS NULL OR expires_ts>?)"
                                " ORDER BY id", (case.detector, now)).fetchall()
         rule = None
-        mine = {device_id(case.host, case.facts), case.host}  # rules made before identities were keyed by IP
+        # The device as it is keyed now, and as it was keyed by rules made earlier: by IP before identities existed,
+        # and by MAC before its DHCP name was learned (mac_rule).
+        mine = {device_id(case.host, case.facts), case.host}
+        mac = case.facts.get("device_mac")
+        by_mac = device_id(case.host, {"device_mac": mac}) if mac else None
+        if by_mac and by_mac not in mine and any(r["host"] == by_mac for r in live) \
+                and self.mac_rule_holds(mac, case.facts.get("device_name"), mac_names):
+            mine.add(by_mac)
         for r in live:
             same_device = r["host"] in mine
             scope = r["scope"]
