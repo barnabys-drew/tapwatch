@@ -168,7 +168,8 @@ def exchange(http: Http, client_id: str, secret: str, code: str, verifier: str) 
 def save_token(directory: Path, label: str, data: dict) -> Path:
     if not directory.exists():
         directory.mkdir(parents=True, mode=0o700)
-        os.chmod(directory, 0o700)   # mkdir's mode is masked by the umask
+        # mkdir's mode is masked by the umask. 0o700 on a directory is owner-only, the strictest that still works
+        os.chmod(directory, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- owner-only directory for refresh tokens
     path = directory / f"google-{check_label(label)}.json"
     tmp = path.with_suffix(".part")
     tmp.unlink(missing_ok=True)      # a leftover would keep its old mode
