@@ -4,6 +4,7 @@ REAL_* lines are sanitized copies of what a UDM Pro (UniFi Network 10.6.106) act
 2026-10-15: addresses moved to 192.168.50.x, MACs to 02:00:00:00:00:0N, names made generic.
 """
 
+import ipaddress
 import json
 import socket
 import threading
@@ -200,6 +201,26 @@ def test_router_admin_new_place_and_failure_burst():
     fails = [udm(ts=T0 + 900 + i, name="Admin login failed", suser="admin", src="198.51.100.4") for i in range(5)]
     out = [c for f in fails for c in det.feed(f)]
     assert len(out) == 1 and out[0].facts["count"] == 5 and out[0].must_alert
+
+
+def test_an_outside_admin_login_says_whose_network_and_which_country():
+    from tapwatch.feeds import AsnTable
+    from tapwatch.summarizer import Assets, summarize
+    asn = AsnTable([int(ipaddress.IPv4Address("203.0.113.0"))], [int(ipaddress.IPv4Address("203.0.113.255"))],
+                   [64500], ["NL"], {64500: "EXAMPLE-HOSTING"})
+    det = UdmAdmin(Warmup(0), asn=asn)
+    login = udm(name="Admin Accessed UniFi Network", UNIFIadmin="owner", UNIFIaccessMethod="web", UNIFIcategory="System")
+    (outside,) = det.feed(dict(login, src="203.0.113.9"))
+    f = outside.facts
+    assert (f["src"], f["asn"], f["network"], f["country"], f["from_lan"]) == ("203.0.113.9", 64500, "EXAMPLE-HOSTING", "NL", False)
+    assert "203.0.113.9 on the internet (EXAMPLE-HOSTING, country NL)" in summarize(outside, Assets())
+    (inside,) = det.feed(dict(login, src="192.168.50.30"))
+    assert "network" not in inside.facts and "a device on the home network" in summarize(inside, Assets())
+    (unknown,) = det.feed(dict(login, src="198.51.100.4"))                     # not in the table
+    assert unknown.facts["network"] == "" and "an unknown network" in summarize(unknown, Assets())
+    fails = [udm(ts=T0 + 900 + i, name="Admin login failed", suser="admin", src="203.0.113.50") for i in range(5)]
+    (burst,) = [c for x in fails for c in det.feed(x)]
+    assert burst.facts["country"] == "NL" and "failed logins" in summarize(burst, Assets())
 
 
 def test_a_port_forward_audit_line_keeps_its_settings_fields():

@@ -2572,8 +2572,9 @@ class UdmAdmin(Detector):
     name = "udm_admin"
     PERSIST: ClassVar[tuple[str, ...]] = ("known",)
 
-    def __init__(self, warmup: Warmup, fail_threshold: int = 5, window: float = 600):
+    def __init__(self, warmup: Warmup, fail_threshold: int = 5, window: float = 600, asn=None):
         self.warmup, self.fail_threshold, self.window = warmup, fail_threshold, window
+        self.asn = asn   # feeds.AsnTable: whose network and which country a login from outside came from
         self.known: set[tuple] = set()
         self.fails: dict[str, deque] = defaultdict(deque)
         self.fail_reported: dict[str, float] = {}
@@ -2597,7 +2598,7 @@ class UdmAdmin(Detector):
                 self.fail_reported[src] = ts
                 return [Case(self.name, host, ts, "Repeated failed router admin logins",
                              {"failed": True, "count": len(q), "from_lan": is_internal(src), "method": how,
-                              "dedupe": f"fail|{src}"}, [user], must_alert=True, base_severity=5)]
+                              **self._place(src), "dedupe": f"fail|{src}"}, [user], must_alert=True, base_severity=5)]
             return []
         key = (user, src)
         if key in self.known:
@@ -2606,8 +2607,17 @@ class UdmAdmin(Detector):
         if self.warmup.learning(ts):
             return []
         return [Case(self.name, host, ts, "Router settings changed from a new place" if config else "Router admin login from a new place",
-                     {"failed": False, "from_lan": is_internal(src), "method": how, "dedupe": f"{user}|{src}"},
+                     {"failed": False, "from_lan": is_internal(src), "method": how, **self._place(src),
+                      "dedupe": f"{user}|{src}"},
                      [user], must_alert=True, base_severity=5)]
+
+    def _place(self, src: str) -> dict:
+        """For a login from outside the house: the source address, whose network it is and which country (offline,
+        from the ASN table). A UniFi cloud or app login names the vendor's network here, not the person's."""
+        if is_internal(src) or not self.asn:
+            return {}
+        hit = self.asn.network(src)
+        return {"src": src, **(hit or {"network": "", "country": ""})}
 
 
 def _expected_services(takeover_cfg: dict) -> dict[str, set[str]]:
@@ -2807,7 +2817,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
         IotDrift(fixed_function_hosts(assets_table), asn_table, **d.get("iot_drift", {})),
         TlsOddities(warmup, **d.get("tls_odd", {})),
         UdmIps(),
-        UdmAdmin(warmup, **d.get("udm_admin", {})),
+        UdmAdmin(warmup, asn=asn_table, **d.get("udm_admin", {})),
     ]
     if (d.get("feed_silence") or {}).get("enabled", True):  # R22: the feeds themselves, ticked by `run` once a minute
         fs = d.get("feed_silence") or {}

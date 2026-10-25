@@ -7,7 +7,7 @@ router can send both as syslog. tapwatch turns them into cases:
 | Rule | From the router | Routing |
 |---|---|---|
 | `udm_ips` | IPS signature matches (UniFi CyberSecure) | Inbound attempts it blocked → log. High risk and not blocked → always alert. Otherwise normal routing |
-| `udm_admin` (R11) | Admin logins | A new (user, source) after warmup → always alert. 5+ failures from one source in 10 min → always alert |
+| `udm_admin` (R11) | Admin logins | A new (user, source) after warmup → always alert. 5+ failures from one source in 10 min → always alert. A source outside the house is named with its network and country (offline ASN table) |
 
 Firewall drops and rejects are kept as evidence (`kind: firewall` records in `udm.log`: chain,
 rule, addresses, ports); nothing alerts on them yet.
