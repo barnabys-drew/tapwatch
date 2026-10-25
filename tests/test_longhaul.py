@@ -351,3 +351,37 @@ def test_the_case_summary_states_the_weeks_in_words(store):
     assert "about every 6 hours, at a steady interval" in texts["slow_beacon"]
     assert "uploaded 120 MB to one destination, a little on 8 different days" in texts["slow_upload"]
     assert "192.168.50" not in "".join(texts.values())
+
+
+def test_a_device_that_appeared_inside_the_window_has_no_baseline_to_call_anything_new():
+    """A new camera uploading steadily to its cloud from its first day: the sensor has a month of history, the
+    device two weeks, so 'it never sent there before' means nothing yet (review of #324)."""
+    s = Store(":memory:")
+    newdev = "mac:02:00:00:00:00:0c"
+    summaries(s)
+    for n in range(14):
+        s.db.execute("INSERT OR REPLACE INTO device_day VALUES (?,?,?,?,?,?,?,?)", (newdev, day(n), 1, 0, 0, 1, "{}", "{}"))
+    s.db.commit()
+    upload(s, "198.51.100.20", 15, 8, asn=64500, dev=newdev)
+    res = run(s)
+    assert res.cases == [] and res.skipped["R31 no baseline before the window to call it new"] == 1
+
+
+def test_a_day_the_sensor_did_not_watch_does_not_hide_a_six_hour_beacon():
+    """One unwatched day used to add a gap that broke the beat's steadiness for a month (review of #324)."""
+    s = Store(":memory:")
+    summaries(s, low={day(10)})
+    heartbeat(s, "c2.example.com", 6, 20)
+    s.db.execute("DELETE FROM device_day_dest WHERE day=?", (day(10),))   # the sensor saw nothing that day
+    s.db.commit()
+    assert [c.detector for c in run(s).cases] == ["slow_beacon"]
+
+
+def test_backing_follows_the_device_not_an_address_dhcp_reassigned():
+    other = longhaul.Recent(1, "beaconing", IP, "name:other-laptop", "digest", "rules-only", {"c2.example.com"}, set())
+    bare = longhaul.Recent(2, "beaconing", IP, IP, "digest", "rules-only", {"c2.example.com"}, set())
+    assert longhaul.backers([other], DEV, [IP], "c2.example.com", None, ctx()) == []
+    assert [b["id"] for b in longhaul.backers([bare], DEV, [IP], "c2.example.com", None, ctx())] == [2]
+    # the same network is not the same destination: AWS hosts everyone
+    aws = longhaul.Recent(3, "upload_spike", IP, DEV, "digest", "rules-only", set(), {"198.51.100.99"})
+    assert longhaul.backers([aws], DEV, [IP], "AS16509", 16509, ctx()) == []

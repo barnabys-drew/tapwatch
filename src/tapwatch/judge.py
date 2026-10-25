@@ -168,7 +168,8 @@ def _week(ts: float) -> str:
 
 def backed_long_horizon(db: sqlite3.Connection, row: sqlite3.Row, case: Case, before: float) -> str:
     """#201's "a long-horizon rule backed by another signal": the rule's own backing (`backed_by`, longhaul.backers),
-    or any other case on the same device that is still open or was first raised in the BACKED_WINDOW before. Wider
+    or any other case on the same device raised before it that is still open or was raised in the BACKED_WINDOW
+    before (never one raised after it, so a replay doesn't see the future: review of #324). Wider
     than the router's backing on purpose: the router decides how loud, this only keeps the judge's hands off, and a
     weeks-long lead next to anything else on the device is for the owner to read. "" when there is none."""
     backed = (case.facts.get("backed_by") or [None])[0]
@@ -178,8 +179,8 @@ def backed_long_horizon(db: sqlite3.Connection, row: sqlite3.Row, case: Case, be
     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only fixed text and '?' placeholders are joined; every value is bound
     other = db.execute("SELECT id, status FROM cases WHERE id != ? AND detector NOT IN ('slow_beacon', 'slow_upload')"
                        " AND (host = ?" + (" OR json_extract(facts, '$.device_mac') = ?" if mac else "") + ")"
-                       " AND (status != 'closed' OR first_ts BETWEEN ? AND ?) ORDER BY id DESC LIMIT 1",
-                       [row["id"], row["host"]] + ([mac] if mac else []) + [before - BACKED_WINDOW, before]).fetchone()
+                       " AND first_ts <= ? AND (status != 'closed' OR first_ts >= ?) ORDER BY id DESC LIMIT 1",
+                       [row["id"], row["host"]] + ([mac] if mac else []) + [before, before - BACKED_WINDOW]).fetchone()
     return f"#{other['id']}, {'open' if other['status'] != 'closed' else 'recent'}" if other else ""
 
 

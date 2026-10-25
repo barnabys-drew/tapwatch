@@ -37,11 +37,11 @@ import statistics
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, fields
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from itertools import pairwise
 
 from . import detectors as det
-from . import hostrules
+from . import history, hostrules
 from .models import Case, device_id
 from .router import LONG_HORIZON
 
@@ -239,7 +239,10 @@ def backers(recent: list[Recent], device: str, ips: list[str], dest: str, asn: i
     """Other cases on the same device that back a long-horizon case up (#194's routing), loudest first."""
     out = []
     for r in recent:
-        if r.detector in LONG_HORIZON or r.reason.startswith("suppressed:") or not (r.device == device or r.host in ips):
+        # The address only for a case keyed by a bare address (no MAC or name then): the address map is today's, and a
+        # case from days ago on an address DHCP has since handed to this device is another device's (review of #324)
+        same = r.device == device or (r.device == r.host and r.host in ips)
+        if r.detector in LONG_HORIZON or r.reason.startswith("suppressed:") or not same:
             continue
         if r.detector == "ioc_match":
             why = "a threat-list hit"
@@ -248,9 +251,9 @@ def backers(recent: list[Recent], device: str, ips: list[str], dest: str, asn: i
         elif r.detector in hostrules.NAMES and r.detector != "vuln_kev":
             # digest or louder only: on the dev PC a logged host case (the owner's agent work) comes every few hours
             why = "a case from the PC's own agent"
-        elif dest in r.names or dest in r.addrs or (not is_name(dest) and asn is not None and ctx.asn is not None
-                                                     and any((ctx.asn.lookup(a) or (None,))[0] == asn for a in r.addrs)):
-            # a network by number only for a destination with no name: AWS, Google and Cloudflare host everyone
+        elif dest in r.names or dest in r.addrs:
+            # the same name or the same address. Not the same network: R31's unnamed targets are whole networks
+            # ("AS16509"), and AWS, Google and Cloudflare host everyone (review of #324)
             why = "a case to the same destination"
         else:
             continue
@@ -290,7 +293,25 @@ def beacon_shape(gaps: list[float], rule: BeaconRule) -> dict | None:
     return None
 
 
-def slow_beacons(groups: dict, ctx: Context, rule: BeaconRule, res: Result) -> list[dict]:
+def watched_gaps(kept: list[float], watched_days: set[str] | None, tz) -> list[float]:
+    """Gaps between beats, leaving out any that spans a day the sensor didn't watch: one day the sensor was down
+    adds a gap that breaks a 6-hour beat's steadiness for the month it stays in the window (review of #324)."""
+    out = []
+    for a, b in pairwise(kept):
+        if watched_days is not None:
+            d, last = datetime.fromtimestamp(a, tz).date(), datetime.fromtimestamp(b, tz).date()
+            gap_days = []
+            while d <= last:
+                gap_days.append(d.isoformat())
+                d += timedelta(days=1)
+            if any(x not in watched_days for x in gap_days):
+                continue
+        out.append(b - a)
+    return out
+
+
+def slow_beacons(groups: dict, ctx: Context, rule: BeaconRule, res: Result,
+                 watched_days: set[str] | None = None, tz=None) -> list[dict]:
     """Candidates per (device, dest): the best port's beat, after the benign skips."""
     best: dict[tuple, dict] = {}
     for (dev, dest, port), rows in groups.items():
@@ -298,7 +319,7 @@ def slow_beacons(groups: dict, ctx: Context, rule: BeaconRule, res: Result) -> l
             continue   # 4 days at 72 h gaps needs 3 days with contacts at least
         times = [t for r in rows for t in json.loads(r[5] or "[]")]
         kept = beats(times, rule.spacing_s)
-        shape = beacon_shape([b - a for a, b in pairwise(kept)], rule)
+        shape = beacon_shape(watched_gaps(kept, watched_days, tz), rule)
         if shape is None:
             continue
         host, ips, _ = ctx.device(dev)
@@ -335,12 +356,20 @@ def target(dest: str, asn) -> str:
     return dest if is_name(dest) or asn is None else f"AS{asn}"
 
 
-def slow_uploads(rows: list, days: list[str], ctx: Context, rule: UploadRule, end: date, res: Result) -> list[dict]:
+def slow_uploads(rows: list, days: list[str], ctx: Context, rule: UploadRule, end: date, res: Result,
+                 firsts: dict[str, str] | None = None) -> list[dict]:
     w0 = end - timedelta(days=rule.window_days - 1)
     p0 = w0 - timedelta(days=rule.prior_days)
     w0s, p0s, ends = w0.isoformat(), p0.isoformat(), end.isoformat()
     window_days = [(w0 + timedelta(days=i)).isoformat() for i in range(rule.window_days)]
-    baseline = sum(1 for d in days if p0s <= d < w0s)
+    firsts = firsts or {}
+
+    def baseline(dev: str) -> int:
+        """Watched days before the window since this device was first summarized: a device that only appeared
+        inside the window has never been seen sending anywhere, which isn't the same as "new" (review of #324)."""
+        since = max(p0s, firsts.get(dev, p0s))
+        return sum(1 for d in days if since <= d < w0s)
+
     daily: dict[tuple, Counter] = defaultdict(Counter)
     down: Counter = Counter()
     prior: Counter = Counter()
@@ -373,7 +402,7 @@ def slow_uploads(rows: list, days: list[str], ctx: Context, rule: UploadRule, en
         if prior[key] >= rule.prior_mb * 1e6:
             res.skipped["R31 uploaded there before the window"] += 1
             continue
-        if baseline < rule.baseline_days:
+        if baseline(dev) < rule.baseline_days:
             res.skipped["R31 no baseline before the window to call it new"] += 1
             continue
         host, ips, _ = ctx.device(dev)
@@ -427,13 +456,14 @@ def evaluate(store, cfg: dict, ctx: Context, now: float | None = None, mature_da
         if day >= b0:
             groups[(dev, dest, port)].append((day, asn, cc, None, None, times))
     recent = recent_cases(db, now)
-    for c in slow_beacons(groups, ctx, beacon, res):
+    firsts = dict(db.execute("SELECT device, MIN(day) FROM device_day GROUP BY device").fetchall())
+    for c in slow_beacons(groups, ctx, beacon, res, set(days), history.zone(cfg)):
         case = beacon_case(c, ctx, now, grown[c["dev"]], recent)
         if raised(db, case.detector, c["dev"], c["dest"], now):
             res.skipped["R30 raised in the last 30 days"] += 1
         else:
             res.cases.append(case)
-    for c in slow_uploads(rows, days, ctx, upload, end, res):
+    for c in slow_uploads(rows, days, ctx, upload, end, res, firsts):
         case = upload_case(c, ctx, now, grown[c["dev"]], upload, recent)
         if raised(db, case.detector, c["dev"], c["dest"], now):
             res.skipped["R31 raised in the last 30 days"] += 1

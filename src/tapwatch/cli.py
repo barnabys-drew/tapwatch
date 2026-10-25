@@ -140,7 +140,11 @@ def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
         if digest.due(time.time()):
             p.send_digest()
         while not found.empty():
-            handled = longhaul.admit(p, found.get_nowait())
+            try:  # one bad history case must not stop the sensor (review of #324)
+                handled = longhaul.admit(p, found.get_nowait())
+            except Exception:  # noqa: BLE001
+                log.exception("long-horizon case failed")
+                continue
             if handled:
                 log.info("#%s %s %s -> %s", handled[0], handled[1].detector, handled[1].host, handled[3].value)
         if nightly and nightly.due(time.time()) and not (summarizing and summarizing.is_alive()):
