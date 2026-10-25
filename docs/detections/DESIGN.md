@@ -5,7 +5,9 @@ are built in `src/tapwatch/detectors.py`, and R08 is the code-routed `new_domain
 [Built in M2](#built-in-m2-2026-10-13-what-changed-from-the-specs-above) for how the code differs
 from these specs, and [ARCHITECTURE.md](../ARCHITECTURE.md) for how cases are routed. R17–R21, the
 first [endpoint rules](#endpoint-rules-r17r21-what-the-pc-itself-says-built-2026-10-15-hostrulespy), were
-designed and built 2026-10-15 in `src/tapwatch/hostrules.py` (issues #26, #27)._
+designed and built 2026-10-15 in `src/tapwatch/hostrules.py` (issues #26, #27). The rest followed through v0.3
+(released 2026-10-25 as v0.3.0): R22 and R23–R29, R36–R39 and R48 are built, and the [summary](#summary) lists
+every rule with its route._
 
 **Scope.** This is a home network with limited telemetry. There is no EDR raw-event
 feed (no CrowdStrike FDR or Sysmon pipeline) and no SaaS audit logs (no GitHub,
@@ -606,8 +608,10 @@ rules below raise cases of their own, for living-off-the-land activity that neve
 `--zeek-dir`). `run` survives osquery's rotation the way it survives Zeek's (the open handle is drained before
 the new file is read); a replay reads only the live file, because osquery's rotated names (`.log.1`) are not
 Zeek's dated pattern. Until an agent snapshot or `host_context.host` names the PC's address, a case names it
-"this PC". This first set is Windows-only; Linux rules (#28) will reuse the same base over
-`bpf_connections` and `bpf_process_events` rows.
+"this PC". This first set is Windows-only; the Linux rules (#28: R27, R28, built 2026-10-18) reuse the same base
+over `bpf_connections` and `bpf_process_events` rows. Computers enrolled in Fleet get the same rules, each with its
+own set (`hostrules.FleetAgents`, reading `fleet.results_log`; docs/setup/fleet.md), so one PC's inventory and
+learning week never mix with another's.
 
 Three rules hold for every one of them. **A case never carries a command line or a path**: it names the
 program and the *class* of folder it runs from (a temp folder, an installed location), because a Windows path
@@ -616,6 +620,11 @@ strings, quoted and labelled untrusted for Jev, defanged in notifications, and t
 **Code decides every route** (`router.CODE_ONLY`): "is this program normal?" is the same question as "is this
 domain normal?", Jev's measured weak spot, and it is never asked. `must_alert` is reserved for the two shapes
 with no benign reading on a home PC.
+
+**One event, one case** (#303, 2026-10-25). Each rule remembers a fingerprint of every event row (Sysmon, eBPF,
+file events) that raised a case, persisted for 3 days and capped, so the same row delivered again (a log re-read
+after a restart, the PC on another address by then) raises nothing. Before this, an alerter restart re-raised
+`host_encoded_cmd` alerts under the PC's other addresses.
 
 **Measured baseline** (2026-10-14/15, the main PC's agent log, 34.5 h; aggregates only):
 
@@ -755,7 +764,8 @@ can't read a quarter of valid signatures, and the encoded-command signal must be
   alert, severity 4, no host-context facts, no command line. The osquery denylist that had hidden the first
   attempt was cleared by resetting osquery.db with osqueryd stopped; no old cases re-raised.
 
-**Not built yet, deliberately:** a standalone unsigned-program rule (see R21) and the Linux rules (#28). The
+**Not built yet, deliberately:** a standalone unsigned-program rule (see R21). The Linux rules (#28) came later,
+as R27 and R28. The
 persistence snapshots became R23 and the host ↔ network correlation is below, both on 2026-10-17; each builds on
 the same `HostDetector` base and `EndpointState`.
 
@@ -823,7 +833,7 @@ the same `HostDetector` base and `EndpointState`.
 - **Safe test:** `schtasks /create /tn tapwatch-r23 /tr "wscript.exe %USERPROFILE%\Downloads\r23.vbs" /sc once
   /st 23:59` → alert within the hour (the query runs hourly); a `.vbs` copied into the Startup folder → digest.
   Delete both afterwards.
-- **Blind spots:** WMI subscriptions, Office add-ins, browser extensions (#27 pass 2); a persistence entry
+- **Blind spots:** Office add-ins (#233; WMI subscriptions and browser extensions came in pass 2, below and R26); a persistence entry
   pointing at an installed, signed program (an attacker who writes to Program Files is past this rule).
 
 ### R24 Backups, logs, protection or accounts changed (`host_destructive`) — **built**
@@ -974,7 +984,7 @@ privileged or Docker-socket container (3), and a new Linux listener outside loop
 mostly svchost. Measured on the WSL box: 40 SUID programs, 23 modules, no preload, no such container, 11 stable
 listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (stratum URLs, xmrig, `--donate-level`).
 
-### R36 A remote-access tool starts on a PC (`host_rmm`) — designed (#39)
+### R36 A remote-access tool starts on a PC (`host_rmm`) — **built** (#39)
 - **Threat:** remote monitoring and management tools used as a way in (T1219): tech-support scams talk the
   victim into AnyDesk or Quick Assist, and ransomware crews install ScreenConnect, AnyDesk or Atera because they
   are signed, trusted and allowed out. The network side is R16 (`takeover`, the tools' servers); this is the PC's
@@ -1003,7 +1013,7 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   never learned, so it works in the first week too; a second run is not reported again).
 - **Blind spot:** a renamed copy with no version resource, or a tool not in the table; R16 still sees its servers.
 
-### R37 A tunnel is opened from a PC (`host_tunnel`) — designed (#39)
+### R37 A tunnel is opened from a PC (`host_tunnel`) — **built** (#39)
 - **Threat:** a tunnel opens a way *in* to a PC from the internet, past the router (T1572): `ngrok`,
   `cloudflared tunnel`, `code tunnel`, `devtunnel host`, `tailscale funnel`, `ssh -R`, localtunnel, bore.
 - **Data:** new command-line signals computed on the PC, as for R24 and R28: `cmd_tunnel` in the Windows
@@ -1023,7 +1033,7 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
 - **Route:** as above, code-only. **Safe test:** `ssh -o BatchMode=yes -o ConnectTimeout=2 -R 9:localhost:9
   test@192.0.2.1` (TEST-NET, fails at once) → one case.
 
-### R38 Files staged or sent somewhere new (`host_staging`) — designed (#39)
+### R38 Files staged or sent somewhere new (`host_staging`) — **built** (#39)
 - **Threat:** exfiltration with trusted tools (T1567, T1560): `rclone`, `restic`, `megacmd`, cloud CLIs (`aws s3`,
   `az storage`/`azcopy`, `gsutil`/`gcloud storage`), WinSCP scripts; a password-protected archive of Documents or
   Desktop before the upload.
@@ -1034,7 +1044,7 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   `s3://bucket`, `gs://bucket`, the storage account, the restic repository host (`env` when it comes from the
   environment). The destination is an indicator.
 - **Logic:** per (device, tool, destination): new after the 7-day learning window → severity 3 (digest); known →
-  nothing. A password archive → 3; of Documents, Desktop or Pictures → 4. An `upload_spike` from the same device
+  nothing. A password archive → 3; of Documents, Desktop, Pictures or OneDrive → 4. An `upload_spike` from the same device
   within five minutes pairs with it (host ↔ network correlation) and makes an alert. Agent-started on Linux (the
   markers, as R37; a short `rclone` run may be gone before the query reads them): `agent_started` fact, digest.
 - **Baseline:** 2026-10-20: a nightly `restic` (3 execs) on the Linux box, learned in the window; 7-Zip twice from
@@ -1113,7 +1123,8 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   monitor cases pair with nothing), and only when the host rule names that network rule as part of its story
   (`hostrules.PAIRS`, checked from both sides): a program reaching out (R17–R21, R27, R28) pairs with first
   contacts, beacons, DNS and TLS oddities, takeover channels, odd ports, uploads and IDS verdicts (not DNS bypass); R36 remote-access tools and R37 tunnels with
-  R16 only; R38 staging with upload_spike and R16; R39 file changes with nothing. Measured 2026-10-20: with any
+  R16, the IDS verdicts (Suricata, the router's IPS) and internet exposure; R38 staging with upload_spike, R16 and the IDS
+  verdicts; R39 file changes and R48 with nothing. Measured 2026-10-20: with any
   pairing allowed, every R36–R39 safe test was lifted to an alert by an unrelated dns_bypass digest item three
   minutes earlier (the dev PC has network digest items most hours). Up to three partners go into the case's `correlated` facts, newest first,
   with the loudest partner's route as `correlated_best`; the earlier case gets the same entry pointing back
@@ -1173,6 +1184,7 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R19 Temp-folder program connects out (built) | osquery + Sysmon | digest / alert | code-only |
 | — | R20 Built-in tool (LOLBin) connects out (built) | osquery + Sysmon | alert (msbuild: digest) | code-only; must_alert for the downloaders |
 | — | R21 Bad code signature connects out (built) | osquery snapshot | alert | code-only |
+| — | R22 A log feed has stopped arriving (built) | arrival times of every feed | alert (sparser feeds: digest) | code-only |
 | — | R23 New persistence entry (built) | osquery differential (tasks, services, startup, cron, launchd) | digest / alert | code-only |
 | — | R24 Backups, logs, protection or accounts changed (built) | osquery + Sysmon | alert | code-only; must_alert for backups and logs |
 | — | R25 Burst of discovery commands (built) | osquery + Sysmon | alert (shell: digest) | code-only |
@@ -1180,10 +1192,11 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R27 Linux temp, memory or shell connection (built) | osquery eBPF | alert | code-only |
 | — | R28 Suspicious command on Linux (built, baselined) | osquery eBPF exec + command-line signals | alert (temp chmod: digest) | code-only |
 | — | R29 A program reads lsass memory (built, baselined) | osquery + Sysmon event 10 | alert (must for temp/document) | code-only |
-| — | R36 A remote-access tool starts on a PC (designed) | Sysmon event 1, eBPF exec | digest (installed), alert, must for temp/document | code-only |
-| — | R37 A tunnel is opened from a PC (designed) | command-line signals | alert (agent-started: digest; must from temp) | code-only |
-| — | R38 Files staged or sent somewhere new (designed) | command-line signals, destination | digest, alert when paired with an upload | code-only |
-| — | R39 A persistence or credential file changes (designed) | osquery file_events, Sysmon event 11 | digest until baselined | code-only |
+| — | R36 A remote-access tool starts on a PC (built) | Sysmon event 1, eBPF exec | digest (installed), alert, must for temp/document | code-only |
+| — | R37 A tunnel is opened from a PC (built) | command-line signals | alert (agent-started: digest; must from temp) | code-only |
+| — | R38 Files staged or sent somewhere new (built) | command-line signals, destination | digest, alert when paired with an upload | code-only |
+| — | R39 A persistence or credential file changes (built) | osquery file_events, Sysmon event 11 | digest; alert for severity 4 since v0.3 | code-only |
+| — | R48 Known-exploited vulnerability in installed software (built) | agents' software snapshots + KEV/OSV/NVD | digest; raises the device's other digest-level cases | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 

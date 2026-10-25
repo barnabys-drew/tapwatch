@@ -9,7 +9,7 @@ install them on a machine that never runs Zeek or the alerter.
 
 | OS | Installs with | Run |
 |---|---|---|
-| Windows 10/11 | winget (osquery) + Microsoft download (Sysmon, signature-checked) | double-click `install.cmd` |
+| Windows 10/11 | winget (osquery; osquery's pinned official MSI if winget is missing or fails) + Sysmon (see below) | double-click `install.cmd` |
 | macOS | Homebrew (`brew install --cask osquery`) | `./install.sh` |
 | Linux (Debian, Ubuntu, Fedora, RHEL, Rocky…) | osquery's official apt / dnf repo | `./install.sh` |
 
@@ -208,5 +208,10 @@ SELECT datetime, data FROM windows_eventlog
 - **Sysmon config** ([windows/sysmon.xml](windows/sysmon.xml)) logs process
   starts and ends, network connections and DNS queries, and keeps 256 MB of
   history. Skip it with `install.cmd -NoSysmon`.
+- **Where Sysmon comes from (Windows):** a Sysmon that's already installed gets tapwatch's config loaded into it.
+  Otherwise, on Windows 11 26H2 and later the installer turns on Windows' built-in Sysmon (an optional feature),
+  and elsewhere it downloads Sysinternals Sysmon, signature-checked (`Sysmon64a` on ARM PCs). Windows' built-in
+  Sysmon starts its event log only at boot, so the installer then asks for **one restart**. Until then osquery's
+  snapshots still show which program holds a connection, but program starts and DNS lookups aren't recorded.
 - **Uninstall:** `./uninstall.sh`, or double-click `uninstall.cmd` on Windows.
 - Re-running an installer is safe: it upgrades osquery and rewrites the config.

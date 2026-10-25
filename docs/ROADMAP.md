@@ -29,7 +29,7 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 
 | Area | State |
 |---|---|
-| Network detection | **Solid.** 22 network case types, baselines that survive restarts, a scripted self-check at 27/27 in CI. [Eval](../eval/RESULTS.md): 4/7 infected hosts alerted vs 2/7 rules-only; a home night gave 8 digest items and 0 false alerts |
+| Network detection | **Solid.** 22 network case types, baselines that survive restarts, a scripted self-check at 32/32 in CI. [Eval](../eval/RESULTS.md), re-run 2026-10-15: 2/7 infected hosts alerted with Jev vs 1/7 rules-only; a home night gave 10 items to read and 1–2 false alerts |
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
 | Linux install | **Solid.** `docker compose up`, verified end to end on a live interface. Zeek runs from a patched 9.0 LTS image as the user, not root ([#252](https://github.com/barnabys-drew/tapwatch/pull/252)). A native host install for Arch-based desktops (Omarchy, [#267](https://github.com/barnabys-drew/tapwatch/pull/267)) is on hold: the live sensor runs on Windows |
 | Windows install | **Passed on a clean machine.** The one-step installer went from the ZIP to a test alert on a fresh Windows 11 VM (v0.2.5, [#175](https://github.com/barnabys-drew/tapwatch/issues/175)), and `tapwatch doctor` names what's wrong. On 2026-10-24 it moved a running sensor to a new mini PC, cases and baselines included (`import-state`, [#272](https://github.com/barnabys-drew/tapwatch/pull/272)). The first outside install is next |

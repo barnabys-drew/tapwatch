@@ -64,8 +64,8 @@ UniFi versions; if you can't find Mirroring, search the settings for "mirror".
 
 ## 4. Run the installer
 
-1. On the PC, open https://github.com/barnabys-drew/tapwatch, click the green **Code** button, then
-   **Download ZIP**.
+1. On the PC, open https://github.com/barnabys-drew/tapwatch/releases/latest and, under **Assets**, click
+   **tapwatch-v….zip** (for example `tapwatch-v0.3.0.zip`).
 2. Open your Downloads folder, right-click the ZIP, **Extract All**, **Extract**.
 3. In the extracted folder, double-click **install-windows.cmd**. If Windows says "Windows protected your
    PC", click **More info**, then **Run anyway**. Click **Yes** when it asks for admin rights.
@@ -79,6 +79,8 @@ UniFi versions; if you can't find Mirroring, search the settings for "mirror".
    **Install**, then **Finish**.
 7. At the end it checks everything, then shows the ntfy address to subscribe to (step 5 below) and sends a test
    alert once you have.
+8. If it ends with "Restart this PC once to finish" (Windows 11 26H2 and later), restart the PC when it suits you:
+   until then tapwatch can't see which programs start on this PC.
 
 If it stops with an error, it says what went wrong and where its log file is. Send that file to
 whoever is helping you: it has no passwords or keys in it.
@@ -115,8 +117,9 @@ Open **Ubuntu** from the Start menu and type:
 cd ~/tapwatch; .venv/bin/tapwatch doctor
 ```
 
-Every line should say `[ok]`. Anything else says what to do. Right after installing, "just started"
-notes are normal; check again after 15 minutes.
+Every line should say `[ok]`, apart from notes about optional parts you skipped (`[!] AI triage is off` if you
+skipped the AI keys). Anything else says what to do. Right after installing, "just started" notes are normal;
+check again after 15 minutes.
 
 ## What a normal first week looks like
 
@@ -134,4 +137,6 @@ notes are normal; check again after 15 minutes.
 - **No alerts for days:** run the check in step 7. tapwatch also sends an alert when its own capture
   stops.
 - **The PC was off or restarted:** tapwatch starts again by itself, even before anyone signs in.
-- **To update tapwatch:** run install-windows.cmd again from a fresh ZIP. It keeps your settings.
+- **To update tapwatch:** double-click **update-windows.cmd** in the folder you extracted. It shows what changed,
+  asks first, and goes back to the version you had if the new one doesn't pass its checks. The daily summary says
+  when a new version is out. Running install-windows.cmd from a newer ZIP also works, and keeps your settings.

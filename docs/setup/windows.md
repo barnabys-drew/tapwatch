@@ -3,6 +3,9 @@
 Everything runs inside WSL except packet capture: Windows drops frames addressed to other
 machines, so Npcap (on Windows) captures the mirror port and streams it into Zeek under WSL.
 
+This page is every step by hand. `install-windows.cmd` in the release ZIP does all of it in one go
+([office-unifi.md](office-unifi.md) walks through it); `deploy/windows/install.ps1` lists what it does.
+
 ## Prerequisites (once)
 
 Checked on a clean Windows 11 install (2026-10-18). Commands marked **admin** need PowerShell opened with
@@ -41,7 +44,11 @@ Checked on a clean Windows 11 install (2026-10-18). Commands marked **admin** ne
    hello-world` should then work without sudo. `docker.io` is Ubuntu's own package; Docker Desktop with WSL
    integration works too.
 4. **Wireshark and Npcap** on Windows. Wireshark provides `dumpcap.exe`:
-   `winget install -e --id WiresharkFoundation.Wireshark --interactive`. Its installer offers Npcap, but
+   `winget install -e --id WiresharkFoundation.Wireshark --interactive`. On a brand-new Windows, winget's
+   first use can fail before its package sources are ready: run `winget source update` and try again a minute
+   later. If it still fails, download the newest stable installer (an even minor version, such as 4.6.x; the
+   odd ones are development builds) from https://www.wireshark.org/download/win64/ and check its signature as
+   below: the signer should contain "Wireshark Foundation". Wireshark's installer offers Npcap, but
    on a clean machine it may not install it, and winget has no Npcap package. Download the installer from
    https://npcap.com and check its signature before running it:
    ```powershell
@@ -76,7 +83,13 @@ characters such as `$` and quotes, so check a typed command before pressing Ente
 your user name in place of `$USER`.
 
 `service install` starts five systemd user services: capture, alerter, case desk, watchdog
-(and syslog). Check them with `systemctl --user status 'tapwatch-*'`.
+(and syslog). Check them with `systemctl --user status 'tapwatch-*'`, and the whole install with
+`.venv/bin/tapwatch doctor`.
+
+**The PC agent (optional).** osquery and Sysmon on Windows name the program behind a connection, and run the
+endpoint rules for this PC. Double-click `agents\install.cmd` in the folder ([agents/README.md](../../agents/README.md)),
+then set `host_context: {host: <this PC's IP>}` in `config.yaml` and `systemctl --user restart tapwatch-alerter`. On
+Windows 11 26H2 and later it uses Windows' built-in Sysmon, and asks for one restart before Sysmon's log starts.
 
 ## Keep it awake (from Windows, once)
 
@@ -143,16 +156,31 @@ port 8765. Use `serve`, not `funnel`, which would put the desk on the public int
 port that's free on the PC works; 443 is fine if nothing else uses it.
 
 
+## Updating
+
+Double-click `update-windows.cmd` (in the unzipped release folder, or the checkout's top folder), or in Ubuntu:
+`cd ~/tapwatch && .venv/bin/tapwatch update`. It moves tapwatch to the newest release, shows what changed and asks
+first, then installs, restarts what the change needs and runs `tapwatch doctor`. If anything new fails, it goes
+back to the version you had. `tapwatch update --check` only looks. The daily digest says when a newer release is
+out; nothing updates by itself.
+
+`tapwatch update` updates tapwatch inside Ubuntu. To bring the Windows side (the PC agent, the keep-alive task) up
+to date as well, unzip the new release and run its `install-windows.cmd`: it keeps your settings.
+
 ## Moving tapwatch to another PC
 
 To keep the cases, suppressions and what tapwatch has learned, so the new PC doesn't start a new learning period:
 
-1. On the old PC, in Ubuntu: `cd ~/tapwatch && deploy/export-state.sh` writes `tapwatch-state.tar.gz`. It holds
+1. On the old PC, in Ubuntu: `cd ~/tapwatch && deploy/export-state.sh` writes `tapwatch-state.tar.gz` (config,
+   `.env`, the database with the cases and learned baselines, the assets file and your own IOC list). It holds
    your alert addresses and keys, so copy it directly (USB stick, a direct network copy) and delete it afterwards.
 2. On the new PC, put it in the unzipped tapwatch folder, next to `install-windows.cmd`, then run the installer.
-   It finds the file and offers to take it over, and skips the alert and AI-key questions.
+   It finds the file and offers to take it over, and skips the alert and AI-key questions. It only does so on a
+   PC where tapwatch isn't set up yet: an existing `~/tapwatch/config.yaml` is kept, and the installer says how
+   to move it aside. By hand, in a fresh checkout, run `.venv/bin/tapwatch import-state tapwatch-state.tar.gz`
+   instead of `tapwatch init`.
 3. The install log lists the settings that named the old PC. In `~/tapwatch/config.yaml`, set
-   `host_context.host` to the new PC's address and check the others (`ui.host`, `ui.base_url`, ...), then
-   `systemctl --user restart 'tapwatch-*'`. `tapwatch doctor` warns while `host_context.host` isn't this PC.
+   `host_context.host` to the new PC's address and check the others (`ui.host`, `ui.base_url`, `smtp`,
+   `fleet.results_log`, ...), then `systemctl --user restart 'tapwatch-*'`. `tapwatch doctor` warns while `host_context.host` isn't this PC.
 4. Point the router's syslog at the new PC, and turn tapwatch off on the old one, or both alert on everything:
    `systemctl --user disable --now 'tapwatch-*'`.

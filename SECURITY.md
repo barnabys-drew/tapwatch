@@ -18,8 +18,9 @@ with credit, unless you'd rather stay anonymous.
 - Escaping gaps in the case desk, notifications or email (links, script, markup)
 - Ways around the case desk login or CSRF protection
 - Spoofed router syslog that suppresses or downgrades a real alert
+- A state file that makes `tapwatch import-state` write anything beyond the files it names
 - Anything that sends internal addresses, MACs or packet contents off the network
 
 ## Supported versions
 
-Only the latest release.
+Only the latest release. `tapwatch update` (or `update-windows.cmd` on Windows) moves an install to it.

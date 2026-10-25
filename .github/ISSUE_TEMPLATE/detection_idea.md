@@ -6,7 +6,7 @@ labels: detection, enhancement
 
 **Threat it catches**
 
-**Fields it would use** (Zeek logs, router syslog...)
+**Fields it would use** (Zeek logs, router syslog, the osquery agent's rows...)
 
 **Logic in a sentence or two**
 
