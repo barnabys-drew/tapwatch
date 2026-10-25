@@ -61,6 +61,33 @@ def set_local_nets(cidrs) -> None:
     LOCAL_NETS[:] = [ipaddress.ip_network(c, strict=False) for c in cidrs]
 
 
+# The house's own public address(es) (network.public_ips), set by build(). A device that reaches another one through
+# it (Tailscale peers trying each other's router-mapped port about once a minute, a port forward used from inside)
+# never leaves the house, and as "external" it read as a steady beacon to an unnamed address. Such a record is
+# dropped before the detectors (`hairpin`) rather than the address counted as inside: as a LAN address it would be a
+# device of its own (new-device and admin-port cases on it, the router's IPS hits filed under it).
+HOUSE_IPS: set[str] = set()
+
+
+def set_house_ips(values) -> None:
+    """Single addresses only: a CIDR would take in the ISP's neighbours, a name can't be checked offline."""
+    HOUSE_IPS.clear()
+    for v in [values] if isinstance(values, str) else values or ():
+        try:
+            HOUSE_IPS.add(str(ipaddress.ip_address(str(v).strip())))
+        except ValueError:
+            log.warning("network.public_ips: %r is not an IP address (one address per entry, no names or ranges); "
+                        "ignored", v)
+
+
+def hairpin(rec: dict) -> bool:
+    """A record between a LAN device and the house's own public address."""
+    if not HOUSE_IPS:
+        return False
+    a, b = rec.get("id.orig_h"), rec.get("id.resp_h")
+    return (b in HOUSE_IPS and is_internal(a or "")) or (a in HOUSE_IPS and is_internal(b or ""))
+
+
 def is_internal(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
@@ -2746,6 +2773,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     d = cfg.get("detectors", {})
     net = cfg.get("network", {})
     set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
+    set_house_ips(net.get("public_ips"))
     set_public_suffixes(cfg.get("public_suffix_file"))  # registrable domains by the PSL when downloaded
     load_categories(cfg.get("categories_file"), cfg.get("learned_categories_file"))  # domain -> kind of site (categories.py), offline
     set_categorizer(ai_categorizer(cfg))  # opt-in `categories: {ai: true}` + key in the environment, else None: no network
