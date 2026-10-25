@@ -117,6 +117,10 @@ network:                             # home rules (docs/detections/DESIGN.md R03
                                      # Update it if your ISP changes the address: a stale one hides traffic to
                                      # whoever has it now. Behind CGNAT (a 100.64.x.x WAN address), leave it empty
 
+# update:                            # `tapwatch update` (#304): releases follows the newest vX.Y.Z tag, main follows
+#   channel: releases                # the main branch (a dev install). The daily digest says when a newer release
+#   notify: true                     # exists; nothing updates by itself.
+
 # account_check:                     # opt-in: ask your own Google accounts what an upload_spike to Google was
 #   google: [personal]               # account labels, never addresses; or {label: work, services: [drive]}
 #   token_dir: ~/.local/state/tapwatch/accounts   # refresh tokens (mode 600), outside the repo
