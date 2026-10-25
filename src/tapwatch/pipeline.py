@@ -53,9 +53,10 @@ class Pipeline:
                  thresholds: Thresholds | None = None, dedupe_seconds: float = 3600,
                  base_url: str | None = None, herdr: HerdrNotifier | None = None, herdr_ai_severity: float = 3.5,
                  hostctx: HostContext | None = None, zeek_dirs=None, learning_seconds: float = 0,
-                 update_notice=None):
+                 update_notice=None, fleet_hostctx=None):
         self.detectors, self.assets, self.store, self.base_url = detectors, assets, store, base_url
         self.update_notice = update_notice   # () -> "" or "tapwatch vX.Y.Z is available ..." (update.notice)
+        self.fleet_hostctx = fleet_hostctx   # hostctx.FleetContexts: the same, for the computers enrolled in Fleet
         self.client, self.notifier = client, notifier
         self.herdr, self.herdr_ai_severity = herdr, herdr_ai_severity  # critical cases pop up in the terminal
         self.hostctx, self.zeek_dirs = hostctx, zeek_dirs  # "who on the PC did this", for the tapwatch PC
@@ -277,19 +278,33 @@ class Pipeline:
         return partners
 
     def add_host_context(self, case: Case) -> None:
-        """For a case on the tapwatch PC: which program, and was it the owner's coding agent (hostctx.py)."""
+        """For a case on the tapwatch PC: which program, and was it the owner's coding agent (hostctx.py). For a case
+        on a computer enrolled in Fleet: which program, from that computer's own agent rows (#14 part 2)."""
         if case.facts.get("source") in ("endpoint", "monitor"):
             # a host rule's case already says what ran, and a monitor case (R22) is about tapwatch itself: the
             # PC's programs around it would only confuse it. Measured 2026-10-17, case #427: the first live
             # feed_silence alert was attributed to every connection on the PC in the window, judged likely
             # benign and capped at digest.
             return
-        if not (self.hostctx and self.zeek_dirs
-                and self.hostctx.is_this_pc(case.host, case.ts, case.facts.get("device_name"))):
-            return  # not this PC's address, or another device (a shared dock) holds it now
+        if not self.zeek_dirs:
+            return
+        name = case.facts.get("device_name")
+        ctx, fleet = None, False
+        try:
+            if self.hostctx and self.hostctx.is_this_pc(case.host, case.ts, name):
+                ctx = self.hostctx
+            elif self.fleet_hostctx:
+                ctx, fleet = self.fleet_hostctx.find(case.host, case.ts, name), True
+        except Exception as e:  # noqa: BLE001 - context is a bonus; never lose the case over it
+            log.warning("host context lookup failed for %s: %s", case.detector, e)
+        if ctx is None:
+            return  # not a computer tapwatch has an agent on, or another device (a shared dock) holds the address now
         try:
             ev = evidence.lookup(self.zeek_dirs, case.host, case.ts, window=180)
-            case.facts.update(self.hostctx.collect(case, ev["conn"]["rows"], ev["dns"]["rows"]))
+            facts = ctx.collect(case, ev["conn"]["rows"], ev["dns"]["rows"])
+            if fleet:   # which computer, from its agent: the summary says so instead of "the PC itself"
+                facts.update(host_source="fleet", host_computer=ctx.hostname)
+            case.facts.update(facts)
         except Exception as e:  # noqa: BLE001 - context is a bonus; never lose the case over it
             log.warning("host context failed for %s: %s", case.detector, e)
 

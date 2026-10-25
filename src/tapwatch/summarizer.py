@@ -503,9 +503,14 @@ def _regularity(word: str) -> str:
 
 
 def _on_the_pc(f: dict) -> str:
-    """Host context facts (hostctx.py) as plain sentences. Program names are untrusted (a binary can be named anything)."""
+    """Host context facts (hostctx.py) as plain sentences. Program names are untrusted (a binary can be named anything).
+    A case on a computer enrolled in Fleet (#14 part 2) says which computer, and that its agent's log is the source."""
+    if f.get("host_source") == "fleet":
+        where = f"On that computer ({json.dumps(clean_untrusted(f.get('host_computer') or 'unnamed'))}, from its endpoint agent's log)"
+    else:
+        where = "On the PC itself"
     if not f.get("host_matched") and not f.get("host_lookups_matched"):
-        text = "On the PC itself, the connection could not be tied to a program (it may have been too short to see)."
+        text = f"{where}, the connection could not be tied to a program (it may have been too short to see)."
         if f.get("host_transcript_only"):
             text += (" But a coding-agent session on the PC ran a command naming this destination"
                      + (", and the owner's message named it." if f.get("host_owner_named_dest")
@@ -515,7 +520,7 @@ def _on_the_pc(f: dict) -> str:
         return text
     progs = ", ".join(json.dumps(clean_untrusted(p)) for p in f.get("host_programs", [])) or "unknown"
     what = "holding the connection" if f.get("host_matched") else "that made the DNS lookups"
-    parts = [f"On the PC itself (checked locally): the program {what} was {progs}."]
+    parts = [f"{where}" + ("" if f.get("host_source") == "fleet" else " (checked locally)") + f": the program {what} was {progs}."]
     if f.get("host_matched") and not f.get("host_scoped") and f.get("host_conns", 0) > 1:
         parts.append("Those are every program the PC connected out with in the three minutes around the case, "
                      "not only the one that reached this destination.")
@@ -546,10 +551,11 @@ def _on_the_pc(f: dict) -> str:
                 parts.append(BY_ADDRESS)
             if f.get("host_outside_content"):
                 parts.append("Between the owner's message and the command, the agent read content from the web.")
-    else:
+    elif f.get("host_source") != "fleet":   # coding-agent sessions are only looked for on the tapwatch PC
         parts.append("No coding-agent session started it.")
-    verdict = {"likely_benign": "Checks of the program on the PC found nothing suspicious.",
-               "suspicious": "Checks of the program on the PC found warning signs: "
+    pc = "that computer" if f.get("host_source") == "fleet" else "the PC"
+    verdict = {"likely_benign": f"Checks of the program on {pc} found nothing suspicious.",
+               "suspicious": f"Checks of the program on {pc} found warning signs: "
                              + "; ".join(f.get("host_signals", [])[:2]) + ".",
                }.get(f.get("host_assessment", ""))
     if verdict:

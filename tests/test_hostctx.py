@@ -1211,3 +1211,67 @@ def test_benign_signals_name_only_the_listed_programs():
     tmp = Owner(name="dropper", path="/tmp/dropper")
     a, signals = assess([curl, tmp], "other_program", programs=["curl"])
     assert (a, signals) == ("suspicious", ["dropper runs from a temporary folder"])  # suspicious: always shown
+
+
+# ------------------------------------------------------------ #14 part 2: the computers enrolled in Fleet
+
+YOGA, LEGION = "4D896953-0000-0000-0000-000000000001", "4D896953-0000-0000-0000-000000000002"
+
+
+def fleet_row(uid, host, name, ts, action, columns=None, snapshot=None):
+    rec = {"name": f"pack/Global/{name}", "hostIdentifier": uid, "unixTime": ts, "action": action,
+           "decorations": {"host_uuid": uid, "hostname": host}}
+    rec.update({"snapshot": snapshot} if snapshot is not None else {"columns": columns})
+    return json.dumps(rec)
+
+
+def fleet_log(tmp_path):
+    """Two computers on one Fleet log, each with its addresses and a connection to the same destination."""
+    log = tmp_path / "fleet" / "osqueryd.results.log"
+    log.parent.mkdir()
+    conn = {"pid": "77", "path": r"C:\Program Files\Vendor\sync.exe", "remote_address": DST, "remote_port": "443",
+            "name": "sync.exe", "parent_name": "explorer.exe", "signature": "trusted", "signer": "Vendor Inc"}
+    other = dict(conn, path=r"C:\Users\Public\updater.exe", name="updater.exe", signature="", signer="")
+    log.write_text("\n".join([
+        fleet_row(YOGA, "SHARED-YOGA", "host_addresses", T0 - 30, "snapshot", snapshot=[{"address": "192.168.50.20"}]),
+        fleet_row(LEGION, "LEGION", "host_addresses", T0 - 30, "snapshot", snapshot=[{"address": "192.168.50.25"}]),
+        fleet_row(YOGA, "SHARED-YOGA", "outbound_connections", T0 - 60, "added", columns=conn),
+        fleet_row(LEGION, "LEGION", "outbound_connections", T0 - 60, "added", columns=other),
+    ]) + "\n")
+    return log
+
+
+def test_a_case_on_an_enrolled_computer_names_that_computers_program(tmp_path):
+    from tapwatch.hostctx import FleetContexts
+    fc = FleetContexts(fleet_log(tmp_path), clock=lambda: T0)
+    yoga = fc.find("192.168.50.20", T0, "shared-yoga")
+    assert yoga is not None and yoga.agent == YOGA and yoga.hostname == "shared-yoga"
+    assert fc.find("192.168.50.20", T0, "someone-else") is None        # the address is another device's now
+    assert fc.find("192.168.50.99", T0) is None                         # not enrolled
+    c = case(host="192.168.50.20")
+    conn = dict(out_conn(T0), **{"id.orig_h": "192.168.50.20"})
+    facts = yoga.collect(c, [conn], [], now=T0 + 30)
+    assert facts["host_programs"] == ["sync.exe"] and facts["host_matched"] == 1   # never the Legion's updater.exe
+    assert not facts["host_agent_session"]                                         # no transcripts on other computers
+    legion = fc.find("192.168.50.25", T0)
+    assert legion.collect(case(host="192.168.50.25"), [dict(conn, **{"id.orig_h": "192.168.50.25"})], [],
+                          now=T0 + 30)["host_programs"] == ["updater.exe"]
+
+
+def test_the_pipeline_tags_fleet_context_and_the_summary_names_the_computer(tmp_path, monkeypatch):
+    from tapwatch import evidence
+    from tapwatch.hostctx import FleetContexts
+    from tapwatch.pipeline import Pipeline
+    from tapwatch.store import Store
+    fc = FleetContexts(fleet_log(tmp_path), clock=lambda: T0)
+    conn = dict(out_conn(T0), **{"id.orig_h": "192.168.50.20"})
+    monkeypatch.setattr(evidence, "lookup", lambda dirs, host, ts, window=180: {
+        "conn": {"rows": [conn]}, "dns": {"rows": []}, "ssl": {"rows": []}})
+    p = Pipeline([], Assets(), Store(str(tmp_path / "t.db")), zeek_dirs=["logs"], fleet_hostctx=fc)
+    c = case(host="192.168.50.20", facts={"channel": "callback", "via": "DNS", "device_name": "SHARED-YOGA"})
+    p.add_host_context(c)
+    assert (c.facts["host_source"], c.facts["host_computer"], c.facts["host_programs"]) == \
+        ("fleet", "shared-yoga", ["sync.exe"])
+    text = summarize(c, Assets())
+    assert 'On that computer ("shared-yoga", from its endpoint agent\'s log)' in text and '"sync.exe"' in text
+    assert "coding-agent" not in text and "the PC itself" not in text
