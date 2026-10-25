@@ -100,7 +100,8 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
   systemd services, Omarchy), `tapwatch update` moves to the newest release, runs the self-check and
   doctor, and goes back to the old version if anything fails; the daily digest says when there's a
   newer one. Docker: `git pull`, then `docker compose -f deploy/docker-compose.yml up -d --build`.
-  `deploy/export-state.sh` and `tapwatch import-state` move a sensor to a new computer with its cases, notes and learned baselines.
+  `deploy/export-state.sh` and `tapwatch import-state` move a sensor to a new computer with its cases,
+  notes and learned baselines.
 - **A case desk with no JavaScript.** It's a queue, a case page with ±5 minutes of Zeek evidence,
   workflow, notes, an audit trail, expiring "suppress similar" rules and stats, including a
   week-by-week benchmark: noise rate, how often the model agreed with your dispositions, and how
