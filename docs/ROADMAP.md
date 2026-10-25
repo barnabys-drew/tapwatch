@@ -8,7 +8,7 @@ flowchart LR
     A["<b>v0.1</b> · shipped 2026-10-13<br/>network detection, guardrailed AI triage,<br/>case desk, Linux + Windows install"]
     B["<b>v0.2</b> · shipped 2026-10-20<br/>prove it outside one house:<br/>long-running test, clean installs"]
     B2["<b>v0.2.5</b> · done 2026-10-20<br/>easy install: one-step Windows<br/>installer, tapwatch doctor"]
-    C["<b>v0.3</b> · built, closing<br/>endpoint rules: living off the land,<br/>per OS, then installed software"]
+    C["<b>v0.3</b> · shipped 2026-10-25<br/>endpoint rules: living off the land,<br/>per OS, then installed software"]
     D["<b>Later</b><br/>Fleet, richer TLS and domain intel,<br/>packages and images"]
     E["<b>v0.4</b><br/>learning from history: 30-day behavior,<br/>a judge that does tier-1 triage"]
     F["<b>v0.5</b><br/>home XDR: email, DNS, identity<br/>and endpoint signals, one-tap response"]
@@ -16,12 +16,13 @@ flowchart LR
     style A fill:#2e7d32,color:#fff
     style B fill:#2e7d32,color:#fff
     style B2 fill:#2e7d32,color:#fff
-    style C fill:#f9a825,color:#000
+    style C fill:#2e7d32,color:#fff
 ```
 
 ## Where we are
 
-**[v0.2.0](https://github.com/barnabys-drew/tapwatch/releases/tag/v0.2.0)** is the current release (2026-10-20);
+**[v0.3.0](https://github.com/barnabys-drew/tapwatch/releases/tag/v0.3.0)** is the current release (2026-10-25), the first made by
+the release workflow and the first an install can move to with `tapwatch update`;
 tapwatch has been running on a real home network since v0.1.0 shipped. It watches a mirror port with Zeek, runs
 22 network and 17 host case types from plain-code detectors, and asks a small AI model (Jev) for triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
 the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -33,7 +34,7 @@ the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.
 | Linux install | **Solid.** `docker compose up`, verified end to end on a live interface. Zeek runs from a patched 9.0 LTS image as the user, not root ([#252](https://github.com/barnabys-drew/tapwatch/pull/252)). A native host install for Arch-based desktops (Omarchy, [#267](https://github.com/barnabys-drew/tapwatch/pull/267)) is on hold: the live sensor runs on Windows |
 | Windows install | **Passed on a clean machine.** The one-step installer went from the ZIP to a test alert on a fresh Windows 11 VM (v0.2.5, [#175](https://github.com/barnabys-drew/tapwatch/issues/175)), and `tapwatch doctor` names what's wrong. On 2026-10-24 it moved a running sensor to a new mini PC, cases and baselines included (`import-state`, [#272](https://github.com/barnabys-drew/tapwatch/pull/272)). The first outside install is next |
 | Host context (who on the PC made this traffic) | **A week of real data reviewed** (v0.2, [#4](https://github.com/barnabys-drew/tapwatch/issues/4)): a program named for 106 of 136 PC cases, consistent with the owner's review. The intent verdicts never fired on real traffic and stay unmeasured, so host context still does not lower alerts on its own |
-| Endpoint rules | **Built** on Windows (osquery + Sysmon) and Linux (osquery eBPF): R17–R29 and R36–R39, plus R48 known-exploited software. A host case and a network case on the same PC pair only when the host rule names that network rule (`hostrules.PAIRS`). v0.3 closes after R39's first week |
+| Endpoint rules | **Built** on Windows (osquery + Sysmon) and Linux (osquery eBPF): R17–R29 and R36–R39, plus R48 known-exploited software. A host case and a network case on the same PC pair only when the host rule names that network rule (`hostrules.PAIRS`). v0.3 shipped 2026-10-25: R39's 4s alert after a quiet measured week |
 | Router syslog | **Verified on a live gateway** (2026-10-16). CEF events and firewall lines parsed as sent; admin logins checked against a real line, and an outside login names its network and country. IPS verdicts still await a real detection |
 | macOS | **Later.** Waiting on a tester with a Mac; it won't ship untested |
 
@@ -197,7 +198,7 @@ agent's log locked down.
 open for R39: it ships at digest until a week of file-event volume is measured (from 2026-10-20, so around
 2026-10-27), and then its severity-4 cases alert.
 
-**Closing v0.3 (around 2026-10-27).** Four things, in order:
+**Shipped 2026-10-25 as [v0.3.0](https://github.com/barnabys-drew/tapwatch/releases/tag/v0.3.0).** It closed in four steps:
 1. **Fix the duplicate `host_encoded_cmd` alerts after a restart**
    ([#303](https://github.com/barnabys-drew/tapwatch/issues/303)). The same agent-log events were re-alerted under
    the PC's other addresses. This comes first so v0.4's judge doesn't learn to close a bug's output.
@@ -220,9 +221,9 @@ open for R39: it ships at digest until a week of file-event volume is measured (
 | [#27](https://github.com/barnabys-drew/tapwatch/issues/27) | Windows living-off-the-land rules (osquery + Sysmon) | **built** 2026-10-16 ([#87](https://github.com/barnabys-drew/tapwatch/pull/87)): R17–R21, 0 cases on 34.5 h of the main PC's agent log. Pass 2 started 2026-10-17 with R23, new persistence entries (tasks, services, startup items, cron, launchd), measured on 40 h: 6 digest items, 0 alerts. R24 the same day: backups, logs, Defender or accounts changed, 0 such starts in 40 h. 2026-10-18: R25 discovery bursts, R26 browser extensions, WMI subscriptions in R23. **Done** 2026-10-18 with R29, lsass memory reads ([#166](https://github.com/barnabys-drew/tapwatch/pull/166)), baseline measured |
 | [#28](https://github.com/barnabys-drew/tapwatch/issues/28) | Linux living-off-the-land rules (osquery) | **done** 2026-10-18 ([#148](https://github.com/barnabys-drew/tapwatch/pull/148), [#155](https://github.com/barnabys-drew/tapwatch/pull/155), [#169](https://github.com/barnabys-drew/tapwatch/pull/169)): R27, R28, and R23 on Linux (SSH keys, systemd units, SUID programs, kernel modules, ld.so.preload, privileged containers, bind shells); baselines measured 2026-10-19 |
 | [#39](https://github.com/barnabys-drew/tapwatch/issues/39) | Then: living off the land through installed software (RMM, tunnels, sync tools) | **built** 2026-10-20: R36 remote-access tools (#230, [#235](https://github.com/barnabys-drew/tapwatch/pull/235)), R37 tunnels (#231) and R38 staging (#232, [#236](https://github.com/barnabys-drew/tapwatch/pull/236)); safe tests passed live ([#240](https://github.com/barnabys-drew/tapwatch/pull/240)). Drivers, DLL hijacks and the rest moved to #233 under Later |
-| [#303](https://github.com/barnabys-drew/tapwatch/issues/303) | Duplicate `host_encoded_cmd` cases after an alerter restart | open: v0.3 close, step 1 |
-| [#304](https://github.com/barnabys-drew/tapwatch/issues/304) | Releases and `tapwatch update`: tagged versions, one-command update with rollback, a digest notice | open: v0.3 close, step 3 |
-| [#167](https://github.com/barnabys-drew/tapwatch/issues/167) | R39: file-change monitoring for persistence and credential paths (osquery file_events, Sysmon event 11) | **built** 2026-10-20 ([#238](https://github.com/barnabys-drew/tapwatch/pull/238)), safe test passed live; digest-only until a week's file-event volume is measured |
+| [#303](https://github.com/barnabys-drew/tapwatch/issues/303) | Duplicate `host_encoded_cmd` cases after an alerter restart | **done** 2026-10-25 ([#308](https://github.com/barnabys-drew/tapwatch/pull/308)): host rules remember the event rows that raised a case (persisted, 3 days, capped), so the same event delivered again raises nothing, whatever the PC's address is by then |
+| [#304](https://github.com/barnabys-drew/tapwatch/issues/304) | Releases and `tapwatch update`: tagged versions, one-command update with rollback, a digest notice | **done** 2026-10-25 ([#312](https://github.com/barnabys-drew/tapwatch/pull/312)): a tag makes the release; `tapwatch update` judges the new version against doctor's own before-state, waits out systemd's restart cycle, and rolls back on any failure or Ctrl-C; the digest notices a release the checkout doesn't contain |
+| [#167](https://github.com/barnabys-drew/tapwatch/issues/167) | R39: file-change monitoring for persistence and credential paths (osquery file_events, Sysmon event 11) | **done** 2026-10-25 ([#238](https://github.com/barnabys-drew/tapwatch/pull/238), [#310](https://github.com/barnabys-drew/tapwatch/pull/310)): a week measured on the dev PC gave one case (the safe test) and no Startup-folder writes beside ~8,000 process starts a day, so its 4s alert |
 
 ## Later ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/2))
 
