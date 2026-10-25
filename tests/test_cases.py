@@ -221,6 +221,54 @@ def test_suppression_scopes_match_what_they_say():
     assert store.match_suppression(Case("odd_port", "192.168.50.99", T0, "t", {}, ["itv.co.uk"])) is None
 
 
+def test_a_rule_made_before_the_devices_name_was_learned_still_follows_it():
+    # A rule made while the device was mac:<address> keeps matching once its DHCP name makes it name:<hostname>,
+    # on any address: the same MAC is the same hardware. Another device's MAC with that name does not match.
+    store = Store(":memory:")
+    mac = "02:00:00:00:00:21"
+    cid, _ = make_case(store, detector="new_domain", host="192.168.50.21", indicators=["cdn.example.com"],
+                       facts={"device_mac": mac})
+    store.add_suppression(cid, "device_indicator", "its CDN", "t")
+    assert store.suppressions()[0]["host"] == f"mac:{mac}"
+    named = Case("new_domain", "192.168.50.31", T0, "t", {"device_mac": mac, "device_name": "Study-Laptop"},
+                 ["cdn.example.com"])
+    assert store.match_suppression(named).startswith("#1 new_domain")
+    other = Case("new_domain", "192.168.50.21", T0, "t", {"device_mac": "02:00:00:00:00:22",
+                                                          "device_name": "Study-Laptop"}, ["cdn.example.com"])
+    assert store.match_suppression(other) is None
+    # the MAC is a dock or an adapter another computer uses as well: the Identity saw it announce another name
+    assert store.match_suppression(named, mac_names=["study-laptop", "work-laptop"]) is None
+    assert store.match_suppression(named, mac_names=["study-laptop"]).startswith("#1")
+
+
+def test_a_mac_rule_never_follows_the_mac_to_a_differently_named_computer():
+    # Review of #326: laptop A on a dock (MAC M) got a rule under mac:M before its name was learned; then laptop B
+    # docks on M and announces its own name. A's rule must not close B's cases, nor A's once M has carried two names.
+    store = Store(":memory:")
+    mac = "02:00:00:00:00:23"
+    cid, _ = make_case(store, detector="new_domain", host="192.168.50.23", indicators=["cdn.example.com"],
+                       facts={"device_mac": mac})
+    store.add_suppression(cid, "device_indicator", "laptop A's CDN", "t")
+
+    def on_dock(name):
+        return Case("new_domain", "192.168.50.23", T0, "t", {"device_mac": mac, "device_name": name}, ["cdn.example.com"])
+
+    from tapwatch.detectors import Identity
+    ident = Identity()
+    for name in ("Work-Laptop", "Desk-PC", "DESK-PC"):
+        ident.feed({"_type": "dhcp", "ts": T0, "mac": mac, "host_name": name})
+    assert ident.names_of(mac) == ["desk-pc", "work-laptop"]                  # what the pipeline passes
+    again = Identity()
+    again.restore(ident.snapshot())
+    assert again.names_of(mac) == ["desk-pc", "work-laptop"]                  # kept across a restart
+    assert store.match_suppression(on_dock("Desk-PC"), mac_names=ident.names_of(mac)) is None
+    make_case(store, detector="odd_port", host="192.168.50.23", indicators=["x.example.org"],
+              facts={"device_mac": mac, "device_name": "Work-Laptop"})     # B's case on the dock, under its name
+    assert store.match_suppression(on_dock("Desk-PC")) is None              # a stored case tied M to another name
+    assert store.match_suppression(on_dock("Desk-PC"), mac_names=["desk-pc"]) is None
+    assert [s["hits"] for s in store.suppressions()] == [0]
+
+
 def test_suppress_form_names_the_device_identity_the_rule_will_follow():
     # The rule is keyed on models.device_id (DHCP hostname, then MAC, then IP), so the label shows that
     # identity next to the address when they differ, and only the address when the IP is the identity.

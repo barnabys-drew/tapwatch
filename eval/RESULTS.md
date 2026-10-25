@@ -113,6 +113,28 @@ day, 3% of that day's bytes, the kind of total R31 sums. So each day is built tw
 open time (`conn.<open>.<close>.<close>.<close>.<close>.log`); `zeek.ROTATED` did not match them, so replay, the
 evidence lookup and `prune` all skipped two thirds of those days. It reads the first stamp now.
 
+## Long-horizon rules R30, R31 on 11 days of home summaries (2026-10-25)
+
+`tapwatch summarize --from 2026-10-13 --to 2026-10-24` over the same home logs into a scratch database (10-13 was
+skipped as the sensor's first, partial day), then `tapwatch longhaul --stats`, which stores nothing. Eleven days is
+under the 14-day maturity, so the runs lower it with `--mature-days`. Nothing live was read or written: the scratch
+database has no saved Beaconing state, so R30's "already reported by beaconing" skip never applied here.
+
+| | Measured |
+|---|---|
+| Summarized days | 11, all watched (12+ local hours with traffic; the last day 13 hours, the rest 21–24) |
+| Device keys | 31; 27 mature at `--mature-days 5`, 26 at 10 |
+| Evaluation time | 0.25 s for both rules over 25,600 destination rows; 2.1 s more to load the popular list and the ASN table |
+| R30 `slow_beacon`, timing test passed | 20 (device, destination) pairs on 9 devices, all steady (CV ≤ 0.2), none on the daily-at-the-same-time branch; median gaps 2–6 h: 5, 6–23 h: 5, 23–25 h: 5, over 25 h: 5 |
+| R30 cases | **1** (same at maturity 5 and 10): the other 19 are popular destinations. The one left is an app's vendor check-in every 3 h, an expected false-positive class (vendor domain not on the popular list). Routed digest, unbacked |
+| R31 `slow_upload`, as specified | **0** cases: 5 (device, destination) pairs pass the volume, steadiness and ratio tests, and all 5 are skipped because there are no days before a 14-day window to call a destination new. With that test switched off (`baseline_days: 0`), all 5 are popular destinations other devices also use |
+| R31, scaled to the data | 7-day window, 4 days before it, ≥ 50 MB on ≥ 4 days: **1** case, one device's steady upload (about 240 MB in a week, 8× its download) to its vendor's cloud, popular but used by that device alone, digest; 6 more were skipped as already uploaded to before the window |
+
+On this data both rules land inside their targets (#194: ≤ 3 digest items a week; #195: ≤ 2), and both cases found
+are benign, of the classes the issues expected. It is not yet the issues' measure: that is 30 home days with each
+case dispositioned, and R31's "new destination" test cannot be judged until the sensor has three weeks of
+summaries. Re-run `tapwatch longhaul --stats` on the live sensor once it has 30 days.
+
 ## Re-run 2026-10-15, after the noise review
 
 Same captures, same home night, same model, after the day's detector changes (per-VLAN DHCP learning,

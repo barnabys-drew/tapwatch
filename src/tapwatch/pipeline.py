@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from . import detectors as det
 from . import evidence, hostrules, inventory, judge, vulnkev, zeek
 from .hostctx import HostContext
-from .models import Case, Route, Verdict
+from .models import Case, Route, Verdict, device_id
 from .notifiers import HerdrNotifier, Notifier
 from .router import RANK, Thresholds, critical, route, wants_ai
 from .store import Store
@@ -117,8 +117,7 @@ class Pipeline:
     def handle(self, case: Case) -> tuple[int, Case, Verdict | None, Route] | None:
         if self.store.recent(case, self.dedupe_seconds) is not None:
             return None  # same thing already reported recently: count it, don't re-ask or re-alert
-        if self.identity is not None:
-            case.facts.update(self.identity.facts_for(case.host))  # device_mac, device_name
+        self.identify(case)
         self.add_host_context(case)
         self.name_partner(case)
         self.device_kev.apply(case)   # #227: an open R48 case on the device raises this one
@@ -129,7 +128,9 @@ class Pipeline:
                 case.facts["host_jev_who"], case.facts["host_jev_conf"] = self.client.who(state)
             except TriageError as e:
                 log.warning("AI 'who' question failed: %s", e)
-        suppression = self.store.match_suppression(case)  # always None for must_alert cases
+        mac = case.facts.get("device_mac")
+        suppression = self.store.match_suppression(   # always None for must_alert cases
+            case, mac_names=self.identity.names_of(mac) if self.identity is not None and mac else ())
         verdict = None
         if self.client and wants_ai(case) and not suppression:  # skip always-alert, code-routed and suppressed
             try:
@@ -171,6 +172,25 @@ class Pipeline:
             except RuntimeError as e:
                 log.error("could not deliver alert #%s: %s", case_id, e)
         return case_id, case, verdict, r
+
+    def identify(self, case: Case) -> None:
+        """Stamp the case with its device's identity facts (device_mac, device_name, which models.device_id keys on).
+
+        A host case names the PC by the address its agent picked, which Zeek may never have seen with a MAC: a
+        second adapter, or a Hyper-V switch. The agent lists the PC's other addresses too (Case.aliases), so one of
+        those names the device instead, but only when every alias Zeek knows names the same one: two that disagree
+        (a dock another computer uses as well) leave the case on its address, a split rather than a wrong merge."""
+        if self.identity is None:
+            return
+        facts = self.identity.facts_for(case.host)
+        if not facts and case.aliases:
+            found = {}
+            for a in case.aliases:
+                if f := self.identity.facts_for(a):
+                    found.setdefault(device_id(a, f), f)
+            if len(found) == 1:
+                facts = next(iter(found.values()))
+        case.facts.update(facts)
 
     def name_partner(self, case: Case) -> None:
         """R16 found the likely other end of a remote-control session on another house device: name it from
@@ -282,11 +302,11 @@ class Pipeline:
 
     def add_host_context(self, case: Case) -> None:
         """For a case on the tapwatch PC: which program, and was it the owner's coding agent (hostctx.py)."""
-        if case.facts.get("source") in ("endpoint", "monitor"):
+        if case.facts.get("source") in ("endpoint", "monitor", "history"):
             # a host rule's case already says what ran, and a monitor case (R22) is about tapwatch itself: the
             # PC's programs around it would only confuse it. Measured 2026-10-17, case #427: the first live
             # feed_silence alert was attributed to every connection on the PC in the window, judged likely
-            # benign and capped at digest.
+            # benign and capped at digest. A long-horizon case (longhaul.py) is about weeks, not this minute.
             return
         if not (self.hostctx and self.zeek_dirs
                 and self.hostctx.is_this_pc(case.host, case.ts, case.facts.get("device_name"))):

@@ -592,6 +592,35 @@ def test_pipeline_stamps_cases_with_the_device_identity_and_alerts_use_it(fake_j
     assert "device_name" in json.loads(p.store.get(cid)["facts"])
 
 
+def test_a_host_case_on_an_address_zeek_never_saw_takes_the_identity_of_the_pcs_other_address():
+    # The agent names the PC by one address; Zeek may only know another of its addresses (a second adapter, a
+    # virtual switch). One alias that names a device: the case is that device. Two aliases naming two devices: no
+    # guess, the case stays on its address.
+    from tapwatch.detectors import Identity
+    from tapwatch.models import device_id
+
+    pc_mac, other_mac = "02:00:00:00:00:31", "02:00:00:00:00:32"
+
+    def pipeline():
+        p = Pipeline([Identity()], Assets(), Store(":memory:"))
+        p.process(dict(dhcp(T0, mac=pc_mac), host_name="Study-PC", assigned_addr="192.168.50.31"))
+        p.process(dict(dhcp(T0, mac=other_mac), host_name="Other-PC", assigned_addr="192.168.50.32"))
+        return p
+
+    def host_case(*aliases):
+        return Case("host_lolbin", "172.28.0.1", T0 + 60, "t", {"source": "endpoint"}, ["certutil.exe"],
+                    aliases=aliases)
+
+    p = pipeline()
+    _, c, _, _ = p.handle(host_case("172.28.5.2", "192.168.50.31"))
+    assert device_id(c.host, c.facts) == "name:study-pc"
+    assert device_id(c.host, json.loads(p.store.get(1)["facts"])) == "name:study-pc"    # what the judge reads
+    _, c, _, _ = pipeline().handle(host_case("192.168.50.31", "192.168.50.32"))
+    assert device_id(c.host, c.facts) == "172.28.0.1"
+    _, c, _, _ = pipeline().handle(host_case())
+    assert "device_mac" not in c.facts
+
+
 # ------------------------------------------------------------------ R16 session partner
 
 def _session_pipeline(table):

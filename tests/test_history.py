@@ -264,3 +264,74 @@ def test_the_oldest_day_left_is_skipped_once_its_morning_is_pruned(tmp_path):
 def test_an_hour_before_the_day_is_finished_is_moved_to_when_it_is():
     clock = history.NightlyClock(1, history.zone(CFG))
     assert clock.hour == history.LATE // 3600
+
+
+TABLET, DOCK = "02:00:00:00:00:41", "02:00:00:00:00:42"
+
+
+def two_name_logs(tmp_path, *tablet_named_at):
+    """The tablet's named leases at `tablet_named_at` only; a dock two computers share announces both their names."""
+    write_logs(tmp_path, conn=sorted([with_mac(conn(START + 600, src="192.168.50.41"), TABLET),
+                                      with_mac(conn(START + 700, src="192.168.50.42"), DOCK),
+                                      with_mac(conn(START + 2 * 86400 + 600, src="192.168.50.41"), TABLET)],
+                                     key=lambda r: r["ts"]),
+               dhcp=sorted([*({**dhcp(t, mac=TABLET), "host_name": "Den-Tablet"} for t in tablet_named_at),
+                            {**dhcp(START + 3600, mac=DOCK), "host_name": "Desk-PC"},
+                            {**dhcp(START + 7200, mac=DOCK), "host_name": "Work-Laptop"}], key=lambda r: r["ts"]))
+
+
+def devices(store, day=DAY):
+    return {r[0] for r in store.db.execute("SELECT device FROM device_day WHERE day=?", (day.isoformat(),))}
+
+
+def test_a_mac_takes_the_one_name_it_announced_around_the_day_but_a_shared_dock_does_not(tmp_path):
+    """Measured on 12 home days from an empty Identity: devices sat under mac:<address> until their first named lease,
+    two histories for one device. A dock that announced two names stays its MAC: which computer it was is unknown.
+    One day of one name outside the day is not enough (that dock's first day showed only one computer's lease)."""
+    two_name_logs(tmp_path, END + 3600, END + 26 * 3600)      # named on the next two days, before the second build
+    store = Store(str(tmp_path / "t.db"))
+    history.summarize(store, CFG, [tmp_path], [DAY])
+    assert devices(store) == {"name:den-tablet", f"mac:{DOCK}"}
+    (tmp_path / "once").mkdir()
+    two_name_logs(tmp_path / "once", END + 5 * 3600)          # after the day's own window, on one day
+    store = Store(str(tmp_path / "once" / "t.db"))
+    history.summarize(store, CFG, [tmp_path / "once"], [DAY])
+    assert devices(store) == {f"mac:{TABLET}", f"mac:{DOCK}"}
+
+
+def test_once_a_mac_announces_its_name_its_earlier_days_move_to_it(tmp_path):
+    two_name_logs(tmp_path, END + 1.5 * 86400, END + 2.5 * 86400)    # named on the third and fourth days only
+    store = Store(str(tmp_path / "t.db"))
+    history.summarize(store, CFG, [tmp_path], [DAY])
+    assert devices(store) == {f"mac:{TABLET}", f"mac:{DOCK}"}
+    with store.db:   # an earlier day that has a row under the name already
+        store.db.execute("INSERT INTO device_day VALUES ('name:den-tablet', '2026-09-20', 1, 1, 1, 1, '{}', '{}')")
+        store.db.execute("INSERT INTO device_day VALUES (?, '2026-09-20', 2, 2, 2, 2, '{}', '{}')", (f"mac:{TABLET}",))
+    later = date(2026, 9, 23)
+    history.summarize(store, CFG, [tmp_path], [later])
+    assert devices(store, later) == {"name:den-tablet"}
+    assert devices(store) == {"name:den-tablet", f"mac:{DOCK}"}           # one history from the first day
+    assert [r[0] for r in store.db.execute("SELECT DISTINCT device FROM device_day_dest WHERE day=? AND device != ?",
+                                           (DAY.isoformat(), f"mac:{DOCK}"))] == ["name:den-tablet"]
+    # that day keeps both rows (`summarize --day` merges them), rather than one overwriting the other
+    assert devices(store, date(2026, 9, 20)) == {"name:den-tablet", f"mac:{TABLET}"}
+
+
+def test_an_older_run_of_mac_days_another_computer_made_is_never_renamed(tmp_path):
+    """Review of #326: weeks of a dock's mac:<address> days from one computer, then another computer docks and
+    announces its name. Only the days next to its first named leases move; the older run keeps the MAC."""
+    two_name_logs(tmp_path, END + 1.5 * 86400, END + 2.5 * 86400)    # the tablet named on 9-23 and 9-24 only
+    store = Store(str(tmp_path / "t.db"))
+    old = [date(2026, 8, 1), date(2026, 9, 5), date(2026, 9, 18)]    # past the lookback; inside it but weeks off; 5 days
+    with store.db:
+        for d in old:
+            store.db.execute("INSERT INTO device_day VALUES (?, ?, 1, 1, 1, 1, '{}', '{}')", (f"mac:{TABLET}", d.isoformat()))
+            store.db.execute("INSERT INTO device_day_dest VALUES (?, ?, 'example.com', 443, NULL, NULL, 1, 1, 1, '[]')",
+                             (f"mac:{TABLET}", d.isoformat()))
+    history.summarize(store, {**CFG, "summaries": {"retention_days": 0}}, [tmp_path], [DAY, date(2026, 9, 23)])
+    assert devices(store) == {"name:den-tablet", f"mac:{DOCK}"}           # two days before the first named lease
+    for d in old:
+        assert devices(store, d) == {f"mac:{TABLET}"}
+        assert store.db.execute("SELECT device FROM device_day_dest WHERE day=?", (d.isoformat(),)).fetchone()[0] \
+            == f"mac:{TABLET}"
+    assert history.rekey(store.db, {TABLET: "Den-Tablet"}, date(2026, 9, 23), {}) == 0   # no announced days: no move

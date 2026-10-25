@@ -882,7 +882,59 @@ def render_stats(store: Store) -> tuple[str, str]:
                      f"<h2>False-positive rate per detector</h2>{fp_html}"
                      f"<h2>Jev confidence vs disposition</h2>{conf_html}"
                      f"<h2>Host context: code, Jev and you</h2>{host_html}"
+                     f"<h2>Judge scorecard (shadow)</h2>{_judge_scorecard(db)}"
                      f"<h2>Suppression hits</h2>{sup_html}")
+
+
+def _judge_scorecard(db) -> str:
+    """#203: the shadow judge graded against the owner, per detector and week at each key width (benchmark.judge;
+    `tapwatch benchmark` prints the same). A true positive it would have closed is red: it disqualifies."""
+    s = benchmark.judge(db)
+    if not s["detectors"]:
+        return ('<div class="card empty">No judge decisions yet. The shadow judge records one for every new case; '
+                '<span class="mono">tapwatch benchmark --judge-replay</span> estimates the numbers from history.</div>')
+    words = benchmark.WIDTH_WORDS
+
+    def agree(t) -> str:
+        if not t["decided"]:
+            return '<td class="faint">–</td>'
+        return (f'<td><span class="meter">{hbar(t["agreement"], "green")} <span class="tnum">{_pct(t["agreement"])}'
+                f'</span> <span class="faint">of {t["decided"]}</span></span></td>')
+
+    def cells(t) -> str:
+        tp = (f'<b class="err">{t["tp_closed"]}</b> ' + " ".join(f'<a href="/case/{int(i)}">#{int(i)}</a>'
+                                                                 for i in t["tp_ids"][:5])) if t["tp_closed"] else "0"
+        return (f'<td class="num">{t["cases"]}</td><td class="num">{t["would_close"]}</td>{agree(t)}'
+                f'<td class="num tnum">{_pct(t["saved"])} <span class="faint">of {t["cases"]}</span></td>'
+                f'<td class="num">{tp}</td>')
+
+    def tr(t) -> str:   # the red edge alert rows carry, on any row with a true positive it would have closed
+        return '<tr class="r-alert">' if t["tp_closed"] else "<tr>"
+
+    head = ('<th class="num">cases</th><th class="num">would close</th><th>you agreed</th><th class="num">load saved</th>'
+            '<th class="num">true positives it would have closed</th>')
+    det_rows = "".join(
+        f'{tr(d)}<td class="mono">{e(d["detector"])}</td>'
+        f'<td>{e(words.get(d["width"], d["width"]))}</td>{cells(d)}<td class="num">{d["weeks"]}</td>'
+        f'<td>{badge("closed", "qualifies") if d["qualifies"] else e("no: " + d["why"])}</td></tr>'
+        for d in s["detectors"])
+    weeks = [w for w in s["weeks"] if w["detector"] is None]
+    keep = sorted({w["week"] for w in weeks})[-12:]
+    week_rows = "".join(
+        f'{tr(w)}<td class="mono">{e(w["week"])}</td>'
+        f'<td>{e(words.get(w["width"], w["width"]))}</td>{cells(w)}</tr>'
+        for w in sorted(weeks, key=lambda w: (w["week"], s["widths"].index(w["width"]))) if w["week"] in keep)
+    return (f'<div class="card flush scroll"><table><thead><tr><th>detector</th><th>width</th>{head}'
+            f'<th class="num">weeks</th><th>auto-close?</th></tr></thead><tbody>{det_rows}</tbody></table>'
+            f'<p class="pad faint">What the judge would have closed as noise, never acted on. "You agreed": of the '
+            f'would-close cases you decided yourself (not an AI or tapwatch), the share you also called noise. Load '
+            f'saved is would-close over all cases it judged. Qualifying for auto-close (provisional until #204): at '
+            f'least {benchmark.QUALIFY_MIN_DECIDED} would-close cases you decided, in at least '
+            f'{benchmark.QUALIFY_MIN_WEEKS} weeks, {benchmark.QUALIFY_MIN_AGREEMENT:.0%} agreement and no true '
+            f'positive it would have closed.</p></div>'
+            f'<div class="card flush scroll"><table><thead><tr><th>week</th><th>width</th>{head}</tr></thead>'
+            f'<tbody>{week_rows}</tbody></table><p class="pad faint">All detectors together, by the week each case '
+            f'happened. <span class="mono">tapwatch benchmark</span> has every week per detector.</p></div>')
 
 
 # ---------------------------------------------------------------- server

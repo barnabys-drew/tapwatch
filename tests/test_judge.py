@@ -217,3 +217,14 @@ def test_case_page_shows_the_shadow_answer_with_precedent_links():
     assert "Judge (shadow)" in body and "would close as noise" in body and "nothing is closed" in body
     first = json.loads(s.judge_decision(cid)["precedent_ids"])[0]
     assert f'<a href="/case/{first}">#{first}</a>' in body
+
+
+def test_a_sensor_health_true_positive_does_not_keep_the_judge_off_the_device():
+    s = Store(":memory:")
+    history(s, [20, 12, 4])
+    close(s, add(s, detector="feed_silence", indicators=("conn",), ts=NOW - DAY), disposition="true_positive")
+    ok, reason, _ = judge.eligible(s.db, row(s, add(s)), before=NOW + 60)
+    assert ok, reason
+    # it still blocks its own key
+    ok, reason, _ = judge.eligible(s.db, row(s, add(s, detector="feed_silence", indicators=("conn",))), before=NOW + 60)
+    assert not ok and "true positive before" in reason

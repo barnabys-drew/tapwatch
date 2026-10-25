@@ -176,6 +176,7 @@ treat it as a sanity check, not a benchmark. The scripted self-check (`tapwatch 
 | `udm_ips`, `udm_admin` | the router's own IPS verdicts, and admin logins (new source or repeated failures **always alert**; a login from outside names its network and country), from its syslog; the feed is parsed against lines a real UniFi gateway sends |
 | `feed_silence` | a feed it depends on (Zeek's logs, the router's syslog, an endpoint agent's frequent queries) stops for longer than its measured longest-allowed silence |
 | `host_encoded_cmd`, `host_app_shell`, `host_temp_exec`, `host_lolbin`, `host_bad_sig`, `host_persist`, `host_destructive`, `host_recon`, `host_extension`, `host_linux_connect`, `host_linux_cmd`, `host_lsass`, `host_rmm`, `host_tunnel`, `host_staging`, `host_fim` | on a PC with the [osquery agent](agents/README.md) (the tapwatch PC, or one enrolled in [Fleet](docs/setup/fleet.md)): an encoded or download-and-run command, a document app or browser starting a shell, a program in a temp folder, a built-in Windows tool, or a badly signed program connecting out, or a new task, service, startup item, cron job or WMI subscription that runs a script or a shell, a command that removes backups or logs, turns off Defender or adds an account, a burst of discovery commands, a program reading lsass memory, a new browser extension with sensitive access, and on Linux a temp-folder, in-memory or shell connection, a download-and-run, reverse-shell or history-clearing command, and new SSH keys or systemd units; a remote-access tool starting (renamed ones too, by their original file name), a tunnel being opened, files staged or sent somewhere new, and a persistence or privilege file changing (`ld.so.preload`, sudoers, shell start-up files, a file dropped in a Windows Startup folder) (download-and-run command combinations and the four downloader tools, certutil, bitsadmin, mshta and regsvr32, **always alert**) |
+| `slow_beacon`, `slow_upload` | over weeks of each device's daily summaries, once a device has 14 watched days: one outside host contacted at a steady interval of 2 to 72 hours for days (a slow C2 heartbeat), and 100+ MB uploaded to a destination new to the device, a little on most days over two weeks (digest; an alert when another case on the device backs it up within 7 days) |
 | `vuln_kev` | installed software with a known-exploited vulnerability, from the agents' daily software inventory checked against the downloaded CISA KEV, OSV and NVD data (digest; while it's open, the device's other digest-level cases move up a severity level) |
 | `ioc_match`, `ids_alert` | your threat lists (**always alert**), the downloaded AdFection / Candiru spyware list (its C&C, validation and Candiru tiers **always alert**; its ad-delivery and older-campaign tiers are graded leads), and Suricata alerts if you run it |
 
@@ -242,6 +243,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch ui` | the case desk at http://127.0.0.1:8765/ (set `TAPWATCH_UI_TOKEN` for other devices) |
 | `tapwatch digest` | send the pending digest now (it also goes out daily) |
 | `tapwatch summarize --zeek-dir DIR` | per-device daily summaries from the rotated logs (`run` builds each night's; `--backfill` the last 30 days, `--day`/`--from`/`--to` rebuild days) |
+| `tapwatch longhaul [--mature-days N] [--stats]` | the long-horizon rules (R30, R31) over the summaries as they stand: what they would raise now and how it would route, storing nothing (`run` raises them each night) |
 | `tapwatch mark 42 fp` | close case 42 as a false (`fp`) or true (`tp`) positive |
 | `tapwatch update` | move to the newest release (`--check` only looks): shows what changed, installs, runs the self-check, restarts what the change needs and runs doctor, and goes back to the old version if any of it fails. The daily digest says when there's a newer release. Windows: double-click `update-windows.cmd` |
 | `tapwatch update-feeds` | refresh the public lists: Tranco, IEEE MAC vendors, iptoasn, UT1 site categories, the Public Suffix List, the AdFection / Candiru indicators, and the vulnerability data for the agents' software (CISA KEV, OSV, NVD; weekly is plenty) |
@@ -253,7 +255,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch replay` / `tapwatch eval` | push finished logs through the pipeline, or score rules-only vs Jev on labelled traffic |
 | `tapwatch import-state FILE` | take over another computer's install from the file `deploy/export-state.sh` made |
 | `tapwatch selfcheck` | detection rate on 37 scripted attack and false-positive shapes, rules only; exit 1 on a regression |
-| `tapwatch benchmark` | week-by-week noise rate, Jev agreement and host-context accuracy from the case desk, as Markdown |
+| `tapwatch benchmark` | week-by-week noise rate, Jev agreement, host-context accuracy and the judge's scorecard from the case desk, as Markdown (`--judge-replay` scores the judge over history before there's shadow data) |
 | `tapwatch doctor [--send]` | check every part of the install (capture, mirror port, router logs, agents, alerts, AI keys, lists, disk, the Windows side) and say how to fix what isn't working; `--send` adds a test alert |
 | `tapwatch accounts add` / `tapwatch account-check 42` | opt-in: sign in your own Google accounts read-only, then ask them what case 42's upload to Google was ([the guide](docs/setup/account-check.md)) |
 | `tapwatch test-alert` / `tapwatch notify` | check your notification channels |
@@ -301,6 +303,7 @@ src/tapwatch/        the package
   pipeline.py          detectors -> context -> triage -> route -> store -> notify
   store.py             SQLite schema, workflow, suppressions, learned state
   history.py           per-device daily summaries for the 30-day rules (tapwatch summarize)
+  longhaul.py          the long-horizon rules over them: R30 slow beacon, R31 low-and-slow upload
   ui.py, evidence.py   case desk and Zeek evidence lookup
   notifiers.py         ntfy, Discord, Teams, email, webhook, Herdr
   syslogin.py          router CEF syslog listener
@@ -359,8 +362,8 @@ home network since 2026-10-13, so expect rough edges.
   plus R48 known-exploited software. Other computers report through a Fleet server and get the same host
   rules. A scripted
   detection-rate check runs in CI; a feed-silence rule watches every log source, the router included.
-- **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement and
-  host-context accuracy week by week. The first live week ([results](eval/RESULTS.md)): about 5 alerts a day,
+- **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement,
+  host-context accuracy and the shadow judge's scorecard week by week. The first live week ([results](eval/RESULTS.md)): about 5 alerts a day,
   nearly all noise while the baselines learn, 2 true positives (both digest items); host context answered on
   all 136 PC cases and named the program for 106, and its intent verdicts have not yet fired on real traffic.
 
