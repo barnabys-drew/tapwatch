@@ -22,7 +22,9 @@ YouTube shows nothing; Gmail shows nothing | work: Drive shows nothing; Gmail sh
 ```
 
 There are three outcomes:
-- **Explained:** something shows up in the window.
+- **Explained:** something in the window could account for the upload. Drive and YouTube give no sizes, so any
+  file or video there counts. Gmail gives sizes, so a few small emails beside a 1.5 GB upload don't: the summary
+  then says there was "nothing big enough to explain" it.
 - **Unexplained:** every account was fully checked and shows nothing.
 - **Incomplete:** a check failed, stopped before covering the whole window, or no account is set up. Incomplete
   says nothing either way, so treat it as no answer.
@@ -69,6 +71,9 @@ prints Drive and YouTube titles to your terminal only.
    - **Finish:** the browser then fails to load a `127.0.0.1` page. Copy that page's whole address back into
      the prompt.
    - **Fewer scopes:** `--services drive,youtube` grants less.
+   - **One label per account:** Google always shows its account chooser. If a second label signs in to an account
+     that's already saved, nothing is saved and you're told so. A private window makes signing in to the other
+     account easy.
 5. List the labels in `config.yaml`:
    ```yaml
    account_check:
