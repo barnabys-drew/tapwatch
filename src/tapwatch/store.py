@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS judge_examples (  -- the judge's training set (#200):
     actor TEXT NOT NULL,
     detector TEXT NOT NULL,
     device TEXT NOT NULL,
-    key TEXT NOT NULL,          -- judge.key_for: program file name, registrable domain or indicator
+    key TEXT NOT NULL,          -- judge.key_for: program path or name, full host name, or indicator
     features TEXT NOT NULL,     -- code facts at labelling time (JSON)
     feature_version INTEGER NOT NULL   -- 0: backfilled from the audit trail with today's facts
 );
@@ -129,6 +129,45 @@ CREATE TABLE IF NOT EXISTS judge_decisions (  -- shadow mode (#202): what the ju
 );
 CREATE INDEX IF NOT EXISTS notes_case ON notes(case_id);
 CREATE INDEX IF NOT EXISTS audit_case ON audit(case_id);
+"""
+
+# Per-device daily summaries for the long-horizon rules (#193, history.py). Their own block and their own line in
+# migrate(), so other additions to the schema merge cleanly. WITHOUT ROWID: the primary key is the table's order,
+# so one device's 30 days are neighbouring rows.
+DAILY_TABLES = """
+CREATE TABLE IF NOT EXISTS device_day (
+    device TEXT NOT NULL,       -- models.device_id: name:<DHCP name>, mac:<address>, else the address
+    day TEXT NOT NULL,          -- local date, YYYY-MM-DD (the timezone setting)
+    conns INTEGER NOT NULL,     -- connections to the internet started that day
+    bytes_out INTEGER NOT NULL,
+    bytes_in INTEGER NOT NULL,
+    active_hours_bitmap INTEGER NOT NULL,   -- bit h set: a connection started in local hour h
+    ports TEXT NOT NULL,        -- JSON {"443/tcp": conns, ...}, the top 200 and "other"
+    protocols TEXT NOT NULL,    -- JSON {Zeek service: conns}, "unknown" when Zeek named none
+    PRIMARY KEY (device, day)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS device_day_dest (
+    device TEXT NOT NULL,
+    day TEXT NOT NULL,
+    dest TEXT NOT NULL,         -- base domain of the SNI or DNS name, else the address
+    port INTEGER NOT NULL,
+    asn INTEGER,                -- the network most of these connections went to; NULL for IPv6 or no feed
+    country TEXT,
+    conns INTEGER NOT NULL,
+    bytes_out INTEGER NOT NULL,
+    bytes_in INTEGER NOT NULL,
+    contact_times TEXT NOT NULL,   -- JSON list of up to 48 start times (epoch s), 30+ minutes apart
+    PRIMARY KEY (device, day, dest, port)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS device_day_dest_day ON device_day_dest(day);
+CREATE TABLE IF NOT EXISTS summary_days (   -- which days were summarized: a quiet device vs a sensor that was off
+    day TEXT PRIMARY KEY,
+    devices INTEGER NOT NULL,
+    records INTEGER NOT NULL,   -- connections counted
+    hours INTEGER NOT NULL,     -- local hours with any counted connection (24 = the sensor saw the whole day)
+    built_ts REAL NOT NULL,
+    seconds REAL NOT NULL
+);
 """
 
 STATUSES = ("new", "investigating", "closed")
@@ -187,6 +226,7 @@ class Store:
                     if "duplicate column" not in str(e):  # another process migrated first: fine
                         raise
         self.db.executescript(NEW_TABLES)
+        self.db.executescript(DAILY_TABLES)
         if "disposition" not in have:  # first migration: carry over earlier `tapwatch mark` labels
             for label, disposition in FEEDBACK_TO_DISPOSITION.items():
                 self.db.execute("UPDATE cases SET disposition=? WHERE feedback=? AND disposition IS NULL",

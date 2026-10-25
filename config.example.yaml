@@ -88,6 +88,10 @@ audience: office                     # office | home: how summaries and Jev's qu
                                      # Keep "office", even at home: "home" cost Jev both of its C2 alerts
                                      # in eval/RESULTS.md ("Wording")
 zeek_retention_days: 30              # rotated Zeek logs older than this are deleted (0 = keep forever)
+summaries:                           # per-device daily summaries for the 30-day rules (`tapwatch summarize`)
+  enabled: true                      # `run` summarizes each finished day in the background, once a night
+  hour: 4                            # local hour it starts (a day's last connections are logged after midnight)
+  retention_days: 90                 # summaries older than this are deleted (0 = keep forever)
 digest_hour_utc: 13
 dedupe_seconds: 3600
 warmup_seconds: 86400                # first-seen rules stay quiet for the first day
