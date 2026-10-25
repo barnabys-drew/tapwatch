@@ -1000,11 +1000,14 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
 - **Maturity:** a device's rules wait for **14 watched days** (`summaries.mature_days`): summarized days on which the
   sensor saw traffic in 12+ local hours (`summary_days.hours`), counted from the device's first summarized day. A
   quiet device keeps maturing; a day the sensor was down or half-blind does not count.
-- **Device keys change** (`mac:` to `name:` once a DHCP name is learned, or a fix to how connections are
-  attributed). R32–R34 read a device's history under every key today's identity table ties to the same MAC
-  (`longhaul.aliases`: a `name:` key whose DHCP name exactly one MAC announced), name the key seen last in the case
-  (`device_keys` lists the others), and look for an earlier case under any of them. A key nothing ties to an older
-  one starts a new history: not mature, so it can't fire, and it can't look dormant or new.
+- **Device keys change** (`mac:` to `name:` once a DHCP name is learned). Each key is its own history: a MAC is not
+  always one machine (a dock moves between computers), and `history.rekey` (#326) already moves a MAC's days to its
+  name within days of the name's announcements, where that is safe. A new key is not mature, so it can't fire, look
+  dormant or look new. For dedupe (`raised`) and backing, an earlier case under the key's `mac:`/`name:` counterpart
+  counts only while that MAC has announced no other name, in the identity table or on any case
+  (`longhaul.same_device_keys`, the same test as `store.mac_rule_holds`); `device_keys` lists them. A first version
+  merged histories by today's MAC-to-name table, and the review of #330 showed a shared dock's second laptop raising
+  R33 against the first one's month.
 - **Routing (`router.long_horizon`):** digest, raised to **alert only when backed**: the same device has, in the 7
   days before, a threat-list hit, a host case at digest or louder, or a short-window case at digest or louder to the
   same destination: the same base domain or the same address, never just the same ASN, since AWS, Google and
@@ -1095,6 +1098,10 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   device (an assets.yaml role from `FIXED_ROLE_WORDS`) with **≥ 2 peers of the same role word** reaches a country none
   of them, and not it either, reached in 30 days, with the same volume test. One case per (device, ASN) or (device,
   country) per 30 days.
+- **The 30 days are watched days** (`look_back`: the last 30 days the sensor watched before the day, however far back
+  they go), and the device needs **≥ 14 of them since its first day** (`min_watched`, lowered with
+  `--mature-days`), else it is skipped with that reason. A calendar window would make everything look new on the
+  first day after a month-long outage (review of #330).
 - **Skips:** housekeeping UDP (`HOUSEKEEPING_UDP_PORTS`: NTP, STUN, Tailscale); **voice, video and game ports**
   (`MEDIA_PORTS`: Zoom, Teams/Skype, FaceTime, Xbox Live, PlayStation, Steam, Discord, WhatsApp/Messenger calls,
   `detectors.rare_dest.media`); a **peer-to-peer shape**, 5+ distinct remote ports above 1023 to the network in a day
@@ -1102,7 +1109,8 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
 - **Severity:** 2, 3 on a fixed-function device; the peer variant 3. A managed device (`MANAGED_ROLE_WORDS`) gets
   `max_route: digest`. Digest unless backed by a case to one of the same addresses.
 - **Facts:** variant, `AS<n>` or `country:<cc>` as `dest`, ASN, country, connections, MB, top ports, household
-  devices, peers and role word, the addresses (`dests`), `device_keys` when the history spans keys.
+  devices, peers and role word, the addresses (`dests`), `device_keys` when an earlier case under the
+  MAC's other key counts.
 - **Departures from #196:** the volume test ignores the media ports (the issue wanted them excluded from the
   measure); the P2P-shape skip is new, from the measurement; a network reached by name the same day is left out.
 - **FPs:** peer-to-peer games, calls and VPN-like relays to home ISPs (the two found on the home data, before the

@@ -20,10 +20,11 @@ A device's profile is mature after 14 watched days: summarized days on which the
 local hours (summary_days.hours), counted from the device's first summarized day. A quiet device keeps maturing; a
 day the sensor was down does not count, since it says nothing about the device.
 
-**Device keys change.** A device's key can move (`mac:` to `name:` once its DHCP name is learned, or a fix to how
-connections are attributed), so R32 to R34 read a device's history under every key today's identity table ties to
-the same MAC (`aliases`), and look for an earlier case under any of them. A key no alias reaches starts a new
-history: it is not mature, so it can't fire, and in particular it can't look dormant or new.
+**Device keys change.** A device's key can move (`mac:` to `name:` once its DHCP name is learned). Each key is its
+own history here: a MAC is not always one machine (a dock moves between computers), and history.rekey already moves a
+MAC's days to its name where that is safe. A new key is not mature, so it can't fire, look dormant or look new. For
+dedupe and backing, an earlier case under the key's `mac:`/`name:` counterpart counts only while that MAC has
+announced no other name (same_device_keys, #326's rule for suppressions).
 
 **How they run inside `run`.** The nightly summary thread (history.nightly) calls `then` once its days are written;
 `queue_into` evaluates the rules there, on the thread's own database connection, and puts the cases on a queue.
@@ -111,7 +112,8 @@ MEDIA_PORTS = frozenset({*range(8801, 8811), *range(3478, 3498), 3074, 3075, 365
 class RareRule:
     """R32 thresholds (config `detectors.rare_dest`), from #196."""
 
-    window_days: int = 30          # household prevalence and "new to this device" look back this far
+    window_days: int = 30          # household prevalence and "new to this device": this many watched days back
+    min_watched: int = 14          # watched days the device needs in that window, from its first day
     min_contacts: int = 3          # connections that day to the network, or ...
     min_mb: float = 1              # ... this much either way
     max_devices: int = 1           # devices that touched the network in the window (this one only)
@@ -254,12 +256,13 @@ class Result:
 
 @dataclass
 class Device:
-    """One device's history for R32 to R34, under every key it has had (aliases)."""
+    """One device key's history for R32 to R34."""
 
     canon: str
-    keys: list            # the key seen last first: the one a case names
-    first: str            # its first summarized day under any key
+    keys: list            # the keys its history is read under: the key alone (history.rekey merges histories)
+    first: str            # its first summarized day
     matured: int          # watched days since then
+    same: list = field(default_factory=list)   # keys earlier cases on it may carry (same_device_keys)
 
     @property
     def key(self) -> str:
@@ -285,19 +288,32 @@ def maturity(db, days: list[str], last: str = "9999-12-31") -> dict[str, int]:
     return {dev: sum(1 for d in days if d >= first) for dev, first in firsts(db, last).items()}
 
 
-def aliases(devices, ctx: Context) -> dict[str, str]:
-    """Device key -> the key its history is read under: `mac:<address>` for a `name:` key whose DHCP name today's
-    identity table gives to exactly one MAC, so the days a device spent as `mac:` before its name was learned (or
-    before attribution changed) are its own history, not a new device's. Every other key is its own."""
-    macs: dict[str, set] = defaultdict(set)
-    for mac, name in ctx.ident.hostname.items():
-        if name:
-            macs[str(name).lower()].add(str(mac).lower())
-    out = {}
-    for dev in devices:
-        one = macs.get(dev[5:], set()) if dev.startswith("name:") else set()
-        out[dev] = f"mac:{next(iter(one))}" if len(one) == 1 else dev
-    return out
+def same_device_keys(dev: str, ctx: Context, store=None) -> list[str]:
+    """The keys earlier *cases* on this device may carry: the key itself, and its `mac:`/`name:` counterpart only
+    while that MAC has announced no other name (Identity.names_of, and through `store.mac_rule_holds` no case under
+    the MAC named another device either). A MAC is not always one machine: a dock or USB adapter moves between
+    computers, and a case raised for the laptop on it is not the next computer's (review of #330, as #326's rule
+    for suppressions). Only for dedupe and backing: histories are never merged across keys here; moving a MAC's
+    days to its name is history.rekey's job, bounded by the days the name was announced."""
+    names = {mac: {str(n).lower() for n in ctx.ident.names_of(mac)} for mac in
+             set(ctx.ident.names) | set(ctx.ident.hostname)}
+    if dev.startswith("mac:"):
+        mac = dev[4:]
+        named = names.get(mac) or set()
+        if len(named) != 1:
+            return [dev]
+        name = next(iter(named))
+    elif dev.startswith("name:"):
+        name = dev[5:]
+        macs = [m for m, n in names.items() if name in n]
+        if len(macs) != 1 or names[macs[0]] != {name}:
+            return [dev]
+        mac = macs[0]
+    else:
+        return [dev]
+    if store is not None and not store.mac_rule_holds(mac, name, names.get(mac) or ()):
+        return [dev]
+    return [dev, f"name:{name}" if dev.startswith("mac:") else f"mac:{mac}"]
 
 
 def _span(day: str, back: int) -> str:
@@ -306,7 +322,7 @@ def _span(day: str, back: int) -> str:
 
 def raised(db, detector: str, device, dest: str, ts: float, days: int = ONCE_DAYS) -> bool:
     """This rule already raised this (device, destination) in the last `days`. `device` is a key, or the keys one
-    device has had (aliases), so a key that changed since doesn't raise the same thing again."""
+    device may carry (same_device_keys), so a key that changed since doesn't raise the same thing again."""
     keys = [device] if isinstance(device, str) else list(device)
     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only '?' placeholders are joined; every value is bound
     return db.execute("SELECT 1 FROM cases WHERE detector=? AND first_ts>=? AND json_extract(facts, '$.device') IN"
@@ -550,11 +566,29 @@ def _since(days: set, lo: str, hi: str) -> bool:
     return any(lo <= d < hi for d in days)
 
 
+def look_back(days: list[str], day: str, n: int) -> list[str]:
+    """The last `n` watched days before `day`: R32's window. In watched days, not calendar days, so after a month the
+    sensor was off, the household's last month of traffic is still what "nobody uses it" is measured against, not an
+    empty calendar window in which everything looks new (review of #330)."""
+    return [d for d in days if d < day][-n:]
+
+
 def rare_dests(rows: list, devices: dict[str, Device], canon: dict[str, str], judged: list[str], mature: set,
-               ctx: Context, rule: RareRule, res: Result) -> list[dict]:
+               ctx: Context, rule: RareRule, res: Result, days: list[str] | None = None) -> list[dict]:
     """R32 over the destination rows: per (device, network) reached with no name on a judged day, and per (fixed-
     function device, country) for the peer variant. "Used" means any connection, named or not, by any key the device
-    has had; the media ports are left out of the volume, not out of "used"."""
+    has had; the media ports are left out of the volume, not out of "used". The window is the last `window_days`
+    watched days before the day (look_back), and the device needs `min_watched` of them since its first day."""
+    days = days if days is not None else []
+
+    def window(c: str, day: str) -> str | None:
+        """The window's first day, or None (and a skip counted) when the device has too few watched days in it."""
+        prior = look_back(days, day, rule.window_days)
+        if sum(1 for d in prior if d >= devices[c].first) < rule.min_watched:
+            res.skipped[f"R32 fewer than {rule.min_watched} watched days before the day"] += 1
+            return None
+        return prior[0]
+
     touched: dict = defaultdict(lambda: defaultdict(set))   # asn -> device -> days
     places: dict = defaultdict(lambda: defaultdict(set))    # device -> country -> days
     named: set = set()                                      # (device, day, asn) reached by a name that day
@@ -603,9 +637,10 @@ def rare_dests(rows: list, devices: dict[str, Device], canon: dict[str, str], ju
 
     found = []
     for (c, day, asn), v in sorted(nets.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
-        lo = _span(day, rule.window_days)
-        if c not in mature or _since(touched[asn][c], lo, day):
-            continue   # immature, or this device used the network in the window: not new to it
+        if c not in mature or (lo := window(c, day)) is None:
+            continue
+        if _since(touched[asn][c], lo, day):
+            continue   # this device used the network in the window: not new to it
         if (c, day, asn) in named:
             res.skipped["R32 reached by name the same day"] += 1
             continue
@@ -632,9 +667,8 @@ def rare_dests(rows: list, devices: dict[str, Device], canon: dict[str, str], ju
         roles[c] = role_word(ctx.entry(host, facts))
     for (c, day, cc), v in sorted(lands.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
         word = roles.get(c)
-        if not word or c not in mature:
+        if not word or c not in mature or (lo := window(c, day)) is None:
             continue
-        lo = _span(day, rule.window_days)
         if _since(places[c][cc], lo, day):
             continue
         peers = [o for o, w in roles.items() if w == word and o != c]
@@ -842,20 +876,14 @@ def _telling_key(key: str) -> bool:
 # ------------------------------------------------------------------ cases
 
 
-def devices_from(db, days: list[str], last: str, ctx: Context) -> tuple[dict[str, Device], dict[str, str]]:
-    """Canonical device -> its history's keys, first day and maturity; and key -> canonical device (aliases)."""
-    spans = {r[0]: (r[1], r[2]) for r in db.execute("SELECT device, MIN(day), MAX(day) FROM device_day WHERE day <= ?"
-                                                     " GROUP BY device", (last,))}
-    canon = aliases(spans, ctx)
-    members: dict[str, list] = defaultdict(list)
-    for key, c in canon.items():
-        members[c].append(key)
-    out = {}
-    for c, keys in members.items():
-        keys.sort(key=lambda k: (spans[k][1], k.startswith("name:"), k), reverse=True)   # the key seen last first
-        first = min(spans[k][0] for k in keys)
-        out[c] = Device(c, keys, first, sum(1 for d in days if d >= first))
-    return out, canon
+def devices_from(store, days: list[str], last: str, ctx: Context) -> tuple[dict[str, Device], dict[str, str]]:
+    """Device key -> its first day, maturity and the keys its earlier cases may carry; and key -> key. Each key is
+    its own history: a MAC is not always one machine, so merging mac:<address> days into a name here would hand a
+    shared dock's other computer's weeks to this one (review of #330). history.rekey merges what is safe."""
+    firsts_ = firsts(store.db, last)
+    out = {dev: Device(dev, [dev], first, sum(1 for d in days if d >= first), same_device_keys(dev, ctx, store))
+           for dev, first in firsts_.items()}
+    return out, {dev: dev for dev in out}
 
 
 def daily_rows(db, canon: dict[str, str], since: str, last: str) -> dict[str, dict[str, list]]:
@@ -904,6 +932,10 @@ def evaluate(store, cfg: dict, ctx: Context, now: float | None = None, mature_da
     res.mature = len(mature)
     start = end - timedelta(days=max(beacon.days - 1, upload.window_days + upload.prior_days - 1,
                                      rare.window_days + RECENT_DAYS, 31))
+    # R32's window is in watched days, so after an outage it reaches further back than any calendar window
+    back = look_back(days, (end - timedelta(days=RECENT_DAYS - 1)).isoformat(), rare.window_days)
+    if back and back[0] < start.isoformat():
+        start = date.fromisoformat(back[0])
     every = db.execute("SELECT device, day, dest, port, asn, country, bytes_out, bytes_in, contact_times, conns"
                        " FROM device_day_dest WHERE day >= ? AND day <= ?", (start.isoformat(), last)).fetchall()
     rows = [r for r in every if r[0] in mature]
@@ -926,10 +958,11 @@ def evaluate(store, cfg: dict, ctx: Context, now: float | None = None, mature_da
         else:
             res.cases.append(case)
 
-    devices, canon = devices_from(db, days, last, ctx)
+    rare.min_watched = min(rare.min_watched, need)   # --mature-days lowers R32's own history need with it
+    devices, canon = devices_from(store, days, last, ctx)
     grown_up = {c for c, d in devices.items() if d.matured >= need}
     judged = [(end - timedelta(days=n)).isoformat() for n in range(RECENT_DAYS - 1, -1, -1)]
-    found = rare_dests(every, devices, canon, judged, grown_up, ctx, rare, res)
+    found = rare_dests(every, devices, canon, judged, grown_up, ctx, rare, res, days)
     since = (end - timedelta(days=max(wake.history_days, shift.baseline_days + shift.run_days))).isoformat()
     daily = daily_rows(db, canon, since, last)
     found += dormant_wakes(db, daily, every, devices, canon, days, judged, last, ctx, wake, res)
@@ -937,7 +970,7 @@ def evaluate(store, cfg: dict, ctx: Context, now: float | None = None, mature_da
     for c in found:
         dev = devices[c["canon"]]
         case = history_case(c, dev, ctx, now, recent)
-        if raised(db, case.detector, dev.keys, c["dest"], now, c.get("once_days", ONCE_DAYS)):
+        if raised(db, case.detector, dev.same or dev.keys, c["dest"], now, c.get("once_days", ONCE_DAYS)):
             res.skipped[f"{c['rule']} raised in the last {c.get('once_days', ONCE_DAYS)} days"] += 1
         else:
             res.cases.append(case)
@@ -990,8 +1023,8 @@ def history_case(c: dict, dev: Device, ctx: Context, now: float, recent: list[Re
     host, ips, ident = ctx.device(dev.key)
     facts = {"source": "history", "device": dev.key, "dest": c["dest"], "day": c["day"], "mature_days": dev.matured,
              **ident}
-    if len(dev.keys) > 1:
-        facts["device_keys"] = dev.keys[:5]
+    if len(dev.same) > 1:
+        facts["device_keys"] = dev.same   # the keys an earlier case on it may carry
     entry = ctx.entry(host, facts)
     severity = 2
     if fixed := _role(entry, det.FIXED_ROLE_WORDS):
@@ -1001,7 +1034,7 @@ def history_case(c: dict, dev: Device, ctx: Context, now: float, recent: list[Re
         facts["managed_device"] = managed
         facts["max_route"] = "digest"
     names = c.get("names") or []
-    backed = backers(recent, dev.keys, ips + [host], set(c.get("addrs") or ()) | set(names), None, ctx)
+    backed = backers(recent, dev.same or dev.keys, ips + [host], set(c.get("addrs") or ()) | set(names), None, ctx)
     if backed:
         facts["backed_by"] = backed
     if c["detector"] == "rare_dest":

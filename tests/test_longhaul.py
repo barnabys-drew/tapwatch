@@ -561,20 +561,72 @@ def test_r33_a_sensor_outage_is_not_dormancy_and_a_new_device_is_not_a_return():
     assert of(res, "dormant_wake") == [] and not res.seen["R33 dormancy returns"]
 
 
-def test_r33_reads_the_history_a_device_had_under_its_old_key():
-    """Its key moved from mac: to name: during the quiet spell: the old key's month is still its profile."""
+def test_r33_a_shared_dock_is_not_one_device_coming_back():
+    """Review of #330: laptop A on dock M for 30 days, 20 quiet days, then laptop B docks and announces "b". The MAC
+    has announced two names, so B's first day is B's, not A's return, and A's case on mac:M backs nothing of B's."""
     s = Store(":memory:")
-    wake_history(s, wake_rows=False)
-    named = "name:tv-den"
-    device_day(s, day(0), dev=named, ports={"443/tcp": 10, "22/tcp": 1})
-    put(s, day(0), "home.example.com", asn=64500, dev=named, times=[midnight(day(0))])
-    put(s, day(0), "198.51.100.40", port=22, asn=64500, dev=named, times=[midnight(day(0))])
+    wake_history(s, wake_rows=False)                      # A's month, under mac:M (DEV)
+    b = "name:b"
+    device_day(s, day(0), dev=b, ports={"443/tcp": 10, "22/tcp": 1})
+    three_new_networks(s, dev=b)
+    put(s, day(0), "198.51.100.40", port=22, asn=64500, dev=b, times=[midnight(day(0))])
     c = ctx()
-    c.ident.hostname[MAC] = "tv-den"
-    [case] = of(run(s, c), "dormant_wake")
-    assert case.facts["device"] == named and case.facts["device_keys"] == [named, DEV]
-    assert case.facts["new_ports"] == [22] and case.facts["active_before"] == 30
-    assert of(run(s), "dormant_wake") == []    # without the alias: a new key, not mature, never a return
+    c.ident.names[MAC] = ["a", "b"]
+    c.ident.hostname[MAC] = "b"
+    res = run(s, c, mature_days=0)
+    assert of(res, "dormant_wake") == [] and not res.seen["R33 dormancy returns"]
+    assert longhaul.same_device_keys(b, c) == [b] and longhaul.same_device_keys(DEV, c) == [DEV]
+    a_case = longhaul.Recent(7, "beaconing", IP, DEV, "digest", "rules-only", set(), {"198.51.100.40"})
+    assert longhaul.backers([a_case], longhaul.same_device_keys(b, c), [], {"198.51.100.40"}, None, c) == []
+    thrice(s, day(0), dest="198.51.100.41", asn=64530, dev=b)                      # B raises a rare_dest ...
+    other(s, "beaconing", facts={"dests": ["198.51.100.41"], "device_mac": MAC})   # ... and A's case on the dock
+    raised_for_b = [x for x in run(s, c, mature_days=0).cases if x.facts["device"] == b]
+    assert raised_for_b and all("backed_by" not in x.facts for x in raised_for_b)
+
+
+def test_a_case_under_the_mac_counts_for_its_name_only_while_the_mac_had_no_other_name():
+    """raised() and backers() look under the mac: counterpart too, but only under #326's rule (store.mac_rule_holds)."""
+    s = Store(":memory:")
+    named = "name:tv-den"
+    summaries(s, devices=(named,))
+    thrice(s, day(0), dev=named)
+    c = ctx()
+    c.ident.names[MAC] = ["tv-den"]
+    assert longhaul.same_device_keys(named, c, s) == [named, DEV]
+    other(s, "rare_dest", ts=NOW - 5 * DAY, facts={"device": DEV, "dest": "AS64501", "device_mac": MAC})
+    res = run(s, c)
+    assert of(res, "rare_dest") == [] and res.skipped["R32 raised in the last 30 days"] == 1
+    # a case on the MAC that named another computer: the MAC is a dock, so its cases are nobody's in particular
+    other(s, "new_domain", Route.LOG, facts={"device_mac": MAC, "device_name": "laptop-a"})
+    assert longhaul.same_device_keys(named, c, s) == [named]
+    assert of(run(s, c), "rare_dest") != []
+
+
+def test_r32_counts_its_30_days_in_watched_days_so_an_outage_makes_nothing_new():
+    """Review of #330: two devices share a network, then the sensor is off for 38 days. On the first day back the
+    calendar window holds nothing, but the last 30 watched days still say the network is the house's."""
+    s = Store(":memory:")
+    devs = (DEV, f"mac:{PEER_MAC}")
+    for n in range(40, 70):                               # 30 days before the gap, both devices on the network
+        s.db.execute("INSERT INTO summary_days VALUES (?,?,?,?,?,?)", (day(n), 2, 100, 24, NOW, 1.0))
+        for k, dev in enumerate(devs):
+            device_day(s, day(n), dev=dev)
+            put(s, day(n), f"203.0.113.{60 + k}", asn=64501, dev=dev, times=[midnight(day(n))])
+    for n in (1, 0):
+        s.db.execute("INSERT INTO summary_days VALUES (?,?,?,?,?,?)", (day(n), 2, 100, 24, NOW, 1.0))
+    device_day(s, day(0))                                 # back after 38 days: the usual traffic, by address
+    thrice(s, day(0), dest="203.0.113.60")
+    s.db.commit()
+    assert of(run(s), "rare_dest") == []
+    assert longhaul.look_back(longhaul.watched(s.db), day(0), 30)[0] == day(68)
+
+
+def test_r32_needs_14_watched_days_in_its_window():
+    s = Store(":memory:")
+    summaries(s, days=10)
+    thrice(s, day(0))
+    res = run(s, cfg={"detectors": {"rare_dest": {"min_watched": 14}}}, mature_days=10)
+    assert of(res, "rare_dest") == [] and res.skipped["R32 fewer than 10 watched days before the day"] == 1
 
 
 def shift_history(store, run_days=None, base_days=27, hours=range(8, 23), mb=100):

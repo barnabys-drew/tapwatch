@@ -140,8 +140,15 @@ summaries. Re-run `tapwatch longhaul --stats` on the live sensor once it has 30 
 The same 11 days of home summaries, rebuilt into a scratch database (nothing live read or written; deleted after),
 then replayed night by night (`longhaul.evaluate(as_of=...)`, which `tapwatch longhaul --as-of` exposes), each day
 judged once, with a case counted once per its rule's dedupe window. The scratch database has no saved identity
-table, so the replay seeded one from the same logs' DHCP records; that also exercised the key aliases (one device's
-`mac:` and `name:` histories merged). Evaluating all five rules takes 0.47 s over 25,600 destination rows.
+table, so the replay seeded one from the same logs' DHCP records. Evaluating all five rules takes 0.47 s over
+25,600 destination rows.
+
+Re-run after the review of #330, on summaries rebuilt with #326's device identity (keys re-attributed at summary
+time) and with R32's window in watched days and no history merged across keys: **case counts unchanged** (0 from
+R32–R34 in every run below). R32's scaled run now sees 20 nameless first contacts instead of 16 (14 shared with
+another device, 2 skipped for too few watched days before the day, then the same media, P2P, by-name and volume
+skips, one each), and R33's scaled run 3 dormancy returns instead of 2, none bringing anything new. The table is the
+first run's.
 
 | | Measured |
 |---|---|
