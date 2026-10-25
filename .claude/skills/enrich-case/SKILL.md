@@ -93,6 +93,9 @@ Reply briefly:
 Then **offer**, but don't do without a yes:
 - close the case with that disposition plus a note summarising the evidence:
   `Store("tapwatch.db").update_case(id, "cli (requested by the user)", status="closed", disposition=..., note=...)`
+  The actor says who decided, and the learned judge reads it (`judge.label_source`): use
+  `"cli (requested by the user)"` only when the user asked for this close or approved your verdict. When you close
+  on your own judgement, use `"claude"`, so the judge never learns to copy an AI's triage.
 - create a suppression: `Store(...).add_suppression(id, scope, reason, actor)`
 
 Both are short writes that are safe while `tapwatch run` is live. Never restart or stop `tapwatch run`.

@@ -187,6 +187,33 @@ def cmd_benchmark(args, cfg) -> int:
     return 0
 
 
+def cmd_judge(args, cfg) -> int:
+    """The learned judge's training set and guardrails (#200, #201). Read-only except `backfill`."""
+    from . import judge
+
+    db = Store(cfg.get("db_path", "tapwatch.db")).db
+    if args.action == "backfill":
+        counts = judge.backfill(db)
+        print("examples from the audit trail: " + (", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "none"))
+        return 0
+    if args.action == "examples":
+        print(benchmark.judge_examples_markdown(db))
+        return 0
+    result = judge.replay(db)
+    print("| Detector | Cases | Eligible, same device | Eligible, any device | Eligible true positives |")
+    print("|---|---|---|---|---|")
+    for name, d in sorted(result["detectors"].items(), key=lambda kv: -kv[1]["cases"]):
+        print(f"| {name} | {d['cases']} | {d['device']} | {d['any_device']} | {d['eligible_tp']} |")
+    for width, reasons in result["reasons"].items():
+        print(f"\nWhy not eligible ({width.replace('_', ' ')}):")
+        for reason, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
+            if reason != "eligible":
+                print(f"  {n:5d}  {reason}")
+    tp = sorted({i for ids in result["true_positives_eligible"].values() for i in ids})
+    print(f"\ntrue positives that would have been eligible: {', '.join(f'#{i}' for i in tp) if tp else 'none'}")
+    return 1 if tp else 0
+
+
 def cmd_digest(args, cfg) -> int:
     p = _pipeline(cfg, use_ai=False)
     if not p.notifier:
@@ -684,6 +711,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--from", dest="since", help="rebuild from this day (YYYY-MM-DD) ...")
     s.add_argument("--to", dest="until", help="... to this one, inclusive (default: the --from day)")
     s.set_defaults(fn=cmd_summarize)
+
+    s = sub.add_parser("judge", help="the learned judge (v0.4): build its training set, replay its guardrails")
+    s.add_argument("action", choices=["backfill", "examples", "replay"],
+                   help="backfill: examples from the audit trail; examples: counts per source; replay: eligibility "
+                        "over the history (exit 1 if a true positive would have been eligible)")
+    s.set_defaults(fn=cmd_judge)
 
     s = sub.add_parser("accounts", help="sign in Google accounts for the account check (docs/setup/account-check.md)")
     s.add_argument("action", choices=["add", "list", "remove"])
