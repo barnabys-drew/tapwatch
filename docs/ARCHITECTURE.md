@@ -427,7 +427,8 @@ Installing it on someone else's computer needs their consent, and never on a wor
 | **Windows PC** | Npcap captures on Windows, everything else in WSL. `deploy/windows/keep-alive.ps1` keeps WSL running without admin rights. | Same as above, with the capture unit. See [setup/windows.md](setup/windows.md). |
 | **Fleet server (optional)** | `docker compose -f deploy/fleet/docker-compose.yml --env-file deploy/fleet/.env up -d` on the tapwatch box; agents enroll with the bundle `deploy/fleet/agent-bundle.sh` builds | Fleet, MySQL and Redis, on 127.0.0.1. See [setup/fleet.md](setup/fleet.md). |
 
-Every install is a git checkout, so `tapwatch update` moves it to the newest release and back if anything fails.
+The Windows, systemd and Omarchy installs are git checkouts, so `tapwatch update` moves them to the newest release and
+back if anything fails. The Docker image has no checkout: `git pull` and `docker compose up -d --build` instead.
 Moving to a new computer is `deploy/export-state.sh` on the old one and `tapwatch import-state` (or the Windows
 installer) on the new one.
 

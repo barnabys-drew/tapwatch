@@ -87,7 +87,7 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
   not just its address), osquery names the program, and Claude Code session markers, the exec
   parent chain and transcripts show whether the owner asked for it. Process proof outranks
   transcript context.
-- **Endpoint rules on every computer.** 17 host rules (R17–R29, R36–R39, R48) read the osquery
+- **Endpoint rules on every computer.** 17 host rules (R17–R21, R23–R29, R36–R39, R48) read the osquery
   agent's own rows for shapes the wire can't show, on the tapwatch PC and, through a
   [Fleet server](docs/setup/fleet.md), on each of the house's other computers. A host case pairs with
   a network case on the same device only when the host rule names that network rule.
@@ -96,10 +96,11 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
   blind spot found days later. `tapwatch selfcheck` replays 37 scripted attack and false-positive
   shapes through the detectors as configured and reports a detection rate; CI runs it, and it is one
   command to run after a deploy.
-- **Updates you can undo, installs you can move.** `tapwatch update` moves to the newest release,
-  runs the self-check and doctor, and goes back to the old version if anything fails; the daily digest
-  says when there's a newer one. `deploy/export-state.sh` and `tapwatch import-state` move a sensor
-  to a new computer with its cases, notes and learned baselines.
+- **Updates you can undo, installs you can move.** On a checkout install (the Windows installer, the
+  systemd services, Omarchy), `tapwatch update` moves to the newest release, runs the self-check and
+  doctor, and goes back to the old version if anything fails; the daily digest says when there's a
+  newer one. Docker: `git pull`, then `docker compose -f deploy/docker-compose.yml up -d --build`.
+  `deploy/export-state.sh` and `tapwatch import-state` move a sensor to a new computer with its cases, notes and learned baselines.
 - **A case desk with no JavaScript.** It's a queue, a case page with ±5 minutes of Zeek evidence,
   workflow, notes, an audit trail, expiring "suppress similar" rules and stats, including a
   week-by-week benchmark: noise rate, how often the model agreed with your dispositions, and how
@@ -273,7 +274,7 @@ the house's other computers.
   house's software list never leaves the box.
 - **Account check**, if you set it up (`tapwatch account-check`, on demand only; the alerter never calls
   Google): read-only questions to your own Google accounts about the case's time window.
-- **Release check**: once a day the alerter asks the git remote for its release tags, so the digest can say
+- **Release check**: on a checkout install, once a day the alerter asks the git remote for its release tags, so the digest can say
   a newer release exists (`update: {notify: false}` turns it off); `tapwatch update` fetches from it.
   Nothing about the house is sent.
 - **Domain categorizer**, if enabled (`categories: {ai: true}`, off by default): the public registrable
@@ -351,7 +352,7 @@ home network since 2026-10-13, so expect rough edges.
   and `tapwatch doctor` passed a clean Windows 11 machine on 2026-10-19. On 2026-10-24 `export-state.sh` and
   `import-state` moved a running sensor to a new computer, cases and baselines included.
 - **Detection:** the network rules, the router's syslog (verified against a live UniFi gateway), and
-  the endpoint rules R17–R29 and R36–R39 on Windows and Linux (the Linux set verified live on 2026-10-18),
+  the endpoint rules R17–R21, R23–R29 and R36–R39 on Windows and Linux (the Linux set verified live on 2026-10-18),
   plus R48 known-exploited software. Other computers report through a Fleet server and get the same host
   rules. A scripted
   detection-rate check runs in CI; a feed-silence rule watches every log source, the router included.

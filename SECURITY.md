@@ -23,4 +23,5 @@ with credit, unless you'd rather stay anonymous.
 
 ## Supported versions
 
-Only the latest release. `tapwatch update` (or `update-windows.cmd` on Windows) moves an install to it.
+Only the latest release. `tapwatch update` (or `update-windows.cmd` on Windows) moves a checkout install to it;
+with Docker, `git pull` and rebuild (`docker compose -f deploy/docker-compose.yml up -d --build`).

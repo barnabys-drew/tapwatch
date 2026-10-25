@@ -13,4 +13,4 @@ pattern, or reproduce it with `eval/make_synthetic_pcap.py`.
 
 **How to reproduce**
 
-**Setup**: Linux + Docker / Windows + WSL / other; tapwatch version (the first line of `tapwatch update --check`); Zeek version
+**Setup**: Linux + Docker / Windows + WSL / other; tapwatch version (`git describe --tags` in the tapwatch folder); Zeek version
