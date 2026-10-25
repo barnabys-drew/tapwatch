@@ -280,12 +280,14 @@ def cmd_summarize(args, cfg) -> int:
 
 
 def cmd_longhaul(args, cfg) -> int:
-    """The long-horizon rules (R30, R31) over the summary tables as they stand: what they would raise now and how
-    it would route, and with --stats why the other candidates were skipped. Stores nothing: the measurement tool."""
+    """The long-horizon rules (R30-R34) over the summary tables as they stand (or as they stood after --as-of's day):
+    what they would raise and how it would route, and with --stats why the other candidates were skipped and R34's
+    score spread. Stores nothing: the measurement tool."""
     from .router import route
 
     store = Store(cfg.get("db_path", "tapwatch.db"))
-    res = longhaul.evaluate(store, cfg, longhaul.Context.from_config(cfg, store), mature_days=args.mature_days)
+    res = longhaul.evaluate(store, cfg, longhaul.Context.from_config(cfg, store), mature_days=args.mature_days,
+                            as_of=args.as_of)
     print(f"{res.days} watched day(s); {res.mature} of {res.devices} device(s) mature")
     routes: dict[tuple, int] = {}
     for case in res.cases:
@@ -296,8 +298,16 @@ def cmd_longhaul(args, cfg) -> int:
         print(f"{detector}: {n} {r}")
     print(f"{len(res.cases)} case(s) would be raised")
     if args.stats:
+        for what, n in sorted(res.seen.items()):
+            print(f"  seen    {n:5d}  {what}")
         for why, n in sorted(res.skipped.items()):
             print(f"  skipped {n:5d}  {why}")
+        for score in ("hours", "new_ports", "bytes"):
+            xs = sorted(res.scores.get(score) or ())
+            if xs:
+                pick = [xs[min(len(xs) - 1, int(q * len(xs)))] for q in (0.5, 0.9, 0.99)]
+                print(f"  R34 {score:9} over {len(xs)} device(s): median {pick[0]}, p90 {pick[1]}, p99 {pick[2]}, "
+                      f"max {xs[-1]}")
     return 0
 
 
@@ -766,9 +776,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--to", dest="until", help="... to this one, inclusive (default: the --from day)")
     s.set_defaults(fn=cmd_summarize)
 
-    s = sub.add_parser("longhaul", help="the long-horizon rules (R30, R31) over the daily summaries: print what they "
+    s = sub.add_parser("longhaul", help="the long-horizon rules (R30-R34) over the daily summaries: print what they "
                                         "would raise now, storing nothing (run raises them each night)")
     s.add_argument("--mature-days", type=int, help="watched days a device needs first (default summaries.mature_days, 14)")
+    s.add_argument("--as-of", help="judge as the night after this day (YYYY-MM-DD) would have: a replay")
     s.add_argument("--stats", action="store_true", help="also count why candidates were skipped")
     s.set_defaults(fn=cmd_longhaul)
 

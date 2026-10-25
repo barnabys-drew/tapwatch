@@ -135,6 +135,37 @@ are benign, of the classes the issues expected. It is not yet the issues' measur
 case dispositioned, and R31's "new destination" test cannot be judged until the sensor has three weeks of
 summaries. Re-run `tapwatch longhaul --stats` on the live sensor once it has 30 days.
 
+## Long-horizon rules R32-R34, replayed over the same home days (2026-10-25)
+
+The same 11 days of home summaries, rebuilt into a scratch database (nothing live read or written; deleted after),
+then replayed night by night (`longhaul.evaluate(as_of=...)`, which `tapwatch longhaul --as-of` exposes), each day
+judged once, with a case counted once per its rule's dedupe window. The scratch database has no saved identity
+table, so the replay seeded one from the same logs' DHCP records. Evaluating all five rules takes 0.47 s over
+25,600 destination rows.
+
+Re-run after the review of #330, on summaries rebuilt with #326's device identity (keys re-attributed at summary
+time) and with R32's window in watched days and no history merged across keys: **case counts unchanged** (0 from
+R32–R34 in every run below). R32's scaled run now sees 20 nameless first contacts instead of 16 (14 shared with
+another device, 2 skipped for too few watched days before the day, then the same media, P2P, by-name and volume
+skips, one each), and R33's scaled run 3 dormancy returns instead of 2, none bringing anything new. The table is the
+first run's.
+
+| | Measured |
+|---|---|
+| As specified (maturity 14) | **0** cases from any rule: no device can have 14 watched days in 11 |
+| R32 `rare_dest`, maturity 3, 8 nights (10-17..24) | 16 (device, network, day) contacts with no name to a network new to the device. 12 were to a network another device in the house also used. Of the 4 left: 1 reached by name the same day, 1 under 3 connections and 1 MB, 1 a call on FaceTime's ports (one long session to a home ISP address), 1 a peer-to-peer shape (470 connections on scattered high ports to one home ISP address). **0 cases.** The first replay, before the media list had FaceTime and before the P2P-shape skip, raised exactly those last two: both P2P/media, the class #196 expected |
+| R32 peer variant | assets.yaml gives two peer groups of three (an "iot" and a "network gear" role); none of their devices reached a new country. The 14 new-country days on fixed-function devices were all on devices with fewer than two same-role peers. **0 cases** |
+| R33 `dormant_wake` | **cannot be judged yet**: 14 active days plus 14 quiet ones need 28+ days. Scaled to 2 watched quiet days and 3 active days before: 2 dormancy returns, neither brought 3 new networks or a new port: **0 cases**. Scaled further (1 quiet day, 1 new network): 3 returns, 1 case. Before high UDP ports stopped counting as new ports, one return fired on seven of them (a P2P peer) |
+| R34 `routine_shift`, maturity 5 | the 7-day baseline leaves 2 nights (10-23, 10-24) to score: 36 device-days, **0 cases** |
+| R34, baseline lowered to 4 days | 99 device-days over 5 nights, **0 cases**. Before the fixed-function "new port every day" branch was limited to TCP and low UDP ports, it raised 1: a busy fixed-function device's P2P peer on one new high UDP port three days running |
+| R34 score spread (99 device-days) | hours (Jaccard distance): median 0.0, p90 0.63, p99 1.0. New-port share: median 0.0, p90 0.005, p99 0.58. Bytes z (log10): median -0.05, p90 0.8, p99 3.1. The floors (0.6, 0.2, 3.0) sit between p90 and p99; each device's leave-one-out maximum raised them further for every device here |
+
+So on this data all three rules stay inside their targets (#196: ≤ 3 a week after media; #198: ≤ 2 a week), and the
+only things they raised before the skips were peer-to-peer and call traffic. That is a statement about 11 days and
+a quiet house, not a validation: R32's "nobody in the house used it in 30 days" here means "in up to 10 days",
+R33 has had no real dormancy to see, and R34's thresholds need the 30-day re-measure (#198 wants per-device
+distributions over 30 days). The last day was only 13 hours watched, which is why the bytes median is below zero.
+
 ## Re-run 2026-10-15, after the noise review
 
 Same captures, same home night, same model, after the day's detector changes (per-VLAN DHCP learning,

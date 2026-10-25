@@ -181,11 +181,25 @@ def backed_long_horizon(db: sqlite3.Connection, row: sqlite3.Row, case: Case, be
         return f"#{backed.get('id')}"
     mac = case.facts.get("device_mac")
     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only fixed text and '?' placeholders are joined; every value is bound
-    other = db.execute("SELECT id, status FROM cases WHERE id != ? AND detector NOT IN ('slow_beacon', 'slow_upload')"
+    lh = sorted(LONG_HORIZON)
+    other = db.execute("SELECT id, status FROM cases WHERE id != ? AND detector NOT IN (" + ",".join("?" * len(lh)) + ")"
                        " AND (host = ?" + (" OR json_extract(facts, '$.device_mac') = ?" if mac else "") + ")"
                        " AND first_ts <= ? AND (status != 'closed' OR first_ts >= ?) ORDER BY id DESC LIMIT 1",
-                       [row["id"], row["host"]] + ([mac] if mac else []) + [before, before - BACKED_WINDOW]).fetchone()
+                       [row["id"], *lh, row["host"]] + ([mac] if mac else []) + [before, before - BACKED_WINDOW]).fetchone()
     return f"#{other['id']}, {'open' if other['status'] != 'closed' else 'recent'}" if other else ""
+
+
+def device_keys(db: sqlite3.Connection, device: str, facts: dict) -> list[str]:
+    """The device's key, plus the `mac:` key its cases had before its DHCP name was learned, the same alias the
+    suppressions and daily summaries follow (#326). Only while that MAC has never carried another name: a dock's or
+    adapter's MAC is not always one machine, and another computer's closes must never count as this one's."""
+    mac, name = str(facts.get("device_mac") or "").lower(), str(facts.get("device_name") or "").lower()
+    if not (mac and name and device == f"name:{name}"):
+        return [device]
+    other = db.execute("SELECT 1 FROM cases WHERE json_extract(facts, '$.device_mac') = ? AND json_extract(facts,"
+                       " '$.device_name') IS NOT NULL AND lower(json_extract(facts, '$.device_name')) != ? LIMIT 1",
+                       (facts.get("device_mac"), name)).fetchone()
+    return [device] if other else [device, f"mac:{mac}"]
 
 
 def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = None,
@@ -212,15 +226,18 @@ def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = No
     if case.detector in LONG_HORIZON and (other := backed_long_horizon(db, row, case, before)):
         return False, f"a long-horizon case backed by another case on this device ({other})", []
     f = features(row)
+    devices = device_keys(db, f["device"], case.facts)
+    marks = ",".join("?" * len(devices))
     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only '?' placeholders are joined; every value is bound
-    if db.execute("SELECT 1 FROM judge_examples WHERE device=? AND label='true_positive' AND labelled_ts BETWEEN ? AND ?"
-                  f" AND detector NOT IN ({','.join('?' * len(SENSOR_HEALTH))}) LIMIT 1",
-                  (f["device"], before - TP_LOOKBACK, before, *SENSOR_HEALTH)).fetchone():
+    if db.execute(f"SELECT 1 FROM judge_examples WHERE device IN ({marks}) AND label='true_positive' AND labelled_ts"
+                  f" BETWEEN ? AND ? AND detector NOT IN ({','.join('?' * len(SENSOR_HEALTH))}) LIMIT 1",
+                  (*devices, before - TP_LOOKBACK, before, *SENSOR_HEALTH)).fetchone():
         return False, "a true positive on this device in the last 30 days", []
     if width == "device":
-        same = db.execute("SELECT * FROM judge_examples WHERE detector=? AND device=? AND key=? AND labelled_ts < ?"
-                          " AND case_id != ? ORDER BY labelled_ts DESC",
-                          (f["detector"], f["device"], f["key"], before, row["id"])).fetchall()
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only '?' placeholders are joined; every value is bound
+        same = db.execute(f"SELECT * FROM judge_examples WHERE detector=? AND device IN ({marks}) AND key=?"
+                          " AND labelled_ts < ? AND case_id != ? ORDER BY labelled_ts DESC",
+                          (f["detector"], *devices, f["key"], before, row["id"])).fetchall()
     else:
         same = db.execute("SELECT * FROM judge_examples WHERE detector=? AND key=? AND labelled_ts < ?"
                           " AND case_id != ? ORDER BY labelled_ts DESC",
