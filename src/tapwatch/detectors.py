@@ -2745,7 +2745,10 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
           ioc_labels: dict[str, dict] | None = None) -> list[Detector]:
     d = cfg.get("detectors", {})
     net = cfg.get("network", {})
-    set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
+    # The LAN's IPv6 prefix, so its devices count as inside, and the house's own public address: a device that
+    # reaches another one through it (Tailscale peers trying each other's router-mapped port, a port forward used
+    # from inside) never leaves the house, and as "external" it read as a steady beacon to an unnamed address.
+    set_local_nets([*(net.get("local_nets") or ()), *(net.get("public_ips") or ())])
     set_public_suffixes(cfg.get("public_suffix_file"))  # registrable domains by the PSL when downloaded
     load_categories(cfg.get("categories_file"), cfg.get("learned_categories_file"))  # domain -> kind of site (categories.py), offline
     set_categorizer(ai_categorizer(cfg))  # opt-in `categories: {ai: true}` + key in the environment, else None: no network

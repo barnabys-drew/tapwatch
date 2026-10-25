@@ -502,6 +502,18 @@ def test_multicast_and_broadcast_count_as_local():
         set_local_nets(())
 
 
+def test_the_houses_public_address_counts_as_inside():
+    # Tailscale peers on one LAN try each other's router-mapped port on the house's public address every minute
+    beats = [conn(T0 + i * 65, dst="203.0.113.9", port=1057) for i in range(12)]
+    assert len(run(Beaconing(), beats)) == 1
+    try:
+        build({"network": {"local_nets": ["2001:db8:1::/48"], "public_ips": ["203.0.113.9"]}})
+        assert is_internal("203.0.113.9") and is_internal("2001:db8:1::5") and not is_internal("203.0.113.10")
+        assert run(Beaconing(), beats) == []
+    finally:
+        set_local_nets(())
+
+
 def test_mdns_chatter_is_not_beaconing_and_link_local_is_not_a_new_device():
     assert run(Beaconing(), [conn(T0 + i * 30, dst="224.0.0.251", port=5353) for i in range(40)]) == []
     dev = NewDevice(Warmup(0))
