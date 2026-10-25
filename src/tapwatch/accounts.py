@@ -52,6 +52,7 @@ CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 CLIENT_ENV = ("TAPWATCH_GOOGLE_CLIENT_ID", "TAPWATCH_GOOGLE_CLIENT_SECRET")
 WINDOW = 1800          # seconds either side of the case's hours
 GMAIL_MAX_GETS = 100   # message lookups per label per check
+SMALL_SHARE = 0.25     # Gmail messages under this share of the upload's size don't explain it
 GMAIL_PAST_START = 5   # keep walking this many older messages: list order isn't promised, internalDate isn't send time
 
 
@@ -135,7 +136,8 @@ def auth_request(client_id: str, services: list[str]) -> tuple[str, str, str]:
     state = secrets.token_urlsafe(16)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     query = {"client_id": client_id, "redirect_uri": REDIRECT_URI, "response_type": "code",
-             "scope": " ".join(SCOPES[s] for s in services), "access_type": "offline", "prompt": "consent",
+             "scope": " ".join(SCOPES[s] for s in services), "access_type": "offline",
+             "prompt": "consent select_account",   # always the chooser: a signed-in browser picks silently otherwise
              "code_challenge": challenge, "code_challenge_method": "S256", "state": state}
     return f"{AUTH_URL}?{urllib.parse.urlencode(query)}", verifier, state
 
@@ -200,6 +202,37 @@ def granted(saved: dict) -> list[str]:
 
 def saved_labels(directory: Path) -> list[str]:
     return sorted(p.stem.removeprefix("google-") for p in directory.glob("google-*.json")) if directory.is_dir() else []
+
+
+def _mailbox(http: Http, token: str) -> str:
+    """A fingerprint of the Gmail mailbox behind a token (sha256 of the address; the address itself isn't kept)."""
+    addr = http.get("https://gmail.googleapis.com/gmail/v1/users/me/profile", token, {}).get("emailAddress", "")
+    return hashlib.sha256(addr.lower().encode()).hexdigest() if addr else ""
+
+
+def same_account(http: Http, client_id: str, secret: str, directory: Path, label: str, tok: dict) -> str:
+    """The saved label that is the same Google account as a new sign-in, or "". Needs the Gmail scope on both
+    sides; without it, nothing to compare, so "". A browser already signed in to one account picks it silently,
+    which is how a second label once became a copy of the first."""
+    if SCOPES["gmail"] not in (tok.get("scope") or "").split() or not tok.get("access_token"):
+        return ""
+    new = _mailbox(http, tok["access_token"])
+    for other in saved_labels(directory):
+        if other == label:
+            continue
+        try:
+            saved = load_token(directory, other)
+            if SCOPES["gmail"] not in granted_scopes(saved):
+                continue
+            if new and new == _mailbox(http, access_token(http, client_id, secret, saved["refresh_token"])):
+                return other
+        except AccountError:
+            continue
+    return ""
+
+
+def granted_scopes(saved: dict) -> set[str]:
+    return set((saved.get("scope") or "").split())
 
 
 def access_token(http: Http, client_id: str, secret: str, refresh_token: str) -> str:
@@ -361,11 +394,15 @@ def check(cfg: dict, start: float, end: float, http: Http | None = None) -> dict
     return result
 
 
-def facts(result: dict) -> dict:
+def facts(result: dict, upload_bytes: float | None = None) -> dict:
     """What goes into the case: per account and service, counts, types, times and sizes; no titles. `outcome` is
-    explained (something in the window), unexplained (everything fully checked, nothing there) or incomplete."""
+    explained (something in the window that could account for the upload), unexplained (everything fully checked,
+    nothing that could) or incomplete. Drive and YouTube give no sizes, so any file or video there could; Gmail gives
+    sizes, so messages that add up to under SMALL_SHARE of the upload can't (#986: five small emails beside 1.5 GB)."""
     out: dict = {"window": result["window"], "checked": round(time.time()), "accounts": {}}
-    found, whole = False, bool(result["accounts"])
+    if upload_bytes:
+        out["upload_mb"] = round(upload_bytes / 1e6)
+    found, whole, mail_bytes, mail_rows = False, bool(result["accounts"]), 0, 0
     for label, entry in result["accounts"].items():
         if "error" in entry:
             out["accounts"][label] = {"error": entry["error"][:200]}
@@ -382,8 +419,12 @@ def facts(result: dict) -> dict:
             if not res["complete"]:
                 s["complete"] = False
                 whole = False
-            if rows:
+            if rows and service == "gmail":
+                mail_rows += len(rows)
+                mail_bytes += sum(r.get("bytes", 0) for r in rows)
+            elif rows:
                 found = True
+            if rows:
                 s["types"] = dict(Counter(r["type"] or "unknown" for r in rows).most_common(5))
                 s["first"], s["last"] = round(min(r["time"] for r in rows)), round(max(r["time"] for r in rows))
                 if any("bytes" in r for r in rows):
@@ -392,8 +433,16 @@ def facts(result: dict) -> dict:
         if not acc:
             whole = False   # an account with no services granted checked nothing
         out["accounts"][label] = acc
+    if mail_rows and (not upload_bytes or mail_bytes >= SMALL_SHARE * upload_bytes):
+        found = True
+    elif mail_rows:
+        out["too_small"] = True   # there was mail in the window, far smaller than the upload
     out["outcome"] = "explained" if found else "unexplained" if whole else "incomplete"
     return out
+
+
+def _size(b: float) -> str:
+    return f"{b / 1e6:.1f} MB" if b >= 1e6 else f"{max(1, round(b / 1e3))} KB"
 
 
 def _hm(ts: float) -> str:
@@ -429,9 +478,12 @@ def summary(f: dict) -> str:
                 n = s["count"]
                 span = _hm(s["first"]) if s["first"] == s["last"] else f"{_hm(s['first'])}-{_hm(s['last'])}"
                 types = ", ".join(f"{c} {t}" for t, c in s["types"].items())
-                size = f", {s['bytes'] / 1e6:.1f} MB" if s.get("bytes") else ""
+                size = f", {_size(s['bytes'])}" if s.get("bytes") else ""
                 parts.append(f"{name} shows {n} {NOUNS[service][n != 1]} at {span} UTC ({types}{size}){short}")
         lines.append(f"{label}: " + ("; ".join(parts) if parts else "no services granted"))
     lead = {"explained": "", "unexplained": "the accounts show nothing: unexplained. ",
             "incomplete": "incomplete, so this says nothing either way. "}[f["outcome"]]
+    if f["outcome"] == "unexplained" and f.get("too_small"):
+        up = f" the {f['upload_mb']} MB" if f.get("upload_mb") else " the"
+        lead = f"nothing big enough to explain{up} upload: unexplained. "
     return head + lead + " | ".join(lines)
