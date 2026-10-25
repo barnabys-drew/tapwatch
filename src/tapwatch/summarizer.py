@@ -224,8 +224,9 @@ def _observed(c: Case, words: dict) -> str:
     if c.detector == "udm_admin":
         where = "a device on the home network" if f["from_lan"] else "the internet or the vendor's cloud"
         if not f["from_lan"] and f.get("src"):
-            net = clean_untrusted(f.get("network") or "") or "an unknown network"
-            where = f"{f['src']} on the internet ({net}" + (f", country {f['country']})" if f.get("country") else ")")
+            net = json.dumps(clean_untrusted(f["network"])) if f.get("network") else "an unknown network"
+            where = (f"{f['src']} ({net}" + (f", country {f['country']}" if f.get("country") else "")
+                     + "), on the internet or the vendor's cloud")
         if f["failed"]:
             return f"There were {f['count']} failed logins to the router's admin from {where} within 10 minutes."
         return (f"Someone logged in to the router's admin from {where}, a place this account had not logged in "

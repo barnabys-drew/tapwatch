@@ -2614,10 +2614,16 @@ class UdmAdmin(Detector):
     def _place(self, src: str) -> dict:
         """For a login from outside the house: the source address, whose network it is and which country (offline,
         from the ASN table). A UniFi cloud or app login names the vendor's network here, not the person's."""
-        if is_internal(src) or not self.asn:
+        try:
+            addr = ipaddress.ip_address(src)
+        except ValueError:
+            return {}   # no usable source on the line ("unknown"): nothing to place
+        if getattr(addr, "ipv4_mapped", None):
+            addr = addr.ipv4_mapped
+        if is_internal(str(addr)) or not self.asn:
             return {}
-        hit = self.asn.network(src)
-        return {"src": src, **(hit or {"network": "", "country": ""})}
+        hit = self.asn.network(str(addr))   # IPv4 only: an IPv6 source is "not in the table"
+        return {"src": str(addr), **(hit or {"asn": None, "network": "", "country": ""})}
 
 
 def _expected_services(takeover_cfg: dict) -> dict[str, set[str]]:
