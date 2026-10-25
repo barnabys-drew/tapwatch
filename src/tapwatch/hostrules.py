@@ -34,6 +34,7 @@ from typing import ClassVar
 
 from . import vulnkev
 from .detectors import (
+    HOUSE_IPS,
     Detector,
     Warmup,
     _expected_services,
@@ -166,7 +167,8 @@ def outside(remote: str, port) -> bool:
         return False
     if getattr(addr, "ipv4_mapped", None):  # ::ffff:192.168.x.x is the LAN (3,276 such eBPF rows, 2026-10-18)
         addr = addr.ipv4_mapped
-    return not (addr.is_loopback or is_internal(str(addr))) and str(port) != "53"
+    # the house's own public address (network.public_ips) is a way back in, not the internet
+    return not (addr.is_loopback or is_internal(str(addr)) or str(addr) in HOUSE_IPS) and str(port) != "53"
 
 
 @dataclass

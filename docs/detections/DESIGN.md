@@ -97,6 +97,14 @@ What these numbers imply:
   proposes this machine's /64). Phones and laptops prefer IPv6 when the router offers it, so without
   it that traffic is invisible to every detector (fixed 2026-10-15; the 14 rotating addresses above
   were link-local, which was always inside).
+- **The house's own public address looks external** unless `network.public_ips` lists it. Devices on the
+  same LAN reach each other through it: Tailscale peers try each other's router-mapped port about once a
+  minute, which read as beaconing to an unnamed address (2026-10-24, three devices after joining Fleet over
+  Tailscale). Listed, a record between a LAN device and that address is skipped before the detectors (the
+  address doesn't become a LAN device: that raised new-device and admin-port cases on it in review), and the
+  host rules don't count it as outside. The internet reaching it, as in the router's IPS hits, is unchanged.
+  tapwatch can't learn it: the router's logs never carry it. A stale entry hides traffic to whoever has the
+  address now, so it's set by hand and must follow the ISP.
 - **Same-switch east-west traffic isn't mirrored.** PC → NAS on the same USW, or
   Wi-Fi client → client on the same AP, never crosses port 1. Only 75 device→device
   rows were seen, all of them cross-VLAN/routed. Lateral movement is visible only

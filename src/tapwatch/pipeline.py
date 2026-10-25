@@ -69,6 +69,8 @@ class Pipeline:
         """One record through every detector; a `{"_type": "tick", "ts": now}` record is the minute tick instead."""
         out = []
         tick = rec.get("_type") == "tick"
+        if not tick and det.hairpin(rec):
+            return out   # a LAN device and the house's own public address: traffic that never left the house
         if not tick and rec.get("_type") in ("osquery", zeek.FLEET_OSQUERY) and rec.get("action") == "snapshot":
             self.record_inventory(rec)
         for d in self.detectors:

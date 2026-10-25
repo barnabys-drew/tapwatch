@@ -111,6 +111,11 @@ network:                             # home rules (docs/detections/DESIGN.md R03
   local_nets: []                     # your LAN's public IPv6 prefix(es), e.g. [2001:db8:1234::/48]. Private IPv4
                                      # and link-local/ULA IPv6 are built in; without this, devices' IPv6 global
                                      # traffic (phones prefer it) is invisible to every detector
+  public_ips: []                     # the house's own public IPv4 address(es), one address each (no names or
+                                     # ranges): devices reaching each other through it (Tailscale, a port forward
+                                     # used from inside) aren't talking to the internet, so that traffic is skipped.
+                                     # Update it if your ISP changes the address: a stale one hides traffic to
+                                     # whoever has it now. Behind CGNAT (a 100.64.x.x WAN address), leave it empty
 
 dev_profile:                         # dev workstations running coding agents
   hosts: []                          # their traffic to dev services (model APIs, registries, GitHub) is not

@@ -306,7 +306,8 @@ def base_config(cfg: dict | None = None) -> dict:
     cfg = dict(cfg or {})
     cfg["warmup_seconds"] = 0
     # the scenario LAN's gateway, and no admin devices: a configured admin at .66 would excuse the sweep (measured)
-    cfg["network"] = {**(cfg.get("network") or {}), "gateways": [GW], "local_nets": [], "admin_devices": []}
+    cfg["network"] = {**(cfg.get("network") or {}), "gateways": [GW], "local_nets": [], "admin_devices": [],
+                      "public_ips": []}   # the live house's address must not make a scenario's outside host inside
     # the PC's address for the host rules; no agent logs, so R22 expects only the Zeek feeds when a scenario turns it on
     cfg["host_context"] = {"host": PC, "results_logs": ["/nonexistent/osqueryd.results.log"]}
     cfg["categories"] = {}
