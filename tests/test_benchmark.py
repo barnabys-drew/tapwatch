@@ -163,25 +163,24 @@ def test_judge_scores_each_width_on_its_own_answers(tmp_path):
     assert not [d for d in card["detectors"] if d["detector"] == "port_scan" and d["width"] == "any_device"]
 
 
-def test_a_would_closed_true_positive_shows_in_red_and_disqualifies(tmp_path, monkeypatch, capsys):
+def test_a_would_closed_true_positive_shows_in_red_and_disqualifies(tmp_path, capsys):
     store = Store(str(tmp_path / "t.db"))
     tp = judge_history(store)
     assert not any(d["qualifies"] for d in benchmark.judge(store.db)["detectors"])   # far short of the volume bars
     # with the volume bars lowered to this fixture, only the true positive (and thin evidence) stands in the way
-    monkeypatch.setattr(benchmark, "QUALIFY_MIN_DECIDED", 2)
-    monkeypatch.setattr(benchmark, "QUALIFY_MIN_WEEKS", 2)
-    card = benchmark.judge(store.db)
+    low = benchmark.Qualify(min_decided=2, min_weeks=2)
+    card = benchmark.judge(store.db, qualify=low)
     assert _det(card, "new_domain", "device")["qualifies"] is True
     anyd = _det(card, "new_domain", "any_device")
     assert anyd["qualifies"] is False and "would have closed 1 true positive(s)" in anyd["why"]
     assert "agreement 75%, needs 98%" in anyd["why"]
     assert _det(card, "beaconing", "device")["qualifies"] is True
     assert "1 week(s) of them, needs 2" in _det(card, "beaconing", "any_device")["why"]
-    md = benchmark.judge_markdown(store.db)
+    md = benchmark.judge_markdown(store.db, qualify=low)
     assert f"| new_domain | any device | 7 | 6 | 75% (3/4) | 86% (6/7) | **1** (#{tp}) | 2 | no: would have closed" in md
     assert "| new_domain | same device | 7 | 5 | 100% (3/3) | 71% (5/7) | 0 | 2 | **yes** |" in md
     assert "| **all** | any device |" in md
-    page = ui.render_stats(store)[1]
+    page = ui.render_stats(store, low)[1]
     assert "Judge scorecard (shadow)" in page and f'<b class="err">1</b> <a href="/case/{tp}">#{tp}</a>' in page
     assert '<tr class="r-alert"><td class="mono">new_domain</td><td>any device</td>' in page
     assert "qualifies</span>" in page

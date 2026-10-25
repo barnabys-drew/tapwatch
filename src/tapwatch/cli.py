@@ -31,12 +31,13 @@ from . import (
     evaluate,
     evidence,
     history,
+    judge,
     longhaul,
     selfcheck,
     zeek,
 )
 from .pipeline import Pipeline
-from .store import Store
+from .store import Store, WorkflowError
 from .summarizer import summarize
 
 
@@ -47,7 +48,9 @@ def without_ai(cfg: dict) -> dict:
     return {**cfg, "categories": {**(cfg.get("categories") or {}), "ai": False}}
 
 
-def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=None) -> Pipeline:
+def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=None, live: bool = False) -> Pipeline:
+    """`live`: the `run` service. Only it may auto-close (#204); a replay, eval or one-off digest never does, whatever
+    the config says (a replay of old logs must not close cases on today's scorecard)."""
     if not use_ai:
         cfg = without_ai(cfg)
     return Pipeline(config.build_detectors(cfg), config.assets(cfg), Store(cfg.get("db_path", "tapwatch.db")),
@@ -59,7 +62,8 @@ def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=Non
                     herdr_ai_severity=(cfg.get("herdr") or {}).get("ai_severity", 3.5),
                     hostctx=config.hostctx(cfg), zeek_dirs=zeek_dirs,
                     learning_seconds=float(cfg.get("learning_days", 3)) * 86400,
-                    update_notice=_update_notice(cfg))
+                    update_notice=_update_notice(cfg),
+                    autoclose=config.judge_autoclose(cfg) if live else judge.AutoClose())
 
 
 def _update_notice(cfg: dict):
@@ -87,11 +91,12 @@ def _single_instance(db_path: str):
 def cmd_run(args, cfg) -> int:
     lock = _single_instance(cfg.get("db_path", "tapwatch.db"))  # noqa: F841 - held until exit
     Path("tapwatch-run.pid").write_text(str(os.getpid()))  # the watchdog checks this process is alive
-    p = _pipeline(cfg, zeek_dirs=args.zeek_dir)
+    p = _pipeline(cfg, zeek_dirs=args.zeek_dir, live=True)
     log = logging.getLogger("tapwatch")
     host_dirs = config.host_log_dirs(cfg)  # the endpoint agents' osquery logs, for the host rules (R17+)
     log.info("watching %s (AI triage: %s, notifications: %s)", args.zeek_dir + host_dirs,
              "on" if p.client else "OFF - rules only", "on" if p.notifier else "OFF")
+    log.info("judge: %s", p.autoclose.s.summary())
     if config.missing_feeds(cfg):
         log.warning(config.missing_feeds(cfg))
     log.info("restored learned state for %d detector(s)", p.restore_state())
@@ -211,15 +216,40 @@ def cmd_selfcheck(args, cfg) -> int:
 
 def cmd_benchmark(args, cfg) -> int:
     """Week-by-week noise rate, Jev agreement, host-context accuracy and the judge's scorecard, as Markdown."""
-    print(benchmark.markdown(Store(cfg.get("db_path", "tapwatch.db")).db, judge_replay=args.judge_replay))
+    print(benchmark.markdown(Store(cfg.get("db_path", "tapwatch.db")).db, judge_replay=args.judge_replay,
+                             qualify=benchmark.Qualify.from_config(cfg)))
     return 0
 
 
 def cmd_judge(args, cfg) -> int:
-    """The learned judge's training set and guardrails (#200, #201). Read-only except `backfill`."""
-    from . import judge
-
-    db = Store(cfg.get("db_path", "tapwatch.db")).db
+    """The learned judge's training set and guardrails (#200, #201), and what auto-close did (#204, #205).
+    Read-only except `backfill` and `undo`."""
+    store = Store(cfg.get("db_path", "tapwatch.db"))
+    db = store.db
+    if args.action == "closed":
+        settings = config.judge_settings(cfg)
+        print(settings.summary())
+        for det, text in judge.AutoClose(settings).status(db).items():   # closing, or why not
+            print(f"{det}: {text}")
+        rows = judge.closures(db)
+        if not rows:
+            print("the judge has closed nothing")
+        for r in rows:
+            undone = f"  UNDONE ({r['undone_how']}, {r['undone_by']})" if r["undone_ts"] else ""
+            print(f"#{r['case_id']}  {time.strftime('%Y-%m-%d %H:%M', time.localtime(r['ts']))}  {r['detector']}  "
+                  f"{r['width'].replace('_', ' ')}  now {r['status']}{undone}")
+        return 0
+    if args.action == "undo":
+        if args.case_id is None:
+            print("tapwatch judge undo needs a case number", file=sys.stderr)
+            return 2
+        try:
+            store.undo_judge_close(args.case_id, "cli")
+        except WorkflowError as e:
+            print(e, file=sys.stderr)
+            return 1
+        print(f"#{args.case_id} is back to investigating, the judge's disposition cleared")
+        return 0
     if args.action == "backfill":
         counts = judge.backfill(db)
         print("examples from the audit trail: " + (", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "none"))
@@ -619,7 +649,8 @@ def cmd_ui(args, cfg) -> int:
                  zeek_dirs=args.zeek_dir or u.get("zeek_dirs") or [],
                  host=args.host or u.get("host", "127.0.0.1"), port=args.port or u.get("port", 8765),
                  token=os.environ.get(u.get("token_env", "TAPWATCH_UI_TOKEN")) or None,
-                 base_url=u.get("base_url"), tailscale_users=u.get("tailscale_users"))
+                 base_url=u.get("base_url"), tailscale_users=u.get("tailscale_users"),
+                 judge_settings=config.judge_settings(cfg))
     ui.serve(app)
     return 0
 
@@ -783,10 +814,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--stats", action="store_true", help="also count why candidates were skipped")
     s.set_defaults(fn=cmd_longhaul)
 
-    s = sub.add_parser("judge", help="the learned judge (v0.4): build its training set, replay its guardrails")
-    s.add_argument("action", choices=["backfill", "examples", "replay"],
+    s = sub.add_parser("judge", help="the learned judge (v0.4): build its training set, replay its guardrails, "
+                                     "list or undo what it auto-closed")
+    s.add_argument("action", choices=["backfill", "examples", "replay", "closed", "undo"],
                    help="backfill: examples from the audit trail; examples: counts per source; replay: eligibility "
-                        "over the history (exit 1 if a true positive would have been eligible)")
+                        "over the history (exit 1 if a true positive would have been eligible); closed: everything "
+                        "auto-close closed and any back-off; undo CASE: reopen a case the judge closed")
+    s.add_argument("case_id", type=int, nargs="?", help="the case for undo")
     s.set_defaults(fn=cmd_judge)
 
     s = sub.add_parser("accounts", help="sign in Google accounts for the account check (docs/setup/account-check.md)")

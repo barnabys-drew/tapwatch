@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from . import detectors, hostrules
+from . import detectors, hostrules, judge
 from .hostctx import HostContext
 from .notifiers import HerdrNotifier, Notifier
 from .router import Thresholds
@@ -225,6 +225,15 @@ def build_detectors(cfg: dict) -> list:
     net = detectors.build(cfg, ips, doms, popular_domains(cfg), assets(cfg).table, labels)
     warmup = next((d.warmup for d in net if isinstance(getattr(d, "warmup", None), detectors.Warmup)), None)
     return net + hostrules.build(cfg, warmup)  # one warm-up clock: the pipeline persists the first detector's
+
+
+def judge_settings(cfg: dict) -> judge.Settings:
+    """`judge:`: auto-close (#204) and back-off (#205). Off unless `auto_close: true` and a detector is listed."""
+    return judge.Settings.from_config(cfg)
+
+
+def judge_autoclose(cfg: dict) -> judge.AutoClose:
+    return judge.AutoClose(judge_settings(cfg))
 
 
 def thresholds(cfg: dict) -> Thresholds:

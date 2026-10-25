@@ -148,7 +148,7 @@ the eval harness skips the same records. An agent's software snapshot also goes 
 | **Doctor** | `tapwatch doctor` checks every part of the install (capture, logs, services, agents, router syslog, channels) and says how to fix what isn't working. | `doctor.py` |
 | **Update** | `tapwatch update` moves a checkout to the newest release tag (or `main`, `update.channel`): fetch, install dependencies, self-check, restart what the change needs, then check the services stay up and doctor finds nothing new; any failure or Ctrl-C rolls back. The digest says when a newer release exists; nothing updates by itself. A `vX.Y.Z` tag makes the release and its Windows ZIP (`.github/workflows/release.yml`). | `update.py` |
 | **Moving an install** | `deploy/export-state.sh` packs the config, `.env`, database (cases, notes, suppressions, learned baselines) and assets; `tapwatch import-state` takes them over on a fresh install, refusing any other file in the archive and anything that already exists, and lists the settings that named the old computer. | `migrate.py` |
-| **Learned judge (shadow)** | v0.4 (#37). Every disposition writes a training example with the code facts at that moment and who decided (`judge.label_source`: the owner's own closes and closes made at their request count; an AI's own and tapwatch's own closes don't). `judge.eligible` refuses always-alert, code-floored, misused-agent, critical code-only, correlated-alert and recent-true-positive cases, anything ever called a true positive with the same key, and anything without owner precedent: cases on 3 days (not mostly one week), closed on 2 days. Keys are the full host name or program path. After each case is stored, the shadow judge records what it would do at two key widths (same device, any device) with the precedent cases. It never changes a route, status or disposition, and adds no suppressions. `tapwatch judge backfill / examples / replay`. The scorecard (#203, `benchmark.judge`) grades those answers per ISO week, detector and width against the owner's own dispositions (an AI's closes don't count) and counts true positives it would have closed, whoever marked them; a detector qualifies for auto-close at a width with 50 decided would-closes over 4 weeks, 98% agreement and no such true positive (provisional constants until #204). | `judge.py`, `benchmark.py` |
+| **Learned judge** | v0.4 (#37). Every disposition writes a training example with the code facts at that moment and who decided (`judge.label_source`: the owner's own closes and closes made at their request count; an AI's own and tapwatch's own closes don't). `judge.eligible` refuses always-alert, code-floored, misused-agent, critical code-only, correlated-alert and recent-true-positive cases, anything ever called a true positive with the same key, and anything without owner precedent: cases on 3 days (not mostly one week), closed on 2 days. Keys are the full host name or program path. After each case is stored, the shadow judge records what it would do at two key widths (same device, any device) with the precedent cases. It never changes a route, status or disposition, and adds no suppressions. `tapwatch judge backfill / examples / replay`. The scorecard (#203, `benchmark.judge`) grades those answers per ISO week, detector and width against the owner's own dispositions (an AI's closes don't count) and counts true positives it would have closed, whoever marked them; a detector qualifies for auto-close at a width with 50 decided would-closes over 4 weeks, 98% agreement and no such true positive (the owner's defaults, `judge.qualify`). **Auto-close (#204) ships off** (`judge.auto_close: false`); with it on, a case is closed only for a detector the owner listed in `judge.auto_close_detectors` at a width it is listed for and qualifies at, and only when it is new, not always-alert, not alert-routed (`judge.auto_close_alerts: false`) and still eligible when the judge acts. It closes as `benign_expected`, actor `judge precedent-1`, with a note naming the precedent, after any alert went out; never a suppression or a route change. The case desk's Undo (per case, or per day on the Judge page) reopens it to investigating with no disposition, audited. Only `run` closes, ten minutes after a case was stored so its pairing partner has arrived; a late partner reopens it. **Back-off (#205):** a judge close or a suggested close later called a true positive (whenever it is labelled), or undoing more than `judge.backoff.max_undo_rate` of its closes in `window_days`, stops auto-close for that detector (`judge_backoff`, audited, in the digest), until it qualifies again both on the cases raised since and over its whole history. The digest lists what it closed, per detector with links. See [After routing](#after-routing). | `judge.py`, `benchmark.py` |
 | **Account check** | Opt-in and on demand (`tapwatch accounts`, `tapwatch account-check <case>`): asks the owner's own Google accounts (Drive Activity, YouTube, Gmail metadata; read-only scopes) what was uploaded around an `upload_spike` case to Google. Three outcomes: explained, unexplained, or incomplete. Counts, types, times and sizes only; the alerter never calls it. | `accounts.py`, [setup/account-check.md](setup/account-check.md) |
 | **Watchdog** | Every 5 minutes it checks that the capture is up (its unit or a named container), `conn.log` is fresh, the alerter PID is alive and, where its unit is installed, the syslog listener is active. It notifies once on failure and once on recovery. | `eval/watchdog.sh` |
 | **Eval harness** | Routes the same cases two ways, rules-only and with Jev, against labelled hosts, and reports what each surfaced, alerted on and cost. `tapwatch selfcheck` runs scripted attack and false-positive shapes through the detectors as configured; `tapwatch benchmark` reports the week-by-week noise rate, Jev agreement, host-context accuracy and the judge's scorecard (`--judge-replay` re-judges every stored case from the examples before it). | `evaluate.py`, `selfcheck.py`, `benchmark.py`, `eval/` |
@@ -260,6 +260,52 @@ reported addresses name the device, if they all agree (`Pipeline.identify`). WSL
 address (10.255.255.254) is never a PC's host: every such PC shares it. A case that matches a rule
 arrives closed as `benign_expected` (logged, counted in the stats, not queued).
 `match_suppression` never matches a `must_alert` case, and the router checks that too.
+
+**The judge's auto-close is off by default** and changes nothing above when off. The shadow judge still records,
+for every new case, what it would do (#202). To let it close cases, the owner sets `judge.auto_close: true` and
+names detectors in `judge.auto_close_detectors`: `[new_domain]` closes at the same-device precedent width only,
+and `{new_domain: [device, any_device]}` lets the wider width close too. Even then a detector closes nothing until
+its scorecard row on the stats page says it qualifies at that width (`judge.qualify`, defaults 50 decided
+would-closes in 4 ISO weeks, 98% agreement, no true positive it would have closed).
+
+Why an allow-list on top of the scorecard: qualifying is computed from data and can change without anyone looking.
+A detector could cross the bar overnight, and a new detector or a wider key could start closing cases the owner
+never decided to hand over. With the list, every expansion of what the judge may close is a config change the owner
+made. The scorecard can only narrow it, by not qualifying or by backing off. Neither control alone can turn closing on.
+
+Only `tapwatch run` may close: replay, eval and a one-off digest build their pipeline with auto-close forced off. A
+mistake in the `judge:` section never turns closing on and never stops `run`. A value of the wrong type, `true`
+where a list of widths belongs, or a bare string for the list each keep auto-close off, with the reason in the log,
+on the Judge page and in `tapwatch judge closed`. An empty, false or null entry switches that one detector off.
+
+`run`'s minute tick considers a case once, ten minutes after it was stored (`judge.SETTLE_S`, two pairing windows):
+pairing joins a host and a network case within five minutes, and a connection is logged when it ends, so a partner
+can be stored minutes later. A case with a digest-or-louder partner stays open. If a partner arrives after the
+close anyway, `link_cases` reopens the case (`undone_how: evidence`, not counted against the judge). An alert-routed
+case closes only with `auto_close_alerts`, only after its alert was delivered (`alert_delivered`), and never when
+`router.critical` says it is critical. The close is one conditional write: if the owner moved or labelled the case
+while the judge looked, the judge's write loses. It is audited like `update_case`, with actor `judge precedent-1`
+and a note naming the precedent cases. Its closes never become training examples: `label_source` maps any actor containing "judge" to
+nothing. They never count as scorecard agreement either, because the scorecard counts only the owner's own
+dispositions. The other stats leave them out too: the weekly noise rate, Jev agreement, host-context accuracy and
+the stats tiles read `store.OWNER_DISPOSITION`, and the judge's closes get a tile of their own. A digest case it
+closed is not listed in the digest as one to read. The digest's "What the judge closed" section counts those closes
+per detector instead, with links. Undo is one button on the case page, or one per day on the desk's Judge page, or
+`tapwatch judge undo N`: back to `investigating` with no disposition, audited. Undoing, reopening or calling one of
+its closes a true positive is counted against the judge (`judge_closures.undone_how`). Back-off then stops a
+detector on its own (`judge_backoff`) when one of these happens, timed by when the owner acted, not when the case
+happened:
+
+- a close it made is called a true positive, however old the close;
+- a case it only suggested closing is called a true positive (the only label that disagrees with "noise"), however
+  old the case;
+- more than `max_undo_rate` (2%) of its closes are undone within `judge.backoff.window_days` (14), which is any undo
+  among fewer than 50.
+
+The next digest says so. A backed-off detector resumes only when it qualifies again, measured the way closing is
+decided: on the cases raised since it stopped, alone (a fresh window of four ISO weeks and 50 owner decisions at the
+default bar), and over its whole history. A true positive in that history keeps it off at the default bar. The
+Judge page and `tapwatch judge closed` say, per detector, whether it is closing, and if not, which of these is missing.
 
 ## Host context and agent-awareness
 
