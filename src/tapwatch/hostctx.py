@@ -980,7 +980,6 @@ class HostContext:
 
 
 FLEET_DISCOVER = 600         # seconds between looks for newly enrolled computers in the Fleet log
-FLEET_TAIL = 5_000_000       # bytes of the Fleet log read to find the enrolled computers (they report every minute)
 
 
 class FleetContexts:
@@ -997,6 +996,7 @@ class FleetContexts:
         self.path, self.clock = Path(results_log), clock
         self.agents: dict[str, HostContext] = {}
         self._looked = 0.0
+        self._pos: tuple[int, int] = (0, 0)   # (inode, bytes read): after the first look, only what was appended
 
     def _discover(self) -> None:
         now = self.clock()
@@ -1004,12 +1004,18 @@ class FleetContexts:
             return
         self._looked = now
         try:
-            size = self.path.stat().st_size
+            st = self.path.stat()
+            ino, pos = self._pos
+            if ino != st.st_ino or st.st_size < pos:   # first look, or the log was rotated: the same tail host context reads
+                pos = max(0, st.st_size - LOG_TAIL)
             with self.path.open("rb") as fh:
-                fh.seek(max(0, size - FLEET_TAIL))
-                data = fh.read()
+                fh.seek(pos)
+                data = fh.read(st.st_size - pos)
         except OSError:
             return
+        end = data.rfind(b"\n") + 1   # a half-written last line waits for the next look
+        self._pos = (st.st_ino, pos + end)
+        data = data[:end]
         for line in data.splitlines():
             if b'"hostIdentifier"' not in line:
                 continue

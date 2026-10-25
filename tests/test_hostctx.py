@@ -1275,3 +1275,18 @@ def test_the_pipeline_tags_fleet_context_and_the_summary_names_the_computer(tmp_
     text = summarize(c, Assets())
     assert 'On that computer ("shared-yoga", from its endpoint agent\'s log)' in text and '"sync.exe"' in text
     assert "coding-agent" not in text and "the PC itself" not in text
+
+
+def test_a_computer_that_starts_reporting_later_is_picked_up(tmp_path):
+    from tapwatch.hostctx import FLEET_DISCOVER, FleetContexts
+    log = fleet_log(tmp_path)
+    now = [T0]
+    fc = FleetContexts(log, clock=lambda: now[0])
+    assert fc.find("192.168.50.30", T0) is None
+    third = "4D896953-0000-0000-0000-000000000003"
+    with log.open("a") as fh:                                   # a laptop wakes up and reports
+        fh.write(fleet_row(third, "LAPTOP", "host_addresses", T0 + 60, "snapshot",
+                           snapshot=[{"address": "192.168.50.30"}]) + "\n")
+    now[0] = T0 + FLEET_DISCOVER + 1
+    found = fc.find("192.168.50.30", T0 + 60)
+    assert found is not None and found.hostname == "laptop" and len(fc.agents) == 3
