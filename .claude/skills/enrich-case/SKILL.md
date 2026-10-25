@@ -8,6 +8,11 @@ description: Enrich and triage a tapwatch case like a SOC analyst. Pull the case
 Run from the tapwatch directory. The goal is a verdict the user can act on: likely
 `true_positive`, `false_positive` or `benign_expected`, with the evidence for it.
 
+## 0. Per-detector playbooks
+
+`playbooks/<detector>.md` holds the worked method for detectors where the AI's summary is not enough:
+read it first when one exists (currently `new_device`).
+
 ## 1. Local context first (sends nothing)
 
 ```bash
