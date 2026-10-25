@@ -468,8 +468,12 @@ def cmd_update(args, cfg) -> int:
             print(f"  ... and {len(p.changes) - 30} more")
         if args.check:
             return 0
-        if not args.yes and input("update now? the alerter restarts for a few seconds [y/N] ").strip().lower() != "y":
-            print("not updated")
+        try:
+            ok = args.yes or input("update now? the alerter restarts for a few seconds [y/N] ").strip().lower() == "y"
+        except (EOFError, KeyboardInterrupt):
+            ok = False
+        if not ok:
+            print("\nnot updated")
             return 1
         update.apply(cfg, args.config, p)
         return 0
