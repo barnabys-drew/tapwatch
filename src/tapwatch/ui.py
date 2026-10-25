@@ -35,6 +35,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from . import benchmark, evidence, judge
 from .store import (
     DISPOSITIONS,
+    JUDGE_DECIDED,
+    OWNER_DISPOSITION,
     STATUSES,
     TRANSITIONS,
     Store,
@@ -331,8 +333,8 @@ QUEUE_SORTS = {
 }
 
 
-BUCKETS = {"decided": "disposition IS NOT NULL",
-           "noise": "disposition IN ('false_positive', 'benign_expected')"}  # the stats tiles' buckets
+BUCKETS = {"decided": f"{OWNER_DISPOSITION} IS NOT NULL",   # the stats tiles' buckets: the owner's decisions, never
+           "noise": f"{OWNER_DISPOSITION} IN ('false_positive', 'benign_expected')"}   # a judge auto-close (#204)
 
 
 def queue_filters(params: dict) -> dict:
@@ -600,6 +602,9 @@ def render_judge(store: Store, settings: judge.Settings, csrf: str) -> tuple[str
                    'judge.auto_close: true</span> and list it in <span class="mono">judge.auto_close_detectors'
                    '</span> in config.yaml, then restart <span class="mono">tapwatch run</span>. It still closes '
                    'nothing until the scorecard on the Stats page says that detector qualifies.</p>')
+    detectors = judge.AutoClose(settings).status(store.db) if settings.auto_close else {}
+    if detectors:   # closing, or in plain words why not (backed off, or not qualifying)
+        status += "<dl>" + "".join(f'<dt class="mono">{e(d)}</dt><dd>{e(t)}</dd>' for d, t in detectors.items()) + "</dl>"
     status += "</div>"
     bo = ""
     if backoffs:
@@ -842,10 +847,15 @@ def column_chart(values: list[int], labels: list[str], height: int = 170) -> str
 def render_stats(store: Store, qualify: benchmark.Qualify | None = None) -> tuple[str, str]:
     db = store.db
     total = db.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
-    decided_all = db.execute("SELECT COUNT(*) FROM cases WHERE disposition IS NOT NULL").fetchone()[0]
-    noisy_all = db.execute("SELECT COUNT(*) FROM cases WHERE disposition IN ('false_positive', 'benign_expected')"
-                           ).fetchone()[0]
+    # The owner's dispositions only: a judge auto-close (#204) is counted on its own tile, never as the owner's call.
+    # The SQL below joins only the fixed constants BUCKETS and OWNER_DISPOSITION.
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+    decided_all = db.execute(f"SELECT COUNT(*) FROM cases WHERE {BUCKETS['decided']}").fetchone()[0]
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+    noisy_all = db.execute(f"SELECT COUNT(*) FROM cases WHERE {BUCKETS['noise']}").fetchone()[0]
     tp_all = db.execute("SELECT COUNT(*) FROM cases WHERE disposition = 'true_positive'").fetchone()[0]
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+    judge_all = db.execute(f"SELECT COUNT(*) FROM cases WHERE {JUDGE_DECIDED}").fetchone()[0]
     triaged = db.execute("SELECT COUNT(*) FROM cases WHERE verdict IS NOT NULL").fetchone()[0]
     sup_hits = db.execute("SELECT COALESCE(SUM(hits), 0) FROM suppressions").fetchone()[0]
 
@@ -859,7 +869,9 @@ def render_stats(store: Store, qualify: benchmark.Qualify | None = None) -> tupl
                     "FP + benign of decided", bucket(disposition="noise"))
              + tile(tp_all, "True positives", "red" if tp_all else "green", "", bucket(disposition="true_positive"))
              + tile(triaged, "Jev triaged", "violet", "verdict recorded", bucket(triaged="1"))
-             + tile(sup_hits, "Suppressed", "green", "rule hits", "/suppressions"))
+             + tile(sup_hits, "Suppressed", "green", "rule hits", "/suppressions")
+             + (tile(judge_all, "Closed by the judge", "violet", "not counted as your decisions", "/judge")
+                if judge_all else ""))
 
     # Cases per hour, last 48 hours
     now = time.time()
@@ -890,7 +902,8 @@ def render_stats(store: Store, qualify: benchmark.Qualify | None = None) -> tupl
                     f'<tbody>{body}</tbody></table></div>') if grid else '<div class="card empty">No cases yet.</div>'
 
     # False-positive rate per detector, by disposition
-    disp = db.execute("SELECT detector, COALESCE(disposition, '') AS d, COUNT(*) AS n FROM cases "
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- a constant
+    disp = db.execute(f"SELECT detector, COALESCE({OWNER_DISPOSITION}, '') AS d, COUNT(*) AS n FROM cases "
                       "GROUP BY detector, d").fetchall()
     by_det: dict[str, dict[str, int]] = {}
     for r in disp:
@@ -916,7 +929,8 @@ def render_stats(store: Store, qualify: benchmark.Qualify | None = None) -> tupl
 
     # Jev confidence vs disposition
     conf: dict[str, dict[str, int]] = {b[2]: {} for b in CONF_BUCKETS}
-    for r in db.execute("SELECT verdict, COALESCE(disposition, '') AS d FROM cases WHERE verdict IS NOT NULL"):
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- a constant
+    for r in db.execute(f"SELECT verdict, COALESCE({OWNER_DISPOSITION}, '') AS d FROM cases WHERE verdict IS NOT NULL"):
         c = json.loads(r["verdict"]).get("category_confidence")
         if not isinstance(c, (int, float)):
             continue

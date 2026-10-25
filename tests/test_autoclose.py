@@ -64,10 +64,19 @@ def pipe(store, notifier=None, base_url=None, **kw):
                     autoclose=judge.AutoClose(settings(**kw)))
 
 
+def later() -> float:
+    """A moment after a case's pairing window passed: when `run`'s minute tick would first consider it."""
+    return time.time() + judge.SETTLE_S + 1
+
+
 def raise_case(p, ts=NOW + 60, host=HOST, indicators=("cdn.example.com",), facts=None, must_alert=False, severity=2,
-               detector="new_domain"):
+               detector="new_domain", settle=True):
+    """Raise a case through the pipeline, then (settle) run the auto-close sweep once its pairing window passed."""
     facts = {"count": 1, "via": "DNS", "random": False, "shared": False, "popular_known": False, **(facts or {})}
-    return p.handle(Case(detector, host, ts, "New domain", facts, list(indicators), must_alert, severity))[0]
+    cid = p.handle(Case(detector, host, ts, "New domain", facts, list(indicators), must_alert, severity))[0]
+    if settle:
+        p.autoclose.sweep(p.store, later())
+    return cid
 
 
 def stored(store, route=Route.DIGEST, **kw):
@@ -89,8 +98,14 @@ def test_config_defaults_are_off_and_the_example_config_says_so():
     assert (ex.auto_close, ex.detectors, ex.alerts) == (False, {}, False)
     assert ex.qualify == benchmark.Qualify() and ex.backoff_days == 14 and ex.max_undo_rate == 0.02
     assert "auto-close is off" in ex.summary()
-    # "true" as a string, or any truthy junk, is not a yes
-    assert judge.Settings.from_config({"judge": {"auto_close": "yes", "auto_close_alerts": 1}}).auto_close is False
+    # "true" as a string, or any truthy junk, is not a yes: it is a mistake, and a mistake keeps it off
+    junk = judge.Settings.from_config({"judge": {"auto_close": "yes", "auto_close_alerts": 1,
+                                                 "auto_close_detectors": ["new_domain"]}})
+    assert junk.auto_close is False and junk.detectors == {} and len(junk.problems) == 2
+    # YAML's own yes/on are true (YAML 1.1, as PyYAML reads it)
+    for word in ("yes", "on", "true"):
+        y = config.judge_settings(yaml.safe_load(f"judge: {{auto_close: {word}, auto_close_detectors: [new_domain]}}"))
+        assert y.auto_close is True and y.detectors == {"new_domain": ("device",)} and not y.problems
     q = benchmark.Qualify.from_config({"judge": {"qualify": {"min_decided": 80, "max_true_positives": 0}}})
     assert (q.min_decided, q.min_weeks, q.min_agreement) == (80, 4, 0.98)
 
@@ -98,10 +113,37 @@ def test_config_defaults_are_off_and_the_example_config_says_so():
 def test_allow_list_shapes():
     assert judge.allow_list(["new_domain", "beaconing"]) == {"new_domain": ("device",), "beaconing": ("device",)}
     assert judge.allow_list({"new_domain": ["any_device", "device"]}) == {"new_domain": ("device", "any_device")}
-    assert judge.allow_list({"new_domain": ["everywhere"]}) == {}          # an unknown width allows nothing
-    assert judge.allow_list("new_domain") == {"new_domain": ("device",)}
-    for junk in (None, True, 3, []):
-        assert judge.allow_list(junk) == {}
+    for empty in (None, [], {}):
+        assert judge.parse_allow_list(empty) == ({}, [])
+
+
+def test_an_empty_false_or_null_entry_is_off_and_junk_turns_nothing_on():
+    """Review of #334: `{new_domain: []}`, false and null became ('device',); true, 1 and a null min_confidence
+    raised at config load and stopped `run`; a bare string was accepted."""
+    base = {"auto_close": True}
+    for off in ([], False, None):
+        s = judge.Settings.from_config({"judge": {**base, "auto_close_detectors": {"new_domain": off,
+                                                                                     "beaconing": ["device"]}}})
+        assert s.detectors == {"beaconing": ("device",)} and s.auto_close and not s.problems   # the owner's "off"
+    for junk in ({"new_domain": True}, {"new_domain": 1}, {"new_domain": "device"}, {"new_domain": ["everywhere"]},
+                 "new_domain", 7, True, ["new_domain", 3]):
+        s = judge.Settings.from_config({"judge": {**base, "auto_close_detectors": junk}})   # never raises
+        assert (s.auto_close, s.detectors) == (False, {}) and s.problems, junk
+        assert "mistake" in s.summary()
+    for key, bad in (("min_confidence", None), ("min_confidence", "high"), ("min_confidence", 2)):
+        s = judge.Settings.from_config({"judge": {**base, "auto_close_detectors": ["new_domain"], key: bad}})
+        assert (s.auto_close, s.detectors, s.min_confidence) == (False, {}, 0.8) and s.problems
+    for section in ({"backoff": {"window_days": None}}, {"backoff": "often"}, {"qualify": {"min_decided": True}},
+                    {"qualify": {"min_agreement": "most"}}, {"qualify": 5}):
+        s = judge.Settings.from_config({"judge": {**base, "auto_close_detectors": ["new_domain"], **section}})
+        assert s.auto_close is False and s.problems, section
+    assert benchmark.Qualify.from_config({"judge": {"qualify": {"min_decided": None}}}) == benchmark.Qualify()
+    assert judge.Settings.from_config({"judge": "on"}).auto_close is False
+    # and a pipeline built from such a config closes nothing
+    s = seeded()
+    p = Pipeline([], Assets(), s, autoclose=config.judge_autoclose(
+        {"judge": {**base, "auto_close_detectors": {"new_domain": True}}}))
+    assert s.get(raise_case(p))["status"] == "new"
 
 
 def test_off_by_default_nothing_ever_closes():
@@ -142,7 +184,7 @@ def test_on_it_closes_with_the_precedent_named_and_audited():
 def test_the_guardrails_hold_when_it_is_on():
     def check(cid, s, ac, want, now=None):
         before = s.get(cid)["status"]
-        closed, why = ac.consider(s, cid, now)
+        closed, why = ac.consider(s, cid, now or later())
         assert not closed and want in why, (want, why)
         assert s.get(cid)["status"] == before and not judge.closure(s.db, cid)
 
@@ -419,6 +461,185 @@ def test_digest_without_the_judge_is_unchanged():
     title, items = note.sent[-1]
     assert title == "tapwatch daily digest: 1 item(s) to review"
     assert not [i for i in items if "judge" in i["heading"].lower()]
+
+
+# ---------------------------------------------------------------- review of #334
+
+class Broken:
+    def send(self, title, items):
+        raise RuntimeError("channel down")
+
+
+def test_a_true_positive_on_an_old_close_backs_off_whenever_it_is_labelled():
+    """Finding 2: a close from a month ago, called a true positive today, must still stop the detector."""
+    s, note = seeded(), Recorder()
+    p = pipe(s, note)
+    cid = raise_case(p)
+    assert s.get(cid)["status"] == "closed"
+    old = time.time() - 30 * DAY
+    s.db.execute("UPDATE judge_closures SET ts=? WHERE case_id=?", (old, cid))
+    s.db.execute("UPDATE cases SET first_ts=?, last_ts=? WHERE id=?", (old, old, cid))
+    s.db.commit()
+    s.update_case(cid, "ui owner", status="investigating")
+    s.update_case(cid, "ui owner", status="closed", disposition="true_positive")
+    p.send_digest()
+    b = judge.backoff_active(s.db, "new_domain")
+    assert b is not None and f"closed a true positive (#{cid})" in b["reason"]
+    assert s.db.execute("SELECT 1 FROM audit WHERE action='judge back-off'").fetchone()
+    assert any(i["heading"] == "The judge stopped auto-closing new_domain" for i in note.sent[-1][1])
+
+
+def test_a_true_positive_on_an_old_suggestion_backs_off_too():
+    s = seeded(days=(60, 50, 40))
+    cid = add(s, ts=NOW - 30 * DAY)          # a month-old case the judge would have closed, labelled only today
+    judge.decide(s.db, cid)
+    assert s.judge_decision(cid)["suggestion"] == "close_noise"
+    s.update_case(cid, "ui owner", status="closed", disposition="true_positive")
+    ac = judge.AutoClose(settings())
+    ac.review(s.db)
+    assert f"would have closed was called a true positive (#{cid})" in judge.backoff_active(s.db, "new_domain")["reason"]
+
+
+def test_the_close_never_overwrites_an_owner_who_got_there_first(monkeypatch):
+    """Finding 3: the owner moves or labels the case while the judge is deciding; the judge's write must lose."""
+    real = judge.eligible
+    for owner in (lambda s, cid: s.update_case(cid, "ui owner", status="investigating"),
+                  lambda s, cid: s.update_case(cid, "ui owner", disposition="false_positive")):
+        s = seeded()
+        cid = stored(s)
+
+        def racing(db, row, *a, _s=s, _cid=cid, _owner=owner, **k):
+            out = real(db, row, *a, **k)
+            _owner(_s, _cid)
+            return out
+
+        monkeypatch.setattr(judge, "eligible", racing)
+        closed, why = judge.AutoClose(settings()).consider(s, cid, later())
+        monkeypatch.setattr(judge, "eligible", real)
+        r = s.get(cid)
+        assert not closed and "changed while" in why
+        assert r["status"] != "closed" and r["disposition"] in (None, "false_positive")
+        assert not judge.closure(s.db, cid) and not [a for a in s.audit_trail(cid) if a["actor"] == judge.ACTOR]
+
+
+def partner(route, pid=999):
+    return {"id": pid, "detector": "host_lolbin", "title": "partner", "route": route, "minutes": 2}
+
+
+def test_it_waits_out_the_pairing_window_and_a_partner_keeps_it_open():
+    """Finding 4: nothing closes until the correlation window passed, and a digest-or-louder partner keeps it open."""
+    s = seeded()
+    p = pipe(s)
+    cid = raise_case(p, settle=False)
+    assert p.autoclose.sweep(s, time.time()) == [] and s.get(cid)["status"] == "new"     # too soon to look
+    assert "waiting" in p.autoclose.consider(s, cid, time.time())[1]
+    s.link_cases(cid, 999, partner("alert"), "paired with #999")
+    closed, why = p.autoclose.consider(s, cid, later())
+    assert not closed and "paired with #999" in why
+    # every minute tick sweeps, but only once the window passed
+    s2 = seeded()
+    p2 = pipe(s2)
+    cid2 = raise_case(p2, settle=False)
+    p2.process({"_type": "tick", "ts": time.time()})
+    assert s2.get(cid2)["status"] == "new"
+    assert p2.autoclose.sweep(s2, later()) == [cid2]
+
+
+def test_a_partner_after_the_close_reopens_it_without_counting_against_the_judge():
+    s, note = seeded(), Recorder()
+    p = pipe(s, note)
+    cid = raise_case(p)
+    assert s.get(cid)["status"] == "closed"
+    s.link_cases(cid, 999, partner("digest"), "paired with #999")
+    r = s.get(cid)
+    assert (r["status"], r["disposition"]) == ("investigating", None)
+    assert judge.closure(s.db, cid)["undone_how"] == "evidence"
+    assert any("Reopened: paired with #999" in n["text"] for n in s.notes(cid))
+    assert p.autoclose.drift(s.db, "new_domain", time.time()) is None                 # not the owner disagreeing
+    p.send_digest()
+    assert [i for i in note.sent[-1][1] if i["heading"] == "New domain"]               # back among the items to read
+    cid2 = raise_case(p, ts=NOW + 7200)
+    s.link_cases(cid2, 998, partner("log", 998), "paired with #998")                   # a log-level partner: no change
+    assert s.get(cid2)["status"] == "closed"
+
+
+def test_alerts_close_only_when_delivered_and_never_when_critical():
+    """Finding 5, with auto_close_alerts on: an undelivered alert stays open, and so does any critical one."""
+    allow = {"test_rule": ("device",)}
+    ac = judge.AutoClose(settings(alerts=True, detectors=allow))
+    for notifier in (Broken(), None):          # delivery failed, or no channel to deliver it at all
+        s = seeded(detector="test_rule")
+        cid = raise_case(pipe(s, notifier, alerts=True, detectors=allow), detector="test_rule", severity=4)
+        assert s.get(cid)["route"] == "alert" and s.get(cid)["status"] == "new"
+        assert "not delivered" in ac.consider(s, cid, later())[1]
+    s = seeded(detector="test_rule")
+    cid = add(s, detector="test_rule", ts=NOW + 60, route=Route.ALERT, facts={"alert_delivered": time.time()})
+    verdict = {"category": "c2_beaconing", "category_confidence": 0.9, "severity": 3.8, "severity_confidence": 0.8,
+               "routine": 0.0, "page_admin": 0.9}
+    s.db.execute("UPDATE cases SET verdict=? WHERE id=?", (json.dumps(verdict), cid))
+    s.db.commit()
+    judge.decide(s.db, cid)
+    closed, why = ac.consider(s, cid, later())
+    assert not closed and why == "a critical alert" and s.get(cid)["status"] == "new"
+
+
+def test_only_the_live_run_pipeline_may_auto_close(tmp_path):
+    """Finding 6: replay, eval and a one-off digest build their pipeline with auto-close forced off."""
+    from tapwatch import cli
+
+    cfg = {"db_path": str(tmp_path / "t.db"), "feeds_dir": str(tmp_path / "feeds"),
+           "judge": {"auto_close": True, "auto_close_detectors": ["new_domain"]}}
+    assert cli._pipeline(cfg, use_ai=False, notify=False).autoclose.s.auto_close is False
+    assert cli._pipeline(cfg, use_ai=False, notify=False, live=True).autoclose.s.auto_close is True
+    seeded(cfg["db_path"])
+    replayed = cli._pipeline(cfg, use_ai=False, notify=False)
+    cid = raise_case(replayed)
+    assert replayed.store.get(cid)["status"] == "new"
+
+
+def test_a_back_off_after_a_true_positive_never_announces_a_resumption_that_cannot_come():
+    """Finding 7: the fresh window qualifies, but the whole history (with its true positive) does not, and that is
+    what decides whether it closes. So no lift, no "resumed", and the desk says why."""
+    s, note = seeded(), Recorder()
+    other = "192.168.50.20"   # the true positive is on another device, so this device's cases stay eligible
+    for d in (19, 11, 3):
+        close(s, add(s, host=other, ts=NOW - d * DAY))
+    ac = judge.AutoClose(settings(qualify=benchmark.Qualify(min_decided=1, min_weeks=1)))
+    ac._qualified, ac._qualified_ts = {("new_domain", "device")}, time.time()
+    p = Pipeline([], Assets(), s, notifier=note, autoclose=ac)
+    cid = raise_case(p, ts=NOW - 3600, host=other)
+    assert s.get(cid)["status"] == "closed"
+    s.update_case(cid, "ui owner", status="investigating")
+    s.update_case(cid, "ui owner", status="closed", disposition="true_positive")
+    ac.review(s.db)
+    assert judge.backoff_active(s.db, "new_domain")
+    held = raise_case(p, ts=NOW + 7200)
+    close(s, held)                       # the cases since the back-off qualify on their own
+    assert ac.standing(s.db, "new_domain", judge.backoff_active(s.db, "new_domain")["since_ts"])[0] == ["device"]
+    ac.review(s.db)
+    assert judge.backoff_active(s.db, "new_domain") is not None
+    assert not s.db.execute("SELECT 1 FROM audit WHERE action='judge back-off lifted'").fetchone()
+    text = ac.status(s.db)["new_domain"]
+    assert "whole history does not" in text and "would have closed 1 true positive" in text
+    p.send_digest()
+    assert not [i for _, items in note.sent for i in items if "resumed" in i["heading"]]
+    assert "whole history does not" in ui.render_judge(s, ac.s, "tok")[1]
+
+
+def test_judge_closes_are_not_the_owners_decisions_in_the_other_stats():
+    """Finding 8: the weekly noise rate, Jev agreement, host-context accuracy and the stats tiles count only the
+    owner's decisions; the judge's closes get their own tile."""
+    s = seeded()
+    cid = raise_case(pipe(s))
+    assert s.get(cid)["disposition"] == "benign_expected"
+    assert sum(w["decided"] for w in benchmark.weekly(s.db)) == 3
+    page = ui.render_stats(s)[1]
+    assert "Closed by the judge" in page and ">3 decided<" in page
+    decided = ui.render_queue(s, Assets(), {"status": ["all"], "route": ["all"], "disposition": ["decided"]}, "t")[1]
+    assert f'href="/case/{cid}"' not in decided and 'href="/case/1"' in decided   # the tile's list matches it
+    s.undo_judge_close(cid, "ui owner")
+    close(s, cid)                         # the owner's own close is the owner's decision again
+    assert sum(w["decided"] for w in benchmark.weekly(s.db)) == 4
 
 
 # ---------------------------------------------------------------- the CLI

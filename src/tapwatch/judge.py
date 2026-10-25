@@ -15,20 +15,24 @@ Three parts, in order:
   happened on, and one ISO week can give at most half of them, so one burst of activity can't train a habit.
 - **Shadow judge (#202).** After a case is stored, `decide` records what the judge *would* do and why, with the
   precedent case ids. It never changes a route, status or disposition, and never adds a suppression.
-- **Auto-close (#204), off by default.** `AutoClose.consider` closes a case only when all of these hold:
-  `judge.auto_close` is on; the detector is on the owner's `judge.auto_close_detectors` list at that key width; the
-  scorecard (#203) says the detector qualifies at that width; the detector is not backed off; the case is new, not
-  always-alert and (unless `judge.auto_close_alerts`) not alert-routed; and the shadow decision at that width,
-  re-checked through `eligible` at the moment it acts, says close_noise. It closes as `benign_expected` with actor
-  "judge precedent-1" and a note naming the precedent cases, and records the close in `judge_closures`. It never
-  suppresses, adds a rule or changes a route, and an alert has already been sent by then. The owner's undo
-  (`undo_close`) reopens the case to investigating and clears the judge's disposition, audited. The judge's closes
-  never become training examples (`label_source`) or scorecard agreement.
-- **Back-off (#205).** Per detector, over the last `judge.backoff.window_days`: a judge close the owner then called a
-  true positive, an undo rate above `judge.backoff.max_undo_rate`, or a true positive among the cases it only
-  suggested closing (the only label that disagrees with "noise") stops auto-close for that detector
-  (`judge_backoff`, audited, announced in the digest). It resumes only once the detector qualifies again on the cases
-  raised after the back-off alone.
+- **Auto-close (#204), off by default, `tapwatch run` only.** `AutoClose.sweep` runs on the minute tick and
+  considers each new case once, SETTLE_S after it was stored, so a pairing partner has arrived. `consider` closes it
+  only when all of these hold: `judge.auto_close` is on and the `judge:` config has no mistakes; the detector is on
+  the owner's `judge.auto_close_detectors` list at that key width; the scorecard (#203) says the detector qualifies
+  at that width; the detector is not backed off; the case is new, not always-alert, has no digest-or-louder partner,
+  and is not alert-routed unless `judge.auto_close_alerts` (then only once its alert was delivered, and never a
+  critical one); and the shadow decision at that width, re-checked through `eligible` at the moment it acts, says
+  close_noise. The close is one conditional write (the owner may have got there first) as `benign_expected` with
+  actor "judge precedent-1" and a note naming the precedent cases, recorded in `judge_closures`. It never
+  suppresses, adds a rule or changes a route. The owner's undo (`undo_close`) reopens the case to investigating and
+  clears the judge's disposition, audited; a partner arriving later reopens it too (`reopen_on_evidence`). The
+  judge's closes never become training examples (`label_source`), scorecard agreement, or the owner's decisions in
+  the other stats (`store.OWNER_DISPOSITION`).
+- **Back-off (#205).** Per detector: a judge close or a suggested close the owner called a true positive (whenever
+  it was labelled), or an undo rate above `judge.backoff.max_undo_rate` over `judge.backoff.window_days`, stops
+  auto-close for that detector (`judge_backoff`, audited, announced in the digest). It resumes only once the
+  detector qualifies again on the cases raised after the back-off alone and over its whole history, the same test
+  closing uses; `AutoClose.status` says in words which is missing.
 
 Precedent before models (roadmap, 2026-10-25): with 9 true positives in 1,198 labels a trained model adds risk and
 hides its reasons, so the judge matches exact keys. Wider keys (a domain on any device) are earned per detector
@@ -359,28 +363,59 @@ def replay(db: sqlite3.Connection) -> dict:
 ACTOR = f"judge {MODEL_VERSION}"   # contains "judge": label_source makes sure its closes never become examples
 QUALIFY_CACHE_S = 3600        # the scorecard reads every judged case: recomputed at most this often while closing
 DIGEST_LINKS = 10             # case links per detector in the digest's "what the judge closed" section
+# A case is only considered once this long after its shadow decision (made as it was stored). Pairing
+# (pipeline.correlate) joins a host and a network case within CORRELATE_WINDOW (300 s) of each other, and a
+# connection's log row is written when it ends, so the partner of a case can be stored minutes after it. Closing at
+# once would close a case whose alerting partner arrives two minutes later (review of #334): wait two windows.
+SETTLE_S = 600
+SWEEP_LOOKBACK = 86400        # cases decided longer ago than this are left to the owner, not swept
+UNDO_HOWS = ("undo", "reopened", "true_positive")   # the owner disagreeing; "evidence" is tapwatch reopening it
 
 
-def _widths_of(value) -> tuple[str, ...]:
-    widths = [value] if isinstance(value, str) else list(value or ["device"])
-    bad = [w for w in widths if w not in WIDTHS]
-    if bad:
-        log.warning("judge.auto_close_detectors: unknown width(s) %s ignored (known: %s)", bad, ", ".join(WIDTHS))
-    return tuple(w for w in WIDTHS if w in widths)   # "device" first: the narrowest key is tried first
+def _widths_for(detector: str, value, problems: list[str]) -> tuple[str, ...]:
+    """One allow-list entry's widths. Empty, false or null: not allowed (the owner switching it off). A list of known
+    widths: those. Anything else (true, 1, a bare string, an unknown width) is malformed."""
+    if value is None or value is False or (isinstance(value, (list, tuple)) and not value):
+        return ()
+    if not isinstance(value, (list, tuple)) or not all(isinstance(w, str) and w in WIDTHS for w in value):
+        problems.append(f"auto_close_detectors.{detector}: {value!r} (a list of widths: {', '.join(WIDTHS)})")
+        return ()
+    return tuple(w for w in WIDTHS if w in value)   # "device" first: the narrowest key is tried first
+
+
+def parse_allow_list(value) -> tuple[dict[str, tuple[str, ...]], list[str]]:
+    """`judge.auto_close_detectors`: a list of detector names (same-device width only), or a mapping of detector to
+    the list of widths it may close at (`{new_domain: [device, any_device]}`). Returns (allowed, problems)."""
+    problems: list[str] = []
+    if value is None:
+        return {}, problems
+    if isinstance(value, (list, tuple)):
+        if not all(isinstance(d, str) and d for d in value):
+            problems.append(f"auto_close_detectors: {value!r} (a list of detector names)")
+            return {}, problems
+        return {d: ("device",) for d in value}, problems
+    if isinstance(value, dict):
+        out = {str(d): _widths_for(str(d), w, problems) for d, w in value.items()}
+        return {d: w for d, w in out.items() if w}, problems
+    problems.append(f"auto_close_detectors: {value!r} (a list of detectors, or a mapping to lists of widths)")
+    return {}, problems
 
 
 def allow_list(value) -> dict[str, tuple[str, ...]]:
-    """`judge.auto_close_detectors`: a list of detectors (same-device width only), or a mapping of detector to the
-    widths it may close at (`{new_domain: [device, any_device]}`). Anything else is an empty list: nothing closes."""
-    if isinstance(value, str):
-        value = [value]
-    if isinstance(value, dict):
-        out = {str(d): _widths_of(w) for d, w in value.items()}
-    elif isinstance(value, (list, tuple)):
-        out = {str(d): ("device",) for d in value if d}
-    else:
-        out = {}
-    return {d: w for d, w in out.items() if w}
+    """The allowed detectors and widths, or nothing at all when the value is malformed (logged)."""
+    allowed, problems = parse_allow_list(value)
+    if problems:
+        log.warning("judge config: %s; nothing is allowed to auto-close", "; ".join(problems))
+        return {}
+    return allowed
+
+
+def _number(section: dict, key: str, default: float, lo: float, hi: float, problems: list[str]) -> float:
+    v = section.get(key, default)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+        problems.append(f"{key}: {v!r} (a number from {lo:g} to {hi:g})")
+        return default
+    return float(v)
 
 
 @dataclass(frozen=True)
@@ -393,29 +428,53 @@ class Settings:
     qualify: object = None                          # benchmark.Qualify; None: the owner's defaults
     backoff_days: float = 14
     max_undo_rate: float = 0.02                     # undone closes over closes: one undo in fewer than 50 trips it
+    problems: tuple = ()                            # malformed config values; any one keeps auto-close off
 
     @classmethod
     def from_config(cls, cfg: dict | None) -> Settings:
+        """Never raises: a malformed value is logged and keeps auto-close off entirely (a typo must never turn closing
+        on, nor stop `run`). YAML's yes/on/true all read as true; only a true value turns a switch on."""
         from .benchmark import Qualify
 
-        j = (cfg or {}).get("judge") or {}
-        b = j.get("backoff") or {}
-        qualify = Qualify.from_config(cfg)
-        return cls(auto_close=j.get("auto_close") is True, detectors=allow_list(j.get("auto_close_detectors")),
-                   alerts=j.get("auto_close_alerts") is True,
-                   min_confidence=float(j.get("min_confidence", cls.min_confidence)), qualify=qualify,
-                   backoff_days=float(b.get("window_days", cls.backoff_days)),
-                   max_undo_rate=float(b.get("max_undo_rate", cls.max_undo_rate)))
+        j = (cfg or {}).get("judge")
+        problems: list[str] = []
+        if j is None:
+            j = {}
+        elif not isinstance(j, dict):
+            problems.append(f"judge: {j!r} (a mapping)")
+            j = {}
+        b = j.get("backoff")
+        if b is not None and not isinstance(b, dict):
+            problems.append(f"backoff: {b!r} (a mapping)")
+        b = b if isinstance(b, dict) else {}
+        qualify, q_problems = Qualify.parse(cfg)
+        problems += q_problems
+        detectors, a_problems = parse_allow_list(j.get("auto_close_detectors"))
+        problems += a_problems
+        for key in ("auto_close", "auto_close_alerts"):
+            if j.get(key) is not None and not isinstance(j.get(key), bool):
+                problems.append(f"{key}: {j.get(key)!r} (true or false)")
+        min_conf = _number(j, "min_confidence", cls.min_confidence, 0, 1, problems)
+        days = _number(b, "window_days", cls.backoff_days, 1, 365, problems)
+        rate = _number(b, "max_undo_rate", cls.max_undo_rate, 0, 1, problems)
+        if problems:
+            log.warning("judge config: %s; auto-close stays off until it is fixed", "; ".join(problems))
+        return cls(auto_close=j.get("auto_close") is True and not problems, detectors={} if problems else detectors,
+                   alerts=j.get("auto_close_alerts") is True, min_confidence=min_conf, qualify=qualify,
+                   backoff_days=days, max_undo_rate=rate, problems=tuple(problems))
 
     def summary(self) -> str:
         """One line for the log and the case desk: what auto-close will do."""
+        if self.problems:
+            return "auto-close is off: the judge config has a mistake (" + "; ".join(self.problems) + ")"
         if not self.auto_close:
             return "auto-close is off (judge.auto_close: false): the judge only records what it would do"
         if not self.detectors:
             return "auto-close is on, but no detector is in judge.auto_close_detectors: nothing closes"
         allowed = ", ".join(f"{d} ({', '.join(w).replace('_', ' ')})" for d, w in sorted(self.detectors.items()))
         return (f"auto-close is on for {allowed}, each only while it qualifies and isn't backed off"
-                + ("; alert-routed cases too" if self.alerts else "; never alert-routed cases"))
+                + ("; alert-routed cases too, once their alert was delivered" if self.alerts
+                   else "; never alert-routed cases"))
 
 
 def _rows(db: sqlite3.Connection, sql: str, args=()) -> list[sqlite3.Row]:
@@ -457,12 +516,15 @@ def note_owner_change(db: sqlite3.Connection, case_id: int, actor: str, status: 
 
 
 class AutoClose:
-    """#204 and #205 for one pipeline. With the default Settings it never reads the database and never closes."""
+    """#204 and #205 for one live pipeline (`tapwatch run` only). With the default Settings it never reads the
+    database and never closes. `Pipeline.process` sweeps once a minute (`sweep`): a case is considered once,
+    SETTLE_S after its shadow decision, so a pairing partner has arrived by then."""
 
     def __init__(self, settings: Settings | None = None):
         self.s = settings or Settings()
         self._qualified: set[tuple[str, str]] = set()
         self._qualified_ts = float("-inf")
+        self._seen: set[int] = set()   # considered once each; a restart considers the last day's again, once
 
     @property
     def qualify(self):
@@ -480,10 +542,33 @@ class AutoClose:
             self._qualified_ts = now
         return self._qualified
 
-    def consider(self, store, case_id: int, now: float | None = None) -> tuple[bool, str]:
-        """Close the stored case if every condition holds (module docstring). Returns (closed?, why or why not).
+    def sweep(self, store, now: float | None = None) -> list[int]:
+        """Consider every new case of an allowed detector whose shadow decision is at least SETTLE_S old (and at
+        most SWEEP_LOOKBACK). Returns the ids it closed."""
+        if not self.s.auto_close or not self.s.detectors:
+            return []
+        now = time.time() if now is None else now
+        dets = sorted(self.s.detectors)
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only '?' placeholders are joined; every value is bound
+        ids = [r[0] for r in store.db.execute(
+            f"SELECT c.id FROM cases c JOIN judge_decisions d ON d.case_id = c.id WHERE c.status = 'new' AND"
+            f" c.detector IN ({','.join('?' * len(dets))}) AND d.ts <= ? AND d.ts >= ? ORDER BY c.id",
+            (*dets, now - SETTLE_S, now - SWEEP_LOOKBACK))]
+        self._seen &= set(ids)   # forget what left the window, so the set stays small
+        closed = []
+        for cid in ids:
+            if cid in self._seen:
+                continue
+            self._seen.add(cid)
+            try:
+                if self.consider(store, cid, now)[0]:
+                    closed.append(cid)
+            except Exception as e:  # noqa: BLE001 - a judge bug leaves the case open for the owner, as before
+                log.warning("judge auto-close failed on #%s: %s", cid, e)
+        return closed
 
-        `store` is the pipeline's Store: the close goes through `update_case`, so it is audited like any other."""
+    def consider(self, store, case_id: int, now: float | None = None) -> tuple[bool, str]:
+        """Close the stored case if every condition holds (module docstring). Returns (closed?, why or why not)."""
         if not self.s.auto_close:
             return False, "auto-close is off"
         now = time.time() if now is None else now
@@ -498,8 +583,18 @@ class AutoClose:
             return False, "always-alert rule"
         if row["status"] != "new":
             return False, f"case is {row['status']}"   # closed on arrival by a suppression, or already being worked
-        if row["route"] == Route.ALERT.value and not self.s.alerts:
-            return False, "alert-routed (judge.auto_close_alerts: false)"
+        case = _case(row)
+        if row["route"] == Route.ALERT.value:
+            if not self.s.alerts:
+                return False, "alert-routed (judge.auto_close_alerts: false)"
+            if critical(case, _verdict(row), Route.ALERT):
+                return False, "a critical alert"            # never, whatever the config says
+            if not case.facts.get("alert_delivered"):
+                return False, "its alert was not delivered"  # the owner must have seen it before it closes
+        partners = [p for p in case.facts.get("correlated") or () if isinstance(p, dict)
+                    and p.get("route") in (Route.ALERT.value, Route.DIGEST.value)]
+        if partners:
+            return False, f"paired with #{partners[0].get('id')} on the same device"
         if backoff_active(db, row["detector"]):
             return False, "backed off"
         if (reason := self.drift(db, row["detector"], now)) is not None:
@@ -508,6 +603,8 @@ class AutoClose:
         decision = store.judge_decision(case_id)
         if decision is None:
             return False, "no shadow decision"
+        if now < decision["ts"] + SETTLE_S:   # wall-clock time it was stored, as its partner's would be
+            return False, "waiting for its pairing window to pass"
         try:
             answers = json.loads(decision["widths"] or "{}")
         except ValueError:
@@ -533,52 +630,73 @@ class AutoClose:
                 why = f"not eligible: {reason}"
                 continue
             explanation, ids, _ = _explain(ok, reason, precedents, width)
-            self.close(store, row, width, explanation, ids, now)
+            if not self.close(db, row, width, explanation, ids, now):
+                return False, "the case changed while the judge looked at it"
             return True, explanation
         return False, why
 
-    def close(self, store, row: sqlite3.Row, width: str, explanation: str, ids: list[int], now: float) -> None:
+    def close(self, db: sqlite3.Connection, row: sqlite3.Row, width: str, explanation: str, ids: list[int],
+              now: float) -> bool:
+        """Close the case in one transaction, only if it is still new with no disposition: the owner may have moved
+        or labelled it while the judge looked (review of #334). Audited like `update_case`, which writes no training
+        example for the judge's actor either. False, and nothing written, when it changed."""
         where = "same device" if width == "device" else "any device"
-        store.update_case(row["id"], ACTOR, status="closed", disposition="benign_expected",
-                          note=f"Closed by the judge (auto-close, {where} width): {explanation}. Undo on this page "
-                               "puts it back to investigating with no disposition.")
-        with store.db:
-            store.db.execute("INSERT OR REPLACE INTO judge_closures (case_id, ts, detector, width, model_version,"
-                             " precedent_ids, explanation) VALUES (?,?,?,?,?,?,?)",
-                             (row["id"], now, row["detector"], width, MODEL_VERSION, json.dumps(ids), explanation))
+        note = (f"Closed by the judge (auto-close, {where} width): {explanation}. Undo on this page puts it back to "
+                "investigating with no disposition.")
+        with db:
+            cur = db.execute("UPDATE cases SET status='closed', disposition='benign_expected', feedback='fp',"
+                             " updated_ts=? WHERE id=? AND status='new' AND disposition IS NULL", (now, row["id"]))
+            if cur.rowcount != 1:
+                return False
+            _audit(db, row["id"], ACTOR, "disposition", None, "benign_expected", now)
+            _audit(db, row["id"], ACTOR, "status", "new", "closed", now)
+            db.execute("INSERT INTO notes (case_id, ts, actor, text) VALUES (?,?,?,?)", (row["id"], now, ACTOR, note))
+            _audit(db, row["id"], ACTOR, "note", None, note, now)
+            db.execute("INSERT OR REPLACE INTO judge_closures (case_id, ts, detector, width, model_version,"
+                       " precedent_ids, explanation) VALUES (?,?,?,?,?,?,?)",
+                       (row["id"], now, row["detector"], width, MODEL_VERSION, json.dumps(ids), explanation))
         log.info("judge closed #%s (%s, %s): %s", row["id"], row["detector"], where, explanation)
+        return True
 
     # ------------------------------------------------------------ back-off (#205)
 
     def drift(self, db: sqlite3.Connection, detector: str, now: float) -> str | None:
-        """Why auto-close should stop for this detector now, or None. Only what happened in the window and since the
-        last back-off lifted counts, so the evidence for one back-off never trips the next."""
+        """Why auto-close should stop for this detector now, or None. Times are when the owner acted (the label or
+        undo), never when the case happened or was closed: a true positive marked on a three-week-old close is as
+        much a reason as one marked today (review of #334). Only what happened since the last back-off lifted
+        counts, so the evidence for one back-off never trips the next."""
         lifted = db.execute("SELECT MAX(lifted_ts) FROM judge_backoff WHERE detector=?", (detector,)).fetchone()[0]
-        start = max(now - self.s.backoff_days * 86400, lifted or 0.0)
-        days = f"{self.s.backoff_days:g} days"
-        closed = _rows(db, "SELECT j.case_id, j.undone_ts, j.undone_how, c.disposition FROM judge_closures j"
-                           " JOIN cases c ON c.id = j.case_id WHERE j.detector=? AND j.ts >= ?", (detector, start))
-        tp = [r["case_id"] for r in closed if r["undone_how"] == "true_positive" or r["disposition"] == "true_positive"]
+        lifted = lifted or 0.0
+        # A true positive on anything it closed, whenever it was marked; the case must still be one now.
+        tp = _rows(db, "SELECT j.case_id FROM judge_closures j JOIN cases c ON c.id = j.case_id JOIN audit a ON"
+                       " a.case_id = j.case_id AND a.action = 'disposition' AND a.new = 'true_positive' WHERE"
+                       " j.detector = ? AND c.disposition = 'true_positive' AND a.ts > ? ORDER BY a.ts LIMIT 1",
+                       (detector, lifted))
         if tp:
-            return f"the owner called a case it closed a true positive (#{tp[0]})"
-        undone = sum(r["undone_ts"] is not None for r in closed)
-        if undone and undone / len(closed) > self.s.max_undo_rate:
-            return f"the owner undid {undone} of its {len(closed)} close(s) in the last {days}"
-        # The cases it only suggested closing (not allowed at that width, not qualifying, alert-routed): the owner's
-        # own decisions on them are the drift signal while it closes the rest. The only disposition that is not noise
-        # is true_positive, so "agreement fell below the bar" is exactly "the owner called one a true positive", and
-        # one is enough, as one is enough to disqualify a detector in the scorecard. Whoever marked it: a true
-        # positive an AI found is still one the judge would have hidden.
+            return f"the owner called a case it closed a true positive (#{tp[0]['case_id']})"
+        # A true positive among the cases it only suggested closing (not allowed at that width, not qualifying,
+        # alert-routed). The only disposition that is not noise is true_positive, so "agreement fell below the bar"
+        # is exactly this, and one is enough, as in the scorecard. Whoever marked it: a true positive an AI found is
+        # still one the judge would have hidden.
         allowed = self.s.detectors.get(detector) or ("device",)
-        for r in _rows(db, "SELECT d.case_id, d.widths FROM judge_decisions d JOIN cases c ON c.id = d.case_id"
-                           " WHERE c.detector=? AND c.first_ts >= ? AND c.disposition='true_positive'"
-                           " ORDER BY c.first_ts", (detector, start)):
+        for r in _rows(db, "SELECT DISTINCT d.case_id, d.widths FROM judge_decisions d JOIN cases c ON c.id ="
+                           " d.case_id JOIN audit a ON a.case_id = d.case_id AND a.action = 'disposition' AND a.new ="
+                           " 'true_positive' WHERE c.detector = ? AND c.disposition = 'true_positive' AND a.ts > ?",
+                           (detector, lifted)):
             try:
                 answers = json.loads(r["widths"] or "{}")
             except ValueError:
                 continue
             if any(isinstance(answers.get(w), dict) and answers[w].get("suggestion") == "close_noise" for w in allowed):
                 return f"a case it would have closed was called a true positive (#{r['case_id']})"
+        # The undo rate over the window: closes made or undone in it, and the owner's undos among them.
+        start = max(now - self.s.backoff_days * 86400, lifted)
+        rows = _rows(db, "SELECT undone_ts, undone_how FROM judge_closures WHERE detector = ? AND (ts >= ? OR"
+                         " undone_ts >= ?)", (detector, start, start))
+        undone = sum(r["undone_ts"] is not None and r["undone_ts"] >= start and r["undone_how"] in UNDO_HOWS
+                     for r in rows)
+        if undone and undone / len(rows) > self.s.max_undo_rate:
+            return f"the owner undid {undone} of its {len(rows)} close(s) in the last {self.s.backoff_days:g} days"
         return None
 
     def back_off(self, db: sqlite3.Connection, detector: str, reason: str, now: float) -> bool:
@@ -591,13 +709,26 @@ class AutoClose:
         log.warning("judge auto-close backed off for %s: %s", detector, reason)
         return True
 
-    def review(self, db: sqlite3.Connection, now: float | None = None) -> None:
-        """Before each digest: check every allowed detector for drift, and lift a back-off once the detector
-        qualifies again on the cases raised since it began, alone (a fresh qualification window, #205)."""
-        if not self.s.auto_close:
-            return
+    def standing(self, db: sqlite3.Connection, detector: str, since: float | None = None) -> tuple[list[str], list[str]]:
+        """(widths that qualify, why the others don't) for an allowed detector, from the same scorecard `qualified()`
+        reads: over its whole history, or over the cases raised since `since` alone."""
         from . import benchmark
 
+        rows = {d["width"]: d for d in benchmark.judge(db, qualify=self.qualify, since=since)["detectors"]
+                if d["detector"] == detector}
+        widths = self.s.detectors.get(detector, ())
+        ok = [w for w in widths if w in rows and rows[w]["qualifies"]]
+        why = [f"{w.replace('_', ' ')} width: " + (rows[w]["why"] if w in rows else "no shadow decisions")
+               for w in widths if w not in ok]
+        return ok, why
+
+    def review(self, db: sqlite3.Connection, now: float | None = None) -> None:
+        """Before each digest: check every allowed detector for drift, and lift a back-off only when closing can
+        really resume: an allowed width qualifies on the cases raised since the back-off alone (a fresh window, #205)
+        *and* over the whole history, the test `consider` applies (review of #334: a true positive keeps the
+        history from qualifying, so lifting on the fresh window alone announced a resumption that never came)."""
+        if not self.s.auto_close:
+            return
         now = time.time() if now is None else now
         for detector, widths in sorted(self.s.detectors.items()):
             active = backoff_active(db, detector)
@@ -605,22 +736,46 @@ class AutoClose:
                 if (reason := self.drift(db, detector, now)) is not None:
                     self.back_off(db, detector, reason, now)
                 continue
-            card = benchmark.judge(db, qualify=self.qualify, since=active["since_ts"])
-            fresh = [d["width"] for d in card["detectors"]
-                     if d["detector"] == detector and d["qualifies"] and d["width"] in widths]
-            if not fresh:
+            fresh, whole = self.standing(db, detector, active["since_ts"])[0], self.standing(db, detector)[0]
+            ready = [w for w in widths if w in fresh and w in whole]
+            if not ready:
                 continue
-            why = f"it qualifies again at {fresh[0].replace('_', ' ')} width on the cases raised since it stopped"
+            why = (f"it qualifies again at {ready[0].replace('_', ' ')} width, on the cases raised since it stopped "
+                   "and over its whole history")
             with db:
                 db.execute("UPDATE judge_backoff SET lifted_ts=?, lifted_reason=? WHERE id=?", (now, why, active["id"]))
                 _audit(db, None, "judge back-off", "judge back-off lifted", active["reason"], f"{detector}: {why}", now)
             self._qualified_ts = float("-inf")
             log.info("judge auto-close resumed for %s: %s", detector, why)
 
+    def status(self, db: sqlite3.Connection) -> dict[str, str]:
+        """Per allowed detector, in words: closing, or why not. The Judge page and `tapwatch judge closed` show it."""
+        out = {}
+        for detector in sorted(self.s.detectors):
+            active = backoff_active(db, detector)
+            whole_ok, whole_why = self.standing(db, detector)
+            if active:
+                since_ok, since_why = self.standing(db, detector, active["since_ts"])
+                ready = [w for w in since_ok if w in whole_ok]
+                text = f"backed off since {datetime.fromtimestamp(active['since_ts']):%Y-%m-%d %H:%M}: {active['reason']}"
+                if not since_ok:
+                    text += ". It resumes only once it qualifies again on the cases raised since: " + "; ".join(since_why)
+                elif not ready:
+                    text += (". The cases since then qualify, but its whole history does not, so it stays off: "
+                             + "; ".join(whole_why))
+                else:
+                    text += ". It qualifies again and resumes at the next digest"
+            elif not whole_ok:
+                text = "not closing, it does not qualify: " + "; ".join(whole_why)
+            else:
+                text = "closing at " + ", ".join(w.replace("_", " ") for w in whole_ok) + " width" \
+                    + (f" (not {'; '.join(whole_why)})" if whole_why else "")
+            out[detector] = text
+        return out
 
-def undo_close(store, case_id: int, actor: str) -> None:
-    """The owner's one-click undo: reopen a case the judge closed to investigating and clear the judge's
-    disposition, in one audited transaction. Refuses a case the judge didn't close, or one changed since."""
+
+def _reopen(store, case_id: int, actor: str, how: str, note: str) -> None:
+    """Back to investigating with the judge's disposition cleared, in one audited transaction (undo, evidence)."""
     from .store import WorkflowError
 
     c, row = closure(store.db, case_id), store.get(case_id)
@@ -631,18 +786,43 @@ def undo_close(store, case_id: int, actor: str) -> None:
     if row["status"] != "closed" or row["disposition"] != "benign_expected":
         raise WorkflowError(f"#{case_id} has changed since the judge closed it: use the form to change it")
     now, db = time.time(), store.db
-    note = "Undid the judge's close: back to investigating, disposition cleared."
     with db:
-        db.execute("UPDATE cases SET status='investigating', disposition=NULL, feedback=NULL, updated_ts=? WHERE id=?",
-                   (now, case_id))
+        cur = db.execute("UPDATE cases SET status='investigating', disposition=NULL, feedback=NULL, updated_ts=?"
+                         " WHERE id=? AND status='closed' AND disposition='benign_expected'", (now, case_id))
+        if cur.rowcount != 1:
+            raise WorkflowError(f"#{case_id} changed while undoing")
         _audit(db, case_id, actor, "status", "closed", "investigating", now)
         # Its own action name, not "disposition": the scorecard and backfill read the latest "disposition" row as the
         # case's label, and an empty label is not one.
         _audit(db, case_id, actor, "disposition cleared", "benign_expected", None, now)
         db.execute("INSERT INTO notes (case_id, ts, actor, text) VALUES (?,?,?,?)", (case_id, now, actor, note))
         _audit(db, case_id, actor, "note", None, note, now)
-        db.execute("UPDATE judge_closures SET undone_ts=?, undone_by=?, undone_how='undo' WHERE case_id=?",
-                   (now, actor, case_id))
+        db.execute("UPDATE judge_closures SET undone_ts=?, undone_by=?, undone_how=? WHERE case_id=?",
+                   (now, actor, how, case_id))
+
+
+def undo_close(store, case_id: int, actor: str) -> None:
+    """The owner's one-click undo: reopen a case the judge closed to investigating and clear the judge's
+    disposition, in one audited transaction. Refuses a case the judge didn't close, or one changed since."""
+    _reopen(store, case_id, actor, "undo", "Undid the judge's close: back to investigating, disposition cleared.")
+
+
+def reopen_on_evidence(store, case_id: int, partner: dict) -> bool:
+    """A case the judge closed just got a digest-or-louder partner on the same device (`Store.link_cases`): it is no
+    longer the routine case the judge closed, so it goes back to the owner. Not counted as the owner disagreeing.
+    False when there is nothing to reopen."""
+    from .store import WorkflowError
+
+    c = closure(store.db, case_id)
+    if c is None or c["undone_ts"] is not None:
+        return False
+    try:
+        _reopen(store, case_id, "tapwatch", "evidence",
+                f"Reopened: paired with #{partner.get('id')} ({partner.get('detector')}, {partner.get('route')}) "
+                "after the judge closed it, so it needs a look.")
+    except WorkflowError:
+        return False
+    return True
 
 
 def closures(db: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:

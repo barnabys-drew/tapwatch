@@ -103,22 +103,29 @@ learning_days: 3                     # AI alerts go to the digest this long afte
 
 judge:                               # the learned judge (v0.4, docs/ARCHITECTURE.md). It always runs in shadow mode,
                                      # recording what it would close; the Stats page grades it per detector
-  auto_close: false                  # OFF by default: nothing is ever closed. true lets it close, but only for the
-  auto_close_detectors: []           # detectors you list here, each only while the scorecard says it qualifies.
-                                     # Start with one: [new_domain] closes at the same-device width only;
-                                     # {new_domain: [device, any_device]} also lets the wider key close it
-  auto_close_alerts: false           # alert-routed cases are never closed (true: closed after the alert is sent)
+  auto_close: false                  # OFF by default: nothing is ever closed. true (YAML's yes/on count as true) lets
+  auto_close_detectors: []           # `tapwatch run` close, but only for the detectors you list here, each only while
+                                     # the scorecard says it qualifies. Start with one: [new_domain] closes at the
+                                     # same-device width only; {new_domain: [device, any_device]} also lets the wider
+                                     # key close it; {new_domain: []} (or false, or empty) switches it off again.
+                                     # A case is looked at 10 minutes after it arrives, once anything it pairs with
+                                     # has had time to show up. Replays never close anything. A mistake anywhere in
+                                     # this section (a typo'd value, true instead of a list) keeps auto-close off and
+                                     # says so in the log, on the Judge page and in `tapwatch judge closed`
+  auto_close_alerts: false           # alert-routed cases are never closed. true: closed only once the alert was
+                                     # delivered, and never a critical one
   min_confidence: 0.8                # the judge's own confidence (3 of 3 earlier cases closed as noise = 0.8)
   qualify:                           # when a detector qualifies at one width (the scorecard's "auto-close?")
     min_decided: 50                  # would-close cases you decided yourself
     min_weeks: 4                     # ...spread over at least this many ISO weeks
     min_agreement: 0.98              # ...of which you called this share noise
     max_true_positives: 0            # true positives it would have closed: one disqualifies
-  backoff:                           # it stops closing a detector by itself, says so in the digest, and resumes only
-    window_days: 14                  # after qualifying again on cases raised since. Over this many days: any case it
-    max_undo_rate: 0.02              # closed that you call a true positive, any true positive among cases it would
-                                     # have closed, or undoing more than this share of its closes (one undo in fewer
-                                     # than 50) stops it. Every close is on the case desk's Judge page with an Undo
+  backoff:                           # it stops closing a detector by itself and says so in the digest. Any case it
+    window_days: 14                  # closed, or would have closed, that you call a true positive stops it, however
+    max_undo_rate: 0.02              # old the case. So does undoing more than this share of its closes within
+                                     # window_days (one undo in fewer than 50). It resumes only once it qualifies
+                                     # again, both on the cases raised since and over its whole history; the Judge
+                                     # page says which is missing. Every close is listed there with an Undo
 
 thresholds:
   min_confidence: 0.6

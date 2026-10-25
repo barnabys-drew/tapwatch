@@ -198,6 +198,12 @@ STATUSES = ("new", "investigating", "closed")
 # Where each status may go next. Closed cases can be reopened into investigating.
 TRANSITIONS = {"new": {"investigating", "closed"}, "investigating": {"closed"}, "closed": {"investigating"}}
 DISPOSITIONS = ("true_positive", "false_positive", "benign_expected")
+# A case whose disposition is still the judge's auto-close (#204) was not decided by the owner, so the stats that
+# grade against the owner (noise rate, Jev agreement, host-context accuracy, the stats tiles) leave it out: an
+# auto-close counted there would grade the judge's own habit as the owner's verdict. SQL over the `cases` table.
+JUDGE_DECIDED = ("EXISTS (SELECT 1 FROM judge_closures j WHERE j.case_id = cases.id AND j.undone_ts IS NULL"
+                 " AND cases.disposition = 'benign_expected')")
+OWNER_DISPOSITION = f"(CASE WHEN {JUDGE_DECIDED} THEN NULL ELSE cases.disposition END)"
 # device_program needs host context; the domain scopes match any host under the indicator's registrable
 # domain (ch-tanzone-02 after ch-tanzone-01 was suppressed: a sibling host alerted again, 2026-10-15).
 SCOPES = ("device_indicator", "indicator", "device_domain", "domain", "port", "device_program")
@@ -374,6 +380,21 @@ class Store:
             self.db.execute("UPDATE cases SET facts=?, updated_ts=? WHERE id=?", (json.dumps(facts), now, case_id))
             self.db.execute("INSERT INTO notes (case_id, ts, actor, text) VALUES (?,?,?,?)", (case_id, now, actor, note))
             self._audit(case_id, actor, "note", None, note, now)
+        if entry.get("route") in ("alert", "digest"):   # a judge close (#204) that now has a partner goes back
+            try:
+                judge.reopen_on_evidence(self, case_id, entry)
+            except Exception as e:  # noqa: BLE001
+                log.warning("could not reopen judge-closed #%s: %s", case_id, e)
+
+    def mark_fact(self, case_id: int, key: str, value) -> None:
+        """Set one bookkeeping fact with no note (the pipeline's `alert_delivered`, which judge auto-close reads)."""
+        row = self.get(case_id)
+        if row is None:
+            return
+        facts = json.loads(row["facts"] or "{}")
+        facts[key] = value
+        with self.db:
+            self.db.execute("UPDATE cases SET facts=? WHERE id=?", (json.dumps(facts), case_id))
 
     def add_fact(self, case_id: int, key: str, value, note: str, actor: str) -> bool:
         """Set one fact on an existing case (an on-demand check's result) with a note, audited."""

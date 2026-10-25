@@ -12,11 +12,14 @@ them as Markdown for eval/RESULTS.md.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
-from .store import DISPOSITIONS
+from .store import DISPOSITIONS, OWNER_DISPOSITION
+
+log = logging.getLogger("tapwatch")
 
 NOISE = ("false_positive", "benign_expected")
 # Code's host-context answer against the owner's disposition. Only two answers claim anything about intent: the
@@ -30,7 +33,10 @@ HOSTILE_WHO = {"agent_misused"}
 def _rows(db: sqlite3.Connection) -> list[sqlite3.Row]:
     cur = db.cursor()
     cur.row_factory = sqlite3.Row  # on the cursor, not the caller's connection
-    return cur.execute("SELECT first_ts, route, disposition, verdict, facts FROM cases").fetchall()
+    # The owner's disposition only: a judge auto-close (#204) is not the owner's verdict (store.OWNER_DISPOSITION)
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- a fixed constant
+    return cur.execute(f"SELECT first_ts, route, {OWNER_DISPOSITION} AS disposition, verdict, facts FROM cases"
+                       ).fetchall()
 
 
 def _week(ts: float) -> str:
@@ -213,13 +219,36 @@ class Qualify:
     max_tp: int = QUALIFY_MAX_TP
 
     @classmethod
+    def parse(cls, cfg: dict | None) -> tuple[Qualify, list[str]]:
+        """`judge: {qualify: {min_decided, min_weeks, min_agreement, max_true_positives}}`, missing keys defaulting.
+        Never raises: a malformed value keeps its strict default and is returned as a problem (judge.Settings keeps
+        auto-close off while there is one)."""
+        j = (cfg or {}).get("judge")
+        q = j.get("qualify") if isinstance(j, dict) else None
+        problems: list[str] = []
+        if q is not None and not isinstance(q, dict):
+            problems.append(f"qualify: {q!r} (a mapping)")
+        q = q if isinstance(q, dict) else {}
+
+        def num(key: str, default, lo, hi, whole: bool):
+            v = q.get(key, default)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi \
+                    or (whole and v != int(v)):
+                problems.append(f"qualify.{key}: {v!r} (a {'whole ' if whole else ''}number from {lo} to {hi})")
+                return default
+            return int(v) if whole else float(v)
+
+        return cls(min_decided=num("min_decided", QUALIFY_MIN_DECIDED, 0, 100_000, True),
+                   min_weeks=num("min_weeks", QUALIFY_MIN_WEEKS, 0, 520, True),
+                   min_agreement=num("min_agreement", QUALIFY_MIN_AGREEMENT, 0, 1, False),
+                   max_tp=num("max_true_positives", QUALIFY_MAX_TP, 0, 100_000, True)), problems
+
+    @classmethod
     def from_config(cls, cfg: dict | None) -> Qualify:
-        """`judge: {qualify: {min_decided, min_weeks, min_agreement, max_true_positives}}`; missing keys default."""
-        q = ((cfg or {}).get("judge") or {}).get("qualify") or {}
-        return cls(min_decided=int(q.get("min_decided", QUALIFY_MIN_DECIDED)),
-                   min_weeks=int(q.get("min_weeks", QUALIFY_MIN_WEEKS)),
-                   min_agreement=float(q.get("min_agreement", QUALIFY_MIN_AGREEMENT)),
-                   max_tp=int(q.get("max_true_positives", QUALIFY_MAX_TP)))
+        q, problems = cls.parse(cfg)
+        if problems:
+            log.warning("judge config: %s; using the default bar for those", "; ".join(problems))
+        return q
 
 
 WIDTH_WORDS = {"device": "same device", "any_device": "any device"}

@@ -88,6 +88,11 @@ class Pipeline:
         for v in self._vulns():
             if v.resolved:
                 vulnkev.close_resolved(self.store, v)   # R48: patched since its case, so the case closes
+        if tick:   # auto-close (#204): off unless judge.auto_close and the allow-list say so, and only in `run`
+            try:
+                self.autoclose.sweep(self.store)
+            except Exception as e:  # noqa: BLE001 - a judge bug leaves cases open for the owner, as before
+                log.warning("judge auto-close sweep failed: %s", e)
         return out
 
     def _vulns(self) -> list[vulnkev.VulnKev]:
@@ -173,10 +178,9 @@ class Pipeline:
                                    [alert_item(case, verdict, reason, self.assets, case_id, self.base_url)])
             except RuntimeError as e:
                 log.error("could not deliver alert #%s: %s", case_id, e)
-        try:  # auto-close (#204), after any alert went out; off unless judge.auto_close and the allow-list say so
-            self.autoclose.consider(self.store, case_id)
-        except Exception as e:  # noqa: BLE001 - a judge bug leaves the case open for the owner, as before
-            log.warning("judge auto-close failed on #%s: %s", case_id, e)
+            else:   # #204: an alert-routed case may only ever be auto-closed once the owner was told about it
+                self.store.mark_fact(case_id, "alert_delivered", time.time())
+        # Auto-close (#204) is not here: `process` sweeps on the minute tick, once the case's pairing window passed.
         return case_id, case, verdict, r
 
     def identify(self, case: Case) -> None:

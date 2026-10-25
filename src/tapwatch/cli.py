@@ -31,6 +31,7 @@ from . import (
     evaluate,
     evidence,
     history,
+    judge,
     longhaul,
     selfcheck,
     zeek,
@@ -47,7 +48,9 @@ def without_ai(cfg: dict) -> dict:
     return {**cfg, "categories": {**(cfg.get("categories") or {}), "ai": False}}
 
 
-def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=None) -> Pipeline:
+def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=None, live: bool = False) -> Pipeline:
+    """`live`: the `run` service. Only it may auto-close (#204); a replay, eval or one-off digest never does, whatever
+    the config says (a replay of old logs must not close cases on today's scorecard)."""
     if not use_ai:
         cfg = without_ai(cfg)
     return Pipeline(config.build_detectors(cfg), config.assets(cfg), Store(cfg.get("db_path", "tapwatch.db")),
@@ -59,7 +62,8 @@ def _pipeline(cfg: dict, use_ai: bool = True, notify: bool = True, zeek_dirs=Non
                     herdr_ai_severity=(cfg.get("herdr") or {}).get("ai_severity", 3.5),
                     hostctx=config.hostctx(cfg), zeek_dirs=zeek_dirs,
                     learning_seconds=float(cfg.get("learning_days", 3)) * 86400,
-                    update_notice=_update_notice(cfg), autoclose=config.judge_autoclose(cfg))
+                    update_notice=_update_notice(cfg),
+                    autoclose=config.judge_autoclose(cfg) if live else judge.AutoClose())
 
 
 def _update_notice(cfg: dict):
@@ -87,7 +91,7 @@ def _single_instance(db_path: str):
 def cmd_run(args, cfg) -> int:
     lock = _single_instance(cfg.get("db_path", "tapwatch.db"))  # noqa: F841 - held until exit
     Path("tapwatch-run.pid").write_text(str(os.getpid()))  # the watchdog checks this process is alive
-    p = _pipeline(cfg, zeek_dirs=args.zeek_dir)
+    p = _pipeline(cfg, zeek_dirs=args.zeek_dir, live=True)
     log = logging.getLogger("tapwatch")
     host_dirs = config.host_log_dirs(cfg)  # the endpoint agents' osquery logs, for the host rules (R17+)
     log.info("watching %s (AI triage: %s, notifications: %s)", args.zeek_dir + host_dirs,
@@ -220,14 +224,13 @@ def cmd_benchmark(args, cfg) -> int:
 def cmd_judge(args, cfg) -> int:
     """The learned judge's training set and guardrails (#200, #201), and what auto-close did (#204, #205).
     Read-only except `backfill` and `undo`."""
-    from . import judge
-
     store = Store(cfg.get("db_path", "tapwatch.db"))
     db = store.db
     if args.action == "closed":
-        print(config.judge_settings(cfg).summary())
-        for b in db.execute("SELECT detector, since_ts, reason FROM judge_backoff WHERE lifted_ts IS NULL"):
-            print(f"backed off: {b[0]} since {time.strftime('%Y-%m-%d %H:%M', time.localtime(b[1]))}: {b[2]}")
+        settings = config.judge_settings(cfg)
+        print(settings.summary())
+        for det, text in judge.AutoClose(settings).status(db).items():   # closing, or why not
+            print(f"{det}: {text}")
         rows = judge.closures(db)
         if not rows:
             print("the judge has closed nothing")
