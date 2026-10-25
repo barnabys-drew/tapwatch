@@ -45,6 +45,9 @@ class Case:
     indicators: list[str] = field(default_factory=list)  # attacker-controllable strings (domains, SNI)
     must_alert: bool = False  # True = AI is not allowed to suppress it (IOC hit, critical IDS alert)
     base_severity: int = 2    # 1..5, the rule's own opinion, used when the AI is unavailable
+    # The device's other addresses, when the source knows them (an endpoint agent lists all of its PC's). Not stored:
+    # the pipeline reads them once, to find the device when `host` itself names none (Pipeline.identify).
+    aliases: tuple[str, ...] = ()
 
     @property
     def indicator(self) -> str:

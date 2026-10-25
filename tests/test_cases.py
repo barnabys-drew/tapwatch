@@ -221,6 +221,23 @@ def test_suppression_scopes_match_what_they_say():
     assert store.match_suppression(Case("odd_port", "192.168.50.99", T0, "t", {}, ["itv.co.uk"])) is None
 
 
+def test_a_rule_made_before_the_devices_name_was_learned_still_follows_it():
+    # A rule made while the device was mac:<address> keeps matching once its DHCP name makes it name:<hostname>,
+    # on any address: the same MAC is the same hardware. Another device's MAC with that name does not match.
+    store = Store(":memory:")
+    mac = "02:00:00:00:00:21"
+    cid, _ = make_case(store, detector="new_domain", host="192.168.50.21", indicators=["cdn.example.com"],
+                       facts={"device_mac": mac})
+    store.add_suppression(cid, "device_indicator", "its CDN", "t")
+    assert store.suppressions()[0]["host"] == f"mac:{mac}"
+    named = Case("new_domain", "192.168.50.31", T0, "t", {"device_mac": mac, "device_name": "Study-Laptop"},
+                 ["cdn.example.com"])
+    assert store.match_suppression(named).startswith("#1 new_domain")
+    other = Case("new_domain", "192.168.50.21", T0, "t", {"device_mac": "02:00:00:00:00:22",
+                                                          "device_name": "Study-Laptop"}, ["cdn.example.com"])
+    assert store.match_suppression(other) is None
+
+
 def test_suppress_form_names_the_device_identity_the_rule_will_follow():
     # The rule is keyed on models.device_id (DHCP hostname, then MAC, then IP), so the label shows that
     # identity next to the address when they differ, and only the address when the IP is the identity.

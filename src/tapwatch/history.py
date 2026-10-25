@@ -20,7 +20,9 @@ between a LAN device and the house's own public address are skipped, as in `Pipe
 The device is `models.device_id` through an Identity detector seeded with the alerter's saved state and
 fed the day's own records first, so each connection is credited to the MAC it carried that day (the dock
 two laptops shared on 2026-10-14) and to the DHCP name that MAC announced that day, even when the lease
-came after the connection. `dest` is the base domain of the server's name when one was seen (TLS SNI,
+came after the connection. A MAC that has no name yet takes the one name it announced, on two days or more, in
+the 30 days before or the day after (known_names), and once a MAC's name is learned, its earlier mac:<address> days move to the
+name (rekey), so one device keeps one history. `dest` is the base domain of the server's name when one was seen (TLS SNI,
 else the DNS name that resolved to it, as `Beaconing.name_for`), else the address. A connection counts in
 the day it started, all of its bytes too, so totals match a direct pass over conn.log. Zeek logs a connection
 when it ends, so the nightly run builds each day twice: the night after (from logs up to 3 h past midnight)
@@ -67,6 +69,8 @@ TOP_PORTS = 200        # per device and day; a scanning device's long tail is su
 MAX_UNNAMED = 2000
 CATCH_UP = 3           # days the nightly run looks back for a day not summarized or not settled (a stopped alerter)
 BACKFILL = 30          # days `summarize --backfill` looks back
+NAME_LOOKBACK = 30 * 86400   # s of DHCP logs before a day searched for the names of its MACs (known_names)
+MIN_NAME_DAYS = 2            # days (UTC) a MAC must have announced its one name on, for known_names to lend it
 
 
 def zone(cfg: dict):
@@ -108,19 +112,50 @@ class Day:
     devices: dict = field(default_factory=dict)  # device -> [conns, out, in, hours bitmap, ports, services]
     dests: dict = field(default_factory=dict)    # (device, dest, port) -> [conns, out, in, Counter (asn, cc), times]
     unnamed: Counter = field(default_factory=Counter)   # device -> unnamed destination rows so far (MAX_UNNAMED)
+    named: dict = field(default_factory=dict)    # MAC -> the one DHCP name it announced around the day (known_names)
+
+
+def known_names(log_dirs, start: float, end: float) -> tuple[dict[str, str], dict[str, str]]:
+    """MAC -> DHCP name for the MACs that announced exactly one name: in the day's own window (PREROLL to LATE),
+    and from NAME_LOOKBACK before the day until all that was logged after it (up to SETTLE).
+
+    A device renews its lease about twice a day, but not every renewal carries the name, and a new sensor's
+    Identity knows no names at all: summarized from an empty Identity, 12 home days put devices under
+    mac:<address> on the days before their first named lease and under name:<hostname> after, two histories for
+    one device. A MAC that announced two names (a dock two computers share) is left out of both: which of them
+    held it before its first lease of the day is not known, and a guess could merge two computers. After that
+    lease, the day's records name it as they come (Identity.feed)."""
+    day: dict[str, set] = {}
+    around: dict[str, set] = {}
+    days: dict[str, set] = {}
+    for rec in zeek.replay(log_dirs, {"dhcp.log"}, (start - NAME_LOOKBACK, end + SETTLE)):
+        mac, name, ts = (rec.get("mac") or "").lower(), (rec.get("host_name") or "").strip(), rec.get("ts", 0.0)
+        if name and det.mac_ok(mac) and start - NAME_LOOKBACK <= ts < end + SETTLE:
+            around.setdefault(mac, set()).add(name)
+            days.setdefault(mac, set()).add(int(ts // 86400))
+            if start - PREROLL <= ts < end + LATE:
+                day.setdefault(mac, set()).add(name)
+
+    def one(seen: dict[str, set]) -> dict[str, str]:
+        return {mac: min(n) for mac, n in seen.items() if len({x.lower() for x in n}) == 1}
+    # Outside the day, the name must hold on two days or more. Measured: from an empty Identity, the shared dock's
+    # first day saw one lease (one computer's) in its window and the other computer's name only the day after,
+    # so one day of a single name credited the other computer's traffic to it.
+    return one(day), {mac: name for mac, name in one(around).items() if len(days[mac]) >= MIN_NAME_DAYS}
 
 
 def read_day(log_dirs, day: date, tz, ident: det.Identity, asn: AsnTable | None = None) -> Day:
     """Read one local day's connections out of the rotated logs into per-device and per-destination totals."""
     start, end = bounds(day, tz)
     window = (start - PREROLL, end + LATE)
-    # The day's DHCP names first: a laptop that renewed its lease at noon is name:<hostname> all day, not
-    # mac:<address> in the morning and name:<hostname> after.
-    names = det.Identity()
-    for rec in zeek.replay(log_dirs, {"dhcp.log"}, window):
-        names.feed(rec)
-    ident.hostname.update(names.hostname)
     out, sni, dns = Day(), {}, {}
+    # The day's DHCP names first: a laptop that renewed its lease at noon is name:<hostname> all day, not
+    # mac:<address> in the morning and name:<hostname> after. Then, for a MAC still unnamed, the one name it
+    # announced in the weeks around the day.
+    todays, out.named = known_names(log_dirs, start, end)
+    ident.hostname.update(todays)
+    for mac, name in out.named.items():
+        ident.hostname.setdefault(mac, name)
     # Then the day with its names, and after it the next day's conn logs for long connections (only the files the
     # first pass did not read: the two windows share a file at the seam, and the live file).
     first = {p for files, _ in zeek.replay_files(log_dirs, READS, window) for p in files}
@@ -219,6 +254,24 @@ def write_day(db, day: date, d: Day, seconds: float) -> None:
         db.executemany("INSERT INTO device_day_dest VALUES (?,?,?,?,?,?,?,?,?,?)", dests)
         db.execute("INSERT OR REPLACE INTO summary_days VALUES (?,?,?,?,?,?)",
                    (iso, len(days), d.records, len(d.hours), time.time(), round(seconds, 2)))
+
+
+def rekey(db, named: dict[str, str], before: date) -> int:
+    """Move earlier days summarized under mac:<address> to the name that MAC has announced since (known_names), so a
+    device keeps one history once its name is learned. A day that already has a row under the name keeps both
+    (`summarize --day` rebuilds it as one). Returns how many device-days moved."""
+    moved = 0
+    with db:
+        for mac, name in sorted(named.items()):
+            old, new = device_id("", {"device_mac": mac}), device_id("", {"device_name": name})
+            days = [r[0] for r in db.execute(
+                "SELECT day FROM device_day WHERE device=? AND day<? AND day NOT IN"
+                " (SELECT day FROM device_day WHERE device=?)", (old, before.isoformat(), new))]
+            for day in days:
+                db.execute("UPDATE device_day SET device=? WHERE device=? AND day=?", (new, old, day))
+                db.execute("UPDATE device_day_dest SET device=? WHERE device=? AND day=?", (new, old, day))
+            moved += len(days)
+    return moved
 
 
 def prune(db, today: date, keep_days: int) -> int:
@@ -336,6 +389,8 @@ def summarize(store, cfg: dict, log_dirs, days: list[date], asn: AsnTable | None
                         d.records)
         elif d.records:  # nothing counted: the logs only touch the day (an edge of what is left), not a quiet day
             write_day(store.db, day, d, seconds)
+        if moved := rekey(store.db, d.named, day):
+            log.info("moved %d earlier device-day(s) from a MAC to the DHCP name it announced", moved)
         out.append(Result(day, len(d.devices), len(d.dests), d.records, seconds))
     keep = int((cfg.get("summaries") or {}).get("retention_days", 90))
     prune(store.db, datetime.now(tz).date(), keep)

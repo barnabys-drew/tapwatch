@@ -145,7 +145,8 @@ class VulnKev(Detector):
                        f"{round((ts - was['ts']) / DAY)} days" if was else ""),
         }
         title = "Software with a known-exploited vulnerability" + (" (still unpatched)" if was and not new else "")
-        return [Case(self.name, self.state.host, ts, title, facts, [g["label"][:80]], base_severity=3)]
+        return [Case(self.name, self.state.host, ts, title, facts, [g["label"][:80]], base_severity=3,
+                     aliases=self.state.aliases())]
 
 
 _dpkg_key = functools.cmp_to_key(inventory.dpkg_compare)

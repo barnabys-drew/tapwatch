@@ -509,7 +509,11 @@ class Store:
         live = self.db.execute("SELECT * FROM suppressions WHERE detector=? AND (expires_ts IS NULL OR expires_ts>?)"
                                " ORDER BY id", (case.detector, now)).fetchall()
         rule = None
-        mine = {device_id(case.host, case.facts), case.host}  # rules made before identities were keyed by IP
+        # The device as it is keyed now, and as it was keyed by rules made earlier: by IP before identities existed,
+        # and by MAC before its DHCP name was learned (the same hardware, so the rule still means this device).
+        mine = {device_id(case.host, case.facts), case.host}
+        if case.facts.get("device_mac"):
+            mine.add(device_id(case.host, {"device_mac": case.facts["device_mac"]}))
         for r in live:
             same_device = r["host"] in mine
             scope = r["scope"]
