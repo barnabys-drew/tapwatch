@@ -283,6 +283,20 @@ class Store:
             self.db.execute("INSERT INTO notes (case_id, ts, actor, text) VALUES (?,?,?,?)", (case_id, now, actor, note))
             self._audit(case_id, actor, "note", None, note, now)
 
+    def add_fact(self, case_id: int, key: str, value, note: str, actor: str) -> bool:
+        """Set one fact on an existing case (an on-demand check's result) with a note, audited."""
+        row = self.get(case_id)
+        if row is None:
+            return False
+        facts = json.loads(row["facts"] or "{}")
+        facts[key] = value
+        now = time.time()
+        with self.db:
+            self.db.execute("UPDATE cases SET facts=?, updated_ts=? WHERE id=?", (json.dumps(facts), now, case_id))
+            self.db.execute("INSERT INTO notes (case_id, ts, actor, text) VALUES (?,?,?,?)", (case_id, now, actor, note))
+            self._audit(case_id, actor, "note", None, note, now)
+        return True
+
     def pending_digest(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM cases WHERE route='digest' AND digested=0 ORDER BY first_ts").fetchall()
 

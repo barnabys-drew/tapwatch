@@ -24,6 +24,21 @@ Pick what to enrich. Detectors flag patterns, so the case's `indicators` may be
 only the first three names. Use the script's random-looking and NXDOMAIN lists,
 not just `indicators`.
 
+### Uploads to Google: ask the account (`upload_spike` only)
+
+If the case is an `upload_spike` and an indicator ends in `content-storage-upload.googleapis.com` (or
+`upload.youtube.com`), ask the owner's own Google accounts what was uploaded in those hours:
+
+```bash
+.venv/bin/tapwatch account-check <case_id> --save
+```
+
+It prints one line per account and records counts, file types, times and sizes on the case, never names.
+Report it plainly. If something shows up: "Drive shows N uploads at HH:MM (types)". If every account shows
+nothing: "the accounts show nothing: unexplained". If it says no accounts or no client are configured, mention
+docs/setup/account-check.md and carry on without it. Don't run it with `--names` unless the user asks. It
+can't see Google Photos backups, so a phone's photo backup stays unexplained by design.
+
 ## 2. External lookups (only public names and public IPs)
 
 **Never send outside:** internal IPs (192.168.x, 10.x, 100.64/10, fe80::),

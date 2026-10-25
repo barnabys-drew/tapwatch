@@ -117,6 +117,12 @@ network:                             # home rules (docs/detections/DESIGN.md R03
                                      # Update it if your ISP changes the address: a stale one hides traffic to
                                      # whoever has it now. Behind CGNAT (a 100.64.x.x WAN address), leave it empty
 
+# account_check:                     # opt-in: ask your own Google accounts what an upload_spike to Google was
+#   google: [personal]               # account labels, never addresses; or {label: work, services: [drive]}
+#   token_dir: ~/.local/state/tapwatch/accounts   # refresh tokens (mode 600), outside the repo
+# Sign in with `tapwatch accounts add personal`, check with `tapwatch account-check <case> --save`.
+# The OAuth client goes in .env: TAPWATCH_GOOGLE_CLIENT_ID / TAPWATCH_GOOGLE_CLIENT_SECRET. docs/setup/account-check.md
+
 dev_profile:                         # dev workstations running coding agents
   hosts: []                          # their traffic to dev services (model APIs, registries, GitHub) is not
   domains: []                        # flagged by beaconing/dns_anomaly/new_domain; takeover still applies
