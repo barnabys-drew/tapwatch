@@ -1304,30 +1304,55 @@ def test_noise_cut_review_dll_location_keeps_the_alert_and_the_hold_covers_a_res
     assert "AS cmd_dllpath" in q
 
 
-def test_the_one_off_rekey_moves_old_wsl_address_cases_only_to_a_single_nearby_pc():
+def test_the_one_off_rekey_moves_old_wsl_address_cases_only_to_a_single_pc():
     from tapwatch.models import Case
     from tools import rekey_wsl_cases
 
     s = Store(":memory:")
     pc = {"source": "endpoint", "device_mac": "02:00:00:00:00:51", "device_name": "Study-PC"}
+    other = {"source": "endpoint", "device_mac": "02:00:00:00:00:52"}
 
-    def add(host, ts, facts):
-        return s.add(Case("host_lolbin", host, ts, "t", dict(facts), [f"tool{ts}.exe"]), "state", None, Route.DIGEST,
+    def add(host, ts, facts, detector="host_lolbin"):
+        return s.add(Case(detector, host, ts, "t", dict(facts), [f"tool{ts}.exe"]), "state", None, Route.DIGEST,
                      "r")
 
     add("192.168.50.51", T0, pc)
     split = add("10.255.255.254", T0 + 600, {"source": "endpoint"})
     alone = add("10.255.255.254", T0 + 30 * 86400, {"source": "endpoint"})     # no PC case within the hour
-    add("192.168.50.52", T0 + 60 * 86400, {"source": "endpoint", "device_mac": "02:00:00:00:00:52"})
+    add("192.168.50.52", T0 + 60 * 86400, other)
     add("192.168.50.51", T0 + 60 * 86400 + 60, pc)
     two = add("10.255.255.254", T0 + 60 * 86400 + 120, {"source": "endpoint"})  # two PCs nearby: no guess
+    # Every mirrored-mode PC shares the address: an R48 case names its agent, and only that agent's cases count,
+    # though the Study-PC's host case is the one next to it in time
+    add("192.168.50.52", T0 + 90 * 86400, {**other, "agent": "agent-b"}, "vuln_kev")
+    by_agent = add("10.255.255.254", T0 + 700, {"source": "endpoint", "agent": "agent-b"}, "vuln_kev")
+    unknown = add("10.255.255.254", T0 + 800, {"source": "endpoint", "agent": "agent-c"}, "vuln_kev")
     s.update_case(split, "ui owner", status="closed", disposition="benign_expected")
     changes, left = rekey_wsl_cases.plan(s.db)
-    assert [(c, k) for c, _, k in changes] == [(split, "name:study-pc")] and left == 2
+    assert [(c, k) for c, _, k, _ in changes] == [(split, "name:study-pc"), (by_agent, "mac:02:00:00:00:00:52")]
+    assert [c for c, _ in left] == [alone, two, unknown]
     rekey_wsl_cases.apply(s.db, changes)
     facts = json.loads(s.get(split)["facts"])
     assert facts["device_name"] == "Study-PC" and s.get(split)["host"] == "10.255.255.254"
     (device, features), = s.db.execute("SELECT device, features FROM judge_examples WHERE case_id=?", (split,))
     assert device == json.loads(features)["device"] == "name:study-pc"
-    assert "device_mac" not in json.loads(s.get(alone)["facts"]) and "device_mac" not in json.loads(s.get(two)["facts"])
-    assert rekey_wsl_cases.plan(s.db) == ([], 2)                               # a second run changes nothing
+    for case_id in (alone, two, unknown):
+        assert "device_mac" not in json.loads(s.get(case_id)["facts"])
+    assert rekey_wsl_cases.plan(s.db) == ([], left)                             # a second run changes nothing
+
+
+def test_the_rekey_dry_run_lists_every_case_and_writes_nothing(tmp_path, capsys):
+    from tapwatch.models import Case
+    from tools import rekey_wsl_cases
+
+    s = Store(str(tmp_path / "t.db"))
+    s.add(Case("host_lolbin", "192.168.50.51", T0, "t", {"device_name": "Study-PC"}, ["a.exe"]), "s", None,
+          Route.DIGEST, "r")
+    cid = s.add(Case("host_lolbin", "10.255.255.254", T0 + 60, "t", {}, ["b.exe"]), "s", None, Route.DIGEST, "r")
+    lone = s.add(Case("host_lolbin", "10.255.255.254", T0 + 86400, "t", {}, ["c.exe"]), "s", None, Route.DIGEST, "r")
+    assert rekey_wsl_cases.main([str(tmp_path / "t.db")]) == 0
+    out = capsys.readouterr().out
+    assert f"#{cid} -> name:study-pc (endpoint cases within 60 min)" in out
+    assert f"#{lone} left on the address (endpoint cases within 60 min: none)" in out
+    assert "1 case(s) to move to 1 device(s); 1 left on the address" in out and "applied" not in out
+    assert "device_name" not in json.loads(Store(str(tmp_path / "t.db")).get(cid)["facts"])

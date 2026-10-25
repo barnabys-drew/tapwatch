@@ -315,3 +315,23 @@ def test_once_a_mac_announces_its_name_its_earlier_days_move_to_it(tmp_path):
                                            (DAY.isoformat(), f"mac:{DOCK}"))] == ["name:den-tablet"]
     # that day keeps both rows (`summarize --day` merges them), rather than one overwriting the other
     assert devices(store, date(2026, 9, 20)) == {"name:den-tablet", f"mac:{TABLET}"}
+
+
+def test_an_older_run_of_mac_days_another_computer_made_is_never_renamed(tmp_path):
+    """Review of #326: weeks of a dock's mac:<address> days from one computer, then another computer docks and
+    announces its name. Only the days next to its first named leases move; the older run keeps the MAC."""
+    two_name_logs(tmp_path, END + 1.5 * 86400, END + 2.5 * 86400)    # the tablet named on 9-23 and 9-24 only
+    store = Store(str(tmp_path / "t.db"))
+    old = [date(2026, 8, 1), date(2026, 9, 5), date(2026, 9, 18)]    # past the lookback; inside it but weeks off; 5 days
+    with store.db:
+        for d in old:
+            store.db.execute("INSERT INTO device_day VALUES (?, ?, 1, 1, 1, 1, '{}', '{}')", (f"mac:{TABLET}", d.isoformat()))
+            store.db.execute("INSERT INTO device_day_dest VALUES (?, ?, 'example.com', 443, NULL, NULL, 1, 1, 1, '[]')",
+                             (f"mac:{TABLET}", d.isoformat()))
+    history.summarize(store, {**CFG, "summaries": {"retention_days": 0}}, [tmp_path], [DAY, date(2026, 9, 23)])
+    assert devices(store) == {"name:den-tablet", f"mac:{DOCK}"}           # two days before the first named lease
+    for d in old:
+        assert devices(store, d) == {f"mac:{TABLET}"}
+        assert store.db.execute("SELECT device FROM device_day_dest WHERE day=?", (d.isoformat(),)).fetchone()[0] \
+            == f"mac:{TABLET}"
+    assert history.rekey(store.db, {TABLET: "Den-Tablet"}, date(2026, 9, 23), {}) == 0   # no announced days: no move

@@ -128,7 +128,9 @@ class Pipeline:
                 case.facts["host_jev_who"], case.facts["host_jev_conf"] = self.client.who(state)
             except TriageError as e:
                 log.warning("AI 'who' question failed: %s", e)
-        suppression = self.store.match_suppression(case)  # always None for must_alert cases
+        mac = case.facts.get("device_mac")
+        suppression = self.store.match_suppression(   # always None for must_alert cases
+            case, mac_names=self.identity.names_of(mac) if self.identity is not None and mac else ())
         verdict = None
         if self.client and wants_ai(case) and not suppression:  # skip always-alert, code-routed and suppressed
             try:

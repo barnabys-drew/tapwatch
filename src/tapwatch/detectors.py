@@ -1501,12 +1501,16 @@ class Identity(Detector):
     """
 
     name = "identity"
-    PERSIST: ClassVar[tuple[str, ...]] = ("mac", "hostname", "last_ip")
+    PERSIST: ClassVar[tuple[str, ...]] = ("mac", "hostname", "last_ip", "names")
+    NAMES_PER_MAC = 4
 
     def __init__(self):
         self.mac: dict[str, str] = {}       # internal IP -> MAC
         self.hostname: dict[str, str] = {}  # MAC -> DHCP hostname
         self.last_ip: dict[str, str] = {}   # device key -> the address it was last seen on
+        # MAC -> every DHCP name it announced (lower-case, the first few): a dock or USB adapter that two computers
+        # use shows two, and a rule made under its MAC must not follow it to the other one (Store.mac_rule_holds)
+        self.names: dict[str, list[str]] = {}
 
     def feed(self, rec: dict) -> list[Case]:
         kind = rec["_type"]
@@ -1524,7 +1528,11 @@ class Identity(Detector):
                 if name:
                     if len(self.hostname) > 10_000:
                         self.hostname.clear()
+                        self.names.clear()
                     self.hostname[mac] = name
+                    seen = self.names.setdefault(mac, [])
+                    if name.lower() not in seen and len(seen) < self.NAMES_PER_MAC:
+                        seen.append(name.lower())
                 ip = rec.get("assigned_addr") or rec.get("client_addr") or ""
                 if is_unicast_lan(ip):
                     self.mac[ip] = mac
@@ -1554,6 +1562,11 @@ class Identity(Detector):
 
     def hostname_for(self, ip: str) -> str:
         return self.hostname.get(self.mac.get(ip, ""), "")
+
+    def names_of(self, mac: str) -> list[str]:
+        """Every DHCP name this MAC has announced (lower-case), plus the one it has now."""
+        now = self.hostname.get(mac or "", "")
+        return sorted(set(self.names.get(mac or "", ())) | ({now.lower()} if now else set()))
 
     def facts_for(self, ip: str) -> dict:
         """The identity facts for a case on `ip`: only what is known."""
