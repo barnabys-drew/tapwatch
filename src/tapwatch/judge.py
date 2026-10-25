@@ -46,6 +46,10 @@ MIN_LABEL_DAYS = 2
 MAX_WEEK_SHARE = 0.5          # one ISO week gives at most this share of those days
 MAX_DEVICE_SHARE = 0.5        # at the "any_device" width, one device gives at most this share of the precedents
 TP_LOOKBACK = 30 * 86400      # a true positive on the device this recently keeps the judge off it
+# True positives about tapwatch itself, not a threat on the device they're filed under: a feed that went silent is
+# real (and labelled so), but it says nothing about the PC, and six of them kept the judge off the main PC for a month
+# (2026-10-25). They still block their own key like any true positive.
+SENSOR_HEALTH = ("feed_silence",)
 BACKED_WINDOW = 7 * 86400     # another case on the device this recent keeps the judge off a long-horizon case
 KEY_WORDS = {"domain": "destination", "program": "program", "ind": "indicator", "detector": "case type"}
 WIDTHS = ("device", "any_device")   # precedent key widths shadow mode records (see eligible)
@@ -208,8 +212,10 @@ def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = No
     if case.detector in LONG_HORIZON and (other := backed_long_horizon(db, row, case, before)):
         return False, f"a long-horizon case backed by another case on this device ({other})", []
     f = features(row)
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only '?' placeholders are joined; every value is bound
     if db.execute("SELECT 1 FROM judge_examples WHERE device=? AND label='true_positive' AND labelled_ts BETWEEN ? AND ?"
-                  " LIMIT 1", (f["device"], before - TP_LOOKBACK, before)).fetchone():
+                  f" AND detector NOT IN ({','.join('?' * len(SENSOR_HEALTH))}) LIMIT 1",
+                  (f["device"], before - TP_LOOKBACK, before, *SENSOR_HEALTH)).fetchone():
         return False, "a true positive on this device in the last 30 days", []
     if width == "device":
         same = db.execute("SELECT * FROM judge_examples WHERE detector=? AND device=? AND key=? AND labelled_ts < ?"
