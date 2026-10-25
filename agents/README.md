@@ -79,7 +79,9 @@ agent **inside WSL** too: Windows can't see Linux processes, and the coding agen
 On Linux the installer also turns on osquery's **eBPF publisher** (`config/linux.flags`), and
 `bpf_connections` records every outgoing connection as it happens, with the same markers, so a one-second
 `git fetch` or API call isn't missed between snapshots. It needs a kernel with BPF and BTF (4.18 or later;
-WSL2's has both). Linux DNS lookups from WSL reach Windows through WSL's DNS proxy, so tapwatch gives each
+WSL2's has both). It also halves eBPF's per-CPU event ring (`--bpf_perf_event_array_exp=9`): at the
+default the ring alone is 4 MB a CPU, which on a 16-core PC kept osqueryd near its 200 MB watchdog limit.
+Linux DNS lookups from WSL reach Windows through WSL's DNS proxy, so tapwatch gives each
 lookup to the program that connected to one of its answers right after. eBPF learns a program when it
 starts, so processes already running when osqueryd (re)starts come through without a path; tapwatch skips
 those rows and relies on the 1-minute snapshots for them. After a reboot osqueryd starts first.
