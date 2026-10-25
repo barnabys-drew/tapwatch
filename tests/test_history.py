@@ -223,3 +223,44 @@ def test_a_day_is_built_again_once_its_long_connections_are_logged(setup):
     store.db.execute("UPDATE summary_days SET built_ts=?", (END + history.SETTLE + 60,))
     store.db.commit()
     assert DAY not in history.due_days(store.db, [d], tz, END + 3 * 86400, 4)
+
+
+def test_a_device_with_huge_fan_out_is_bounded(tmp_path, monkeypatch):
+    """A torrent client or a scanner reaching thousands of unnamed peers: the rows past MAX_UNNAMED fold into one
+    ("other", -1) row, totals still match, and a busy destination keeps at most CONTACTS start times while read."""
+    monkeypatch.setattr(history, "MAX_UNNAMED", 3)
+    peers = [with_mac(conn(START + 600 + i, dst=f"198.51.100.{i + 10}", port=6881), LAPTOP) for i in range(10)]
+    busy = [with_mac(conn(START + 3600 + i * 60, dst="203.0.113.9", port=443), LAPTOP) for i in range(500)]
+    write_logs(tmp_path, conn=sorted(peers + busy, key=lambda r: r["ts"]))
+    d = history.read_day([tmp_path], DAY, history.zone(CFG), detectors.Identity())
+    keys = sorted(k[1] for k in d.dests)
+    assert len(keys) == 4 and "other" in keys and "203.0.113.9" not in keys   # 3 peers kept, the rest in "other"
+    assert sum(r[0] for r in d.dests.values()) == 510
+    assert max(len(r[4]) for r in d.dests.values()) <= history.CONTACTS
+
+
+def test_a_rebuild_with_fewer_records_keeps_the_complete_summary(setup):
+    d, store, cfg, recs = setup
+    history.summarize(store, cfg, [d], [DAY])
+    before = table(store, "device_day")
+    write_logs(d, **{**recs, "conn": recs["conn"][len(recs["conn"]) // 2:]})   # the morning's logs pruned since
+    history.summarize(store, cfg, [d], [DAY])
+    assert table(store, "device_day") == before
+
+
+def test_the_oldest_day_left_is_skipped_once_its_morning_is_pruned(tmp_path):
+    def rotated(ts):
+        (tmp_path / f"conn.{zeek.datetime.fromtimestamp(ts, zeek.timezone.utc):%Y-%m-%d-%H-%M-%S}.log").write_text("")
+
+    tz = history.zone(CFG)
+    for h in range(6, 30):   # the day's first six hours already pruned
+        rotated(START + h * 3600)
+    assert not history.has_logs([tmp_path], DAY, tz)
+    assert history.has_logs([tmp_path], date(2026, 9, 22), tz)
+    rotated(START - 3600 + 1234)   # an irregular rotation the evening before still holds the morning
+    assert history.has_logs([tmp_path], DAY, tz)
+
+
+def test_an_hour_before_the_day_is_finished_is_moved_to_when_it_is():
+    clock = history.NightlyClock(1, history.zone(CFG))
+    assert clock.hour == history.LATE // 3600

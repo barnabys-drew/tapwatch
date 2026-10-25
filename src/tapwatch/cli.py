@@ -125,7 +125,8 @@ def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
         if digest.due(time.time()):
             p.send_digest()
         if nightly and nightly.due(time.time()) and not (summarizing and summarizing.is_alive()):
-            summarizing = history.nightly(cfg, args.zeek_dir, lambda: Store(cfg.get("db_path", "tapwatch.db")))
+            asn = next((d.asn for d in p.detectors if getattr(d, "asn", None)), None)   # the alerter's own table
+            summarizing = history.nightly(cfg, args.zeek_dir, lambda: Store(cfg.get("db_path", "tapwatch.db")), asn=asn)
 
 
 class DigestClock:

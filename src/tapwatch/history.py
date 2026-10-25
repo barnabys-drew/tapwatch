@@ -61,6 +61,10 @@ SETTLE = 24 * 3600 + LATE
 CONTACTS = 48          # connection-start times kept per destination and day
 CONTACT_GAP = 1800     # s between two kept start times
 TOP_PORTS = 200        # per device and day; a scanning device's long tail is summed under "other"
+# Unnamed destinations (a bare address:port) kept per device and day; past this, the rest are summed into one
+# ("other", -1) row. A torrent client, a game or a scanner can reach a million peers in a day, and without a cap
+# that day would hold ~650 bytes per peer in the alerter's memory and write a row for each (review of #321).
+MAX_UNNAMED = 2000
 CATCH_UP = 3           # days the nightly run looks back for a day not summarized or not settled (a stopped alerter)
 BACKFILL = 30          # days `summarize --backfill` looks back
 
@@ -103,6 +107,7 @@ class Day:
     hours: set = field(default_factory=set)     # local hours with any counted connection, any device
     devices: dict = field(default_factory=dict)  # device -> [conns, out, in, hours bitmap, ports, services]
     dests: dict = field(default_factory=dict)    # (device, dest, port) -> [conns, out, in, Counter (asn, cc), times]
+    unnamed: Counter = field(default_factory=Counter)   # device -> unnamed destination rows so far (MAX_UNNAMED)
 
 
 def read_day(log_dirs, day: date, tz, ident: det.Identity, asn: AsnTable | None = None) -> Day:
@@ -154,13 +159,21 @@ def read_day(log_dirs, day: date, tz, ident: det.Identity, asn: AsnTable | None 
         name = name_for(sni, dns, dst)
         key = (dev, det.base_domain(name) if name else dst, port if isinstance(port, int) else -1)
         row = out.dests.get(key)
+        if row is None and not name:
+            if out.unnamed[dev] >= MAX_UNNAMED:
+                key = (dev, "other", -1)
+                row = out.dests.get(key)
+            else:
+                out.unnamed[dev] += 1
         if row is None:
             row = out.dests[key] = [0, 0, 0, Counter(), []]
         row[0] += 1
         row[1] += up
         row[2] += down
         row[3][asn.lookup(dst) if asn else None] += 1
-        row[4].append(rec["ts"])
+        times = row[4]   # kept as contact_times would keep them, so a busy destination holds 48, not every start
+        if len(times) < CONTACTS and (not times or rec["ts"] - times[-1] >= CONTACT_GAP):
+            times.append(rec["ts"])
     return out
 
 
@@ -226,12 +239,21 @@ def has_logs(log_dirs, day: date, tz) -> bool:
     start, end = bounds(day, tz)
     for d in zeek._dirs(log_dirs):
         for p in zeek.log_files(d, "conn.log"):
+            if zeek.rotated_ts(p) is None and _live_covers(p, start, end):
+                return True
+    # A log rotated during the day, and the day's first hour still on disk: the oldest log left must have opened by
+    # then. On the oldest day left, prune has already deleted its morning, and a first --backfill would build it
+    # from the rest and mark it settled (review of #321). A sensor's first, partial day is skipped the same way.
+    stamps = list(_rotated(log_dirs))
+    return any(start <= ts < end for ts in stamps) and min(stamps) <= start + 3600
+
+
+def _rotated(log_dirs):
+    for d in zeek._dirs(log_dirs):
+        for p in zeek.log_files(d, "conn.log"):
             ts = zeek.rotated_ts(p)
-            if ts is not None and start <= ts < end:
-                return True
-            if ts is None and _live_covers(p, start, end):
-                return True
-    return False
+            if ts is not None:
+                yield ts
 
 
 def _live_covers(path, start: float, end: float) -> bool:
@@ -268,8 +290,13 @@ def due_days(db, log_dirs, tz, now: float, look_back: int) -> list[date]:
 
 
 def identity_state(store) -> dict:
-    """The alerter's saved Identity (IP -> MAC, MAC -> DHCP name), or an empty one."""
-    return store.load_state().get("identity") or {}
+    """The alerter's saved Identity (IP -> MAC, MAC -> DHCP name), or an empty one. Only that row is decoded: the
+    nightly thread runs inside the alerter, and every detector's state would cost memory it rarely gives back."""
+    row = store.db.execute("SELECT data FROM detector_state WHERE name='identity'").fetchone()
+    try:
+        return json.loads(row[0]) if row else {}
+    except ValueError:
+        return {}
 
 
 @dataclass
@@ -301,7 +328,13 @@ def summarize(store, cfg: dict, log_dirs, days: list[date], asn: AsnTable | None
         ident.restore(saved)
         d = read_day(log_dirs, day, tz, ident, asn)
         seconds = time.monotonic() - t0
-        if d.records:  # nothing counted: the logs only touch the day (an edge of what is left), not a quiet day
+        before = store.db.execute("SELECT records FROM summary_days WHERE day=?", (day.isoformat(),)).fetchone()
+        if before and d.records < before[0]:
+            # fewer records than the summary already there: the day's oldest logs were pruned since, so rebuilding
+            # would replace a complete day with part of one (review of #321)
+            log.warning("kept %s's summary: it was built from %d records, its logs now hold %d", day, before[0],
+                        d.records)
+        elif d.records:  # nothing counted: the logs only touch the day (an edge of what is left), not a quiet day
             write_day(store.db, day, d, seconds)
         out.append(Result(day, len(d.devices), len(d.dests), d.records, seconds))
     keep = int((cfg.get("summaries") or {}).get("retention_days", 90))
@@ -322,6 +355,9 @@ class NightlyClock:
     midnight, and their file rotates on the hour). Like DigestClock, a start after the hour counts as that day's run."""
 
     def __init__(self, hour: int, tz):
+        if hour < LATE // 3600:   # before then the day isn't finished, so each summary would wait a night
+            log.warning("summaries.hour %d is before %d: using %d", hour, LATE // 3600, LATE // 3600)
+            hour = LATE // 3600
         self.hour, self.tz, self.last_day = hour, tz, None
 
     def due(self, now: float) -> bool:
@@ -332,7 +368,8 @@ class NightlyClock:
         return True
 
 
-def nightly(cfg: dict, log_dirs, store_factory, now: float | None = None) -> threading.Thread:
+def nightly(cfg: dict, log_dirs, store_factory, now: float | None = None,
+            asn: AsnTable | None = None) -> threading.Thread:
     """Summarize the finished days not done yet, in a background thread so the alerter keeps reading meanwhile.
     The thread opens its own database connection (store_factory); each day is written in one short transaction,
     which the alerter's writes wait for (Store's 10 s timeout) rather than fail."""
@@ -340,7 +377,7 @@ def nightly(cfg: dict, log_dirs, store_factory, now: float | None = None) -> thr
         try:
             store = store_factory()
             days = due_days(store.db, log_dirs, zone(cfg), time.time() if now is None else now, CATCH_UP)
-            for r in summarize(store, cfg, log_dirs, days, configure=False):
+            for r in summarize(store, cfg, log_dirs, days, asn=asn, configure=False):
                 log.info("summarized %s: %d device(s), %d destination row(s) from %d connection(s) in %.0f s",
                          r.day, r.devices, r.dests, r.records, r.seconds)
         except Exception:  # a failed summary must never take the alerter down
