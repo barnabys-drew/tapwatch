@@ -326,6 +326,15 @@ days, and owner closes on 2 distinct days.
 github.io doesn't vouch for another. A program is keyed by its full path when host context knows it. A true-positive
 label on the same key blocks the judge from any source, including an AI's or tapwatch's own.
 
+
+**First scorecard replay (#203), on the live sensor after the v0.4 rollout.** `tapwatch benchmark --judge-replay`
+over all 1,215 stored cases: 0 would-close at either width ("same device" and "any device"), so agreement has
+nothing to measure, the reading load saved is 0%, and no detector qualifies (each needs 50 decided would-close cases
+in 4 ISO weeks, 98% agreement and no true positive). That's the expected start: exact precedent on 3 days of
+activity, closed by the owner on 2 days, doesn't exist yet in a history this short. The shadow judge now records a
+decision for every new case, so the scorecard has real data from here; auto-close (#204) ships off and stays off
+until a detector qualifies and the owner lists it in `judge.auto_close_detectors`.
+
 ## What to keep in mind
 
 - **Small sample.** Six malware captures and one night at one home. Treat these as a sanity
