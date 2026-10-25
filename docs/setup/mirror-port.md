@@ -27,9 +27,9 @@ Mirror **both directions** (ingress and egress) of the source port.
 - **Linux box:** use a second NIC (USB Ethernet is fine) for the mirror, with no IP address
   (`tapwatch init` suggests the interface without one). Your normal connection carries
   alerts and the case desk.
-- **Windows PC:** plug the mirror into a second Ethernet port. Npcap (installed with
-  Wireshark) captures it in promiscuous mode, and `eval/capture_mirror.sh` streams it into
-  Zeek under WSL. WSL can't capture it directly: Windows drops frames addressed to other machines.
+- **Windows PC:** plug the mirror into a second Ethernet port. Npcap (from npcap.com; the
+  Windows installer sets it up) captures it in promiscuous mode with Wireshark's dumpcap, and
+  `eval/capture_mirror.sh` streams it into Zeek under WSL ([windows.md](windows.md)). WSL can't capture it directly: Windows drops frames addressed to other machines.
 
 ## What the mirror can't see
 

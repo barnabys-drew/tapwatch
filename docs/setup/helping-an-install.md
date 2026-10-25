@@ -23,7 +23,9 @@ Ask them, and get answers to each:
 ## Send them
 
 - The guide: [docs/setup/office-unifi.md](office-unifi.md) (link to the `main` branch on GitHub).
-- How to download: the green **Code** button on the repo page, then **Download ZIP**.
+- How to download: the [latest release](https://github.com/barnabys-drew/tapwatch/releases/latest), the
+  `tapwatch-v….zip` under **Assets**. A release install is what `tapwatch update` moves forward; a ZIP of `main`
+  from the green **Code** button installs `main` instead.
 - What to send back if it stops: `%LOCALAPPDATA%\tapwatch\install.log` (it holds no passwords or keys) and a
   photo of the screen.
 
@@ -36,11 +38,15 @@ Ask them, and get answers to each:
 - **The first 3 days are quiet by design** (the learning period). Tell them, so they don't think it's broken.
 - **Their cases stay on their PC.** To help with one, have them read it from the case desk
   (http://127.0.0.1:8765 on that PC) or send a screenshot. Nothing reaches you automatically.
-- **Updates:** a fresh ZIP and running the installer again. It keeps their settings and restarts tapwatch on the
-  new version.
+- **Updates:** have them double-click `update-windows.cmd` in the folder they extracted. It shows what changed,
+  asks first, and rolls back to the old version if the new one fails its checks. Their daily digest says when a
+  new release is out. A fresh ZIP and running the installer again also works and keeps their settings.
+- **On Windows 11 26H2 and later** the installer may end with "Restart this PC once to finish": Windows'
+  built-in Sysmon only starts its log at boot. Until they restart, program starts and DNS lookups aren't recorded.
+- **Moving to another PC:** `deploy/export-state.sh` on the old one, and the file next to `install-windows.cmd`
+  on the new one ([windows.md](windows.md#moving-tapwatch-to-another-pc)).
 
 ## What to feed back
 
-Anything they got stuck on goes into the guide or the installer, as an issue in the
-[v0.2.5 milestone](https://github.com/barnabys-drew/tapwatch/milestone/6). Keep their name and details out of
-the issue.
+Anything they got stuck on goes into the guide or the installer, as a
+[GitHub issue](https://github.com/barnabys-drew/tapwatch/issues). Keep their name and details out of the issue.

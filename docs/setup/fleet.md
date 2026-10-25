@@ -18,7 +18,9 @@ docker compose -f deploy/fleet/docker-compose.yml --env-file deploy/fleet/.env u
 ```
 
 This starts Fleet, MySQL and Redis. Fleet listens on `127.0.0.1:8412` only. Its results log lands in
-`FLEET_LOG_DIR` (default `deploy/fleet/logs`; if you set another, create that one first too).
+`FLEET_LOG_DIR` (default `deploy/fleet/logs`; if you set another, create that one first too). Fleet writes it as
+`FLEET_UID`/`FLEET_GID` in `.env` (default 1000): if `id -u` and `id -g` say otherwise for the account tapwatch runs
+as, set them, or tapwatch can't read the log.
 
 ## 2. HTTPS through Tailscale
 
@@ -32,6 +34,28 @@ tailscale serve --bg --https=10004 http://127.0.0.1:8412
 Fleet is now at `https://<this computer>.<tailnet>.ts.net:10004`, inside your tailnet only. Every computer that
 reports to it needs Tailscale too. In return, laptops keep reporting away from home, and no certificate file has
 to be copied anywhere. Put that address in `deploy/fleet/.env` as `FLEET_URL`.
+
+**A computer that should only report.** If your tailnet policy allows everything (Tailscale's default), any
+enrolled computer can also reach every other device on your tailnet. For one that only needs to report (a laptop
+you look after, an office PC), give it a tag and replace the allow-all rule with grants, so the tag can reach
+Fleet's port on this computer and nothing else. For example:
+
+```json
+"hosts": {"sensor": "<this computer's Tailscale IP>"},
+"tagOwners": {"tag:report-only": ["autogroup:admin"]},
+"grants": [
+  {"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
+  {"src": ["tag:report-only"], "dst": ["sensor"], "ip": ["tcp:10004"]}
+]
+```
+
+Then give that computer the tag in Tailscale's admin console (Machines, the computer's menu, **Edit ACL tags**).
+To check: from it, Fleet's address still opens and other tailnet devices no longer answer.
+
+**The house's own public address.** Tailscale peers on the same LAN also try to reach each other through the
+house's public address, about once a minute, which the network rules would otherwise read as beaconing to the
+internet. Put that address in `config.yaml` under `network.public_ips` (see `config.example.yaml`; leave it empty
+behind CGNAT), and update it if your ISP changes it.
 
 ## 3. First sign-in and tapwatch's queries
 
@@ -75,8 +99,13 @@ Copy the ZIP to the other computer (it holds the enroll secret, so copy it direc
 sure Tailscale is signed in there. Then unzip it and:
 
 - **Windows:** double-click `tapwatch-agent\install.cmd`. It installs osquery and Sysmon with tapwatch's config and
-  enrolls in Fleet.
+  enrolls in Fleet. On Windows 11 26H2 and later it turns on Windows' built-in Sysmon, which needs one restart
+  before its log starts; the installer says so.
 - **Linux or macOS:** `tapwatch-agent/install.sh`.
+- **Many Windows PCs, from Intune, an RMM or PDQ:** deploy the unzipped folder and run `install-silent.cmd` as
+  SYSTEM. It installs without prompts, logs to `%ProgramData%\tapwatch\agent-install.log`, and returns 0, 1, 1618 or
+  3010 (restart pending). An office behind a proxy adds `PROXY=host:port` to its `agent.env`. Details:
+  [agents/README.md](../../agents/README.md#deploying-with-a-management-tool).
 
 The computer shows up under Hosts in Fleet within a minute, and its rows in tapwatch's log soon after. Give it a
 name in `assets.yaml` so its cases say which computer it is.

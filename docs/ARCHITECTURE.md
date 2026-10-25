@@ -40,15 +40,17 @@ with the [README](../README.md). Rule-by-rule specs are in [detections/DESIGN.md
 - **One small box, few dependencies.** Standard-library Python plus PyYAML, SQLite, and Zeek in a
   container. It runs on a mini PC, or on a Windows PC through WSL.
 
-**Non-goals (v0.1)**
+**Non-goals**
 
 - Not a SIEM or EDR: there's no event store beyond Zeek logs and SQLite. The endpoint agent takes
   osquery snapshots plus the connection events Sysmon (Windows) and eBPF (Linux) feed it; there's no
   general process-event store.
 - No inline blocking. tapwatch is passive and never sits in the traffic path.
-- No fleet server, cloud hosting, multi-site or mobile app (see the [roadmap](ROADMAP.md)).
-- Host context reads the agent only on the machine tapwatch runs on. Agents on other computers log
-  locally, and tapwatch can't use them until it can query them through Fleet (planned).
+- No cloud hosting, multi-site or mobile app (see the [roadmap](ROADMAP.md)). The one server besides the box is
+  optional and the owner's own: a Fleet server (`deploy/fleet`) the agents on other computers can report to.
+- Host context ("which program made this traffic") reads the agent only on the machine tapwatch runs on. Agents
+  on other computers either log locally, where tapwatch can't read them, or report through Fleet, where they get
+  the endpoint rules but not yet host context for network cases ([#14](https://github.com/barnabys-drew/tapwatch/issues/14)).
 
 ## Data flow
 
@@ -67,10 +69,13 @@ flowchart LR
         SYS["tapwatch syslog"] -->|udm.log| LOGS
         SUR["Suricata (optional)"] -.->|eve.json| LOGS
         AGT["Endpoint agents (optional)<br/>osquery results"] -->|osqueryd.*.log| LOGS
+        FLEET["Fleet server (optional)<br/>other computers' agents"] -->|"fleet.results_log"| LOGS
         LOGS --> FOL["Follower<br/>tail -F, survives rotation"]
-        FEEDS[("Offline lists<br/>Tranco · IEEE OUI · iptoasn · UT1 kinds")] --> DET
+        FEEDS[("Offline lists<br/>Tranco · IEEE OUI · iptoasn · UT1 kinds<br/>KEV · OSV · NVD")] --> DET
         DET -.->|"unlisted domain, once per 30 days"| CAT["Categorizer (optional)<br/>small model, rate-limited"]
-        FOL --> DET["Detectors (code)<br/>baselines · first-seen · prevalence"]
+        FOL --> HP{"LAN device and the house's<br/>own public address?"}
+        HP -->|yes| SKIP["skipped"]
+        HP -->|no| DET["Detectors (code)<br/>baselines · first-seen · prevalence"]
         DET --> DEDUPE{"seen within<br/>dedupe window?"}
         DEDUPE -->|yes| HIT["count a hit"]
         DEDUPE -->|no| HC["Host context (optional)<br/>osquery + agent transcripts"]
@@ -90,7 +95,10 @@ flowchart LR
 ```
 
 One record at a time: the follower yields a Zeek record, every detector sees it, and each `Case`
-a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwatch/pipeline.py)):
+a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwatch/pipeline.py)). Before the
+detectors, `Pipeline.process` drops a record between a LAN device and the house's own public address
+(`network.public_ips`, `detectors.hairpin`): devices reaching each other through it never left the house, and
+the eval harness skips the same records. An agent's software snapshot also goes to the inventory tables here.
 
 1. **Dedupe.** If the same case key (detector + device + main indicator) was recorded within
    `dedupe_seconds` (default 1 h), bump its hit count and stop. Nothing is re-asked or re-sent.
@@ -105,6 +113,9 @@ a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwat
    entries for that IP on the PC's current addresses, and logs a warning when the configured IP is out of
    date. An `admin_devices` entry can also be a device identity (`name:<DHCP hostname>` or `mac:<address>`)
    instead of an IP, which is how a phone on a private MAC stays exempt from the router-admin rule.
+   Then three more facts from the store: R16 names the likely other end of a remote-control session
+   (`name_partner`); an open R48 case on the device raises a digest-level case by one (`vulnkev.DeviceKev`);
+   and a host case and a network case its rule names pair up ([Correlation](#components)).
 3. **Summarize.** Turn the case into a short "state" in words for Jev.
 4. **Ask Jev**, if it's configured and the case is AI-eligible: who on the PC did it (only with
    host context), then the four triage questions.
@@ -118,23 +129,27 @@ a detector returns goes through `Pipeline.handle()` ([pipeline.py](../src/tapwat
 |---|---|---|
 | **Capture** | Zeek turns mirrored packets into JSON protocol logs, with MACs in `conn.log` and hourly rotation. On Windows, Npcap's dumpcap streams into Zeek in WSL. | `deploy/zeek/`, `deploy/docker-compose.yml`, `eval/capture_mirror.sh` |
 | **Router syslog** | A UDP listener for the router's syslog (UniFi), with a sender allow-list. It classifies each datagram as a CEF event, an iptables-style firewall line or a system line, and writes `udm.log` beside Zeek's logs: the router's IPS verdicts, admin logins and firewall drops, which the mirror can't see. Accepts and system lines are only counted. | `syslogin.py`, [setup/router-syslog.md](setup/router-syslog.md) |
-| **Log reader** | `replay` merges finished logs in time order. `Follower` tails live logs, survives rotation and emits idle ticks, so the digest clock runs on a quiet network; `run` also sends every detector a tick once a minute, records or not, which is how R22 `feed_silence` notices a feed that stopped. `prune` deletes rotated logs after `zeek_retention_days`. | `zeek.py` |
-| **Detectors** | 20 network detector classes that emit 22 case types (one of them, R22 `feed_silence`, watches the feeds themselves), plus the twelve endpoint rules below (34 case types from 32 detectors). Each one is plain code over time windows, per-device baselines, first-seen sets and household prevalence. `Gateways` emits no cases: it learns which address is each LAN's router, for the other rules. | `detectors.py` |
+| **Log reader** | `replay` merges finished logs in time order. `Follower` tails live logs, survives rotation and emits idle ticks, so the digest clock runs on a quiet network; `run` also sends every detector a tick once a minute, records or not, which is how R22 `feed_silence` notices a feed that stopped. The endpoint agents' osquery logs are read the same way (`_type: osquery`), and so is the results log a Fleet server writes (`fleet.results_log`): its records are named `pack/...`, so they get their own type (`fleet_osquery`) and are read per computer. `prune` deletes rotated logs after `zeek_retention_days`. | `zeek.py` |
+| **Detectors** | 20 network detector classes that emit 22 case types (one of them, R22 `feed_silence`, watches the feeds themselves), plus the seventeen endpoint rules below (39 case types from 37 detectors). Each one is plain code over time windows, per-device baselines, first-seen sets and household prevalence. `Gateways` and `Identity` emit no cases: one learns which address is each LAN's router, the other who is behind each address, for the other rules. | `detectors.py` |
 | **Offline feeds** | Tranco top domains, IEEE MAC vendors, iptoasn IP-to-network/country tables, the AdFection / Candiru indicators (`ioc_match`, tiered; pinned to one zero-breach release by SHA-256, so a changed upstream list is read before it can raise always-alert cases), and the UT1 site categories (advertising, remote control, file hosting, VPN, media, ...; `categories.py`: `new_domain.categories`, `tls_odd.category`, `upload_spike.top_category`, each with its `*_source`). For the endpoint agents' software inventory (#224, the `software` table, `tapwatch software`): CISA's Known Exploited Vulnerabilities catalog, OSV's dump for each Linux release an agent runs (read once a run and cut to the installed source packages: Ubuntu 24.04's 142 MB zip becomes a 33 KB index) and, for the Windows programs it maps (browsers, PDF readers, Java, archivers, Zoom...), NVD's version ranges fetched by CVE id and cached (`vulns.py`). They're downloaded by `update-feeds` and never queried live. Opt-in (`categories: {ai: true}`): a domain the list does not name is put to a small Claude model once as a closed question (which of a fixed label set), the answer cached 30 days in `categories.learned.tsv`, a fact only, never routing and never "is this normal". | `feeds.py`, `categories.py`, `inventory.py`, `vulns.py` |
 | **Host context** | For cases on the tapwatch machine: which program held the connection, whether a coding-agent session started it, and what the session transcript shows. | `hostctx.py`, `agents/` |
-| **Endpoint rules** | Twelve host detectors (R17–R21, R23–R29) over the agent's own osquery rows, read as a log source like Zeek's: encoded or download-and-run commands, a document app or browser spawning a shell, temp-folder, LOLBin or badly signed programs connecting out, and a new persistence entry (task, service, startup item, cron job, launch agent) that runs a script, a shell or something from a user folder, a command that removes backups, recovery or logs, turns off Defender or adds an account, a burst of discovery commands, a new browser extension with sensitive access, and on Linux a program from a temporary folder or memory, or a shell, connecting out, or a download-and-run or reverse-shell command (new SSH keys and systemd units count as persistence). Cases carry program names, never command lines or paths. R48 `vuln_kev` reads the agents' daily software snapshots against the downloaded KEV/OSV/NVD data: a digest item per product with a known-exploited bug, closed when the next snapshot shows it patched, and one level up for the device's other digest-level cases while it is open. | `hostrules.py`, `vulnkev.py`, [detections/DESIGN.md](detections/DESIGN.md) |
+| **Endpoint rules** | Sixteen host detectors (R17–R21, R23–R29, R36–R39) over the agent's own osquery rows, read as a log source like Zeek's: encoded or download-and-run commands, a document app or browser spawning a shell, temp-folder, LOLBin or badly signed programs connecting out, and a new persistence entry (task, service, startup item, cron job, launch agent) that runs a script, a shell or something from a user folder, a command that removes backups, recovery or logs, turns off Defender or adds an account, a burst of discovery commands, a new browser extension with sensitive access, and on Linux a program from a temporary folder or memory, or a shell, connecting out, or a download-and-run or reverse-shell command (new SSH keys and systemd units count as persistence), a remote-access tool's first start, a tunnel opened into the PC, files sent to a new destination or packed into a password archive, and a persistence or privilege file changed (sudoers, ld.so.preload, shell start-up files, a Windows Startup folder). Cases carry program names, never command lines or paths. An event row that already raised a case can't raise another (remembered 3 days, capped), so the same agent event delivered twice opens one case whatever the PC's address is by then (#303). A connection to the house's own public address doesn't count as going outside. R48 `vuln_kev` reads the agents' daily software snapshots against the downloaded KEV/OSV/NVD data: a digest item per product with a known-exploited bug, closed when the next snapshot shows it patched, and one level up for the device's other digest-level cases while it is open. `FleetAgents` gives each computer enrolled in Fleet its own set of these rules, with its own state, warm-up and learned baselines, keyed by the agent's id; the PC tapwatch runs on stays standalone. | `hostrules.py`, `vulnkev.py`, `deploy/fleet/`, [detections/DESIGN.md](detections/DESIGN.md), [setup/fleet.md](setup/fleet.md) |
 | **Summarizer** | Turns a case into 3–4 sentences: device name and role instead of an IP, numbers as words, and network strings quoted and labelled untrusted. | `summarizer.py` |
 | **Triage client** | A single HTTP call per case to Jev (TypeSafe System One), with typed questions: category (choice), severity (score), routine and interrupt (probabilities), plus `who` with host context. The model is pinned, retries back off, and it's stdlib `urllib` only. | `triage.py` |
 | **Router** | Decides alert, digest or log from code facts, suppressions and the verdict. It owns every guardrail described below. | `router.py` |
-| **Correlation** | A host case and a network case on the same device within five minutes become one story: each carries the other in its `correlated` facts, the earlier one gets a note, and the router floors the pair (next to an alert the other side is at least a digest item; two digest-or-louder sides make an alert). Measured on the live history: the real pairs sat under five minutes apart, the nearest unrelated cases six and eleven. | `pipeline.py` (`correlate`), [detections/DESIGN.md](detections/DESIGN.md) |
+| **Correlation** | A host case and a network case on the same device within five minutes become one story, when the host rule names that network rule as part of its story (`hostrules.PAIRS`; R39 and R48 pair with nothing): each carries the other in its `correlated` facts, the earlier one gets a note, and the router floors the pair (next to an alert the other side is at least a digest item; two digest-or-louder sides make an alert). Measured on the live history: the real pairs sat under five minutes apart, the nearest unrelated cases six and eleven. | `pipeline.py` (`correlate`), [detections/DESIGN.md](detections/DESIGN.md) |
 | **Store** | SQLite: cases, verdicts, case workflow, notes, audit trail, suppressions and learned detector state. The schema is additive-only. | `store.py` |
 | **Notifiers** | ntfy, Discord, Teams (Adaptive Card), generic webhook and email. Email is the fallback if every push channel fails. Herdr terminal pop-ups are for critical cases. | `notifiers.py` |
 | **Case desk** | A server-rendered web UI with no JavaScript. It has a queue, case pages with ±5 min of Zeek evidence, status and disposition, notes, audit, "suppress similar" and per-detector stats. | `ui.py`, `evidence.py` |
 | **Explain** | Finds groups of repeat cases that host context marked likely benign (same detector, device, program and destination). It suggests or applies expiring `device_program` suppressions. | `explain.py` |
 | **Setup wizard** | `tapwatch init` detects the gateway, this machine, the timezone and the capture path, then writes `config.yaml`, `assets.yaml` and `.env` (mode 600). It never overwrites without `--force`. | `wizard.py` |
 | **Services** | systemd *user* units: alerter, case desk, watchdog, plus capture and syslog when asked for. | `service.py` |
+| **Doctor** | `tapwatch doctor` checks every part of the install (capture, logs, services, agents, router syslog, channels) and says how to fix what isn't working. | `doctor.py` |
+| **Update** | `tapwatch update` moves a checkout to the newest release tag (or `main`, `update.channel`): fetch, install dependencies, self-check, restart what the change needs, then check the services stay up and doctor finds nothing new; any failure or Ctrl-C rolls back. The digest says when a newer release exists; nothing updates by itself. A `vX.Y.Z` tag makes the release and its Windows ZIP (`.github/workflows/release.yml`). | `update.py` |
+| **Moving an install** | `deploy/export-state.sh` packs the config, `.env`, database (cases, notes, suppressions, learned baselines) and assets; `tapwatch import-state` takes them over on a fresh install, refusing any other file in the archive and anything that already exists, and lists the settings that named the old computer. | `migrate.py` |
+| **Account check** | Opt-in and on demand (`tapwatch accounts`, `tapwatch account-check <case>`): asks the owner's own Google accounts (Drive Activity, YouTube, Gmail metadata; read-only scopes) what was uploaded around an `upload_spike` case to Google. Three outcomes: explained, unexplained, or incomplete. Counts, types, times and sizes only; the alerter never calls it. | `accounts.py`, [setup/account-check.md](setup/account-check.md) |
 | **Watchdog** | Every 5 minutes it checks that the capture is up (its unit or a named container), `conn.log` is fresh, the alerter PID is alive and, where its unit is installed, the syslog listener is active. It notifies once on failure and once on recovery. | `eval/watchdog.sh` |
-| **Eval harness** | Routes the same cases two ways, rules-only and with Jev, against labelled hosts, and reports what each surfaced, alerted on and cost. | `evaluate.py`, `eval/` |
+| **Eval harness** | Routes the same cases two ways, rules-only and with Jev, against labelled hosts, and reports what each surfaced, alerted on and cost. `tapwatch selfcheck` runs scripted attack and false-positive shapes through the detectors as configured; `tapwatch benchmark` reports the week-by-week noise rate, Jev agreement and host-context accuracy. | `evaluate.py`, `selfcheck.py`, `benchmark.py`, `eval/` |
 
 All Python lives in [`src/tapwatch/`](../src/tapwatch/). [`cli.py`](../src/tapwatch/cli.py) wires
 the pieces together for each subcommand.
@@ -176,11 +191,13 @@ flowchart TD
 - **Always-alert (`must_alert`)**: threat-list (IOC) hits, Suricata severity-1 alerts, internet
   exposure (`exposure`), rogue DHCP, takeover channels of type callback (webhook catchers, OAST)
   and file drop (paste and upload sites), router admin logins from a new user and source pair or
-  after repeated failures (`udm_admin`), and router IPS matches rated high or critical that
-  weren't blocked.
+  after repeated failures (`udm_admin`), router IPS matches rated high or critical that
+  weren't blocked, and the endpoint rules' shapes with no benign reading on a home PC (for example an
+  encoded command in a hidden window, certutil connecting out, shadow copies deleted, `/etc/ld.so.preload`
+  gaining content, or a remote-access tool or tunnel started from a temp folder).
 - **Code-only (`router.CODE_ONLY`)**: `new_domain`, `mgmt_access`, `cleartext_auth`, `takeover`,
-  `dns_bypass`, `upload_stopped`, `udm_admin`, `tls_odd`, and the endpoint rules R17–R21 and R23–R29
-  (`hostrules.py`: `host_encoded_cmd`, `host_app_shell`, `host_temp_exec`, `host_lolbin`, `host_bad_sig`, `host_persist`, `host_destructive`, `host_recon`, `host_extension`, `host_linux_connect`, `host_linux_cmd`, `host_lsass`).
+  `dns_bypass`, `upload_stopped`, `feed_silence`, `udm_admin`, `tls_odd`, the endpoint rules R17–R21, R23–R29 and R36–R39
+  (`hostrules.py`: `host_encoded_cmd`, `host_app_shell`, `host_temp_exec`, `host_lolbin`, `host_bad_sig`, `host_persist`, `host_destructive`, `host_recon`, `host_extension`, `host_linux_connect`, `host_linux_cmd`, `host_lsass`, `host_rmm`, `host_tunnel`, `host_staging`, `host_fim`), and R48 `vuln_kev`.
   These are rules where the fact *is* the verdict, or where the question would be "is this destination
   (or program) normal?", which is Jev's measured weak spot. The comments in `router.py` record the
   measurement behind each one.
@@ -326,6 +343,7 @@ Everything lives in one SQLite file (`db_path`, default `tapwatch.db`):
 | `detector_state` | learned baselines and first-seen sets, one JSON row per detector |
 | `notes`, `audit` | the case workflow and who changed what |
 | `suppressions` | scope, reason, expiry, hit count |
+| `software`, `agents` | each endpoint agent's latest software snapshot and the OS it reports, for R48 and `tapwatch software` |
 
 - **Learned state survives restarts.** Each detector lists its learned attributes in `PERSIST`
   (sliding windows are left out on purpose, except beaconing's beat times: a slow heartbeat needs hours of
@@ -352,6 +370,8 @@ tapwatch treats everything from the network as hostile and keeps the household's
 | Feed downloads | Nothing is sent. Tranco, IEEE OUI, iptoasn, the UT1 category archives, the pinned AdFection indicator list, CISA KEV and OSV's dump for each Linux release an agent runs are fetched over https. NVD is asked for the KEV CVEs on the mapped Windows products, by CVE id: the request names a public CVE, never a program, version or device. | `tapwatch update-feeds` |
 | Domain categorizer | The public registrable domain only (`example.com`: never the full host name, the device, an address, or any `.local`/`.lan`/`.home`/`.arpa`/`.internal`/`.ts.net` name), sent to Anthropic once per domain and cached 30 days, at most `per_hour` (60) new domains an hour. | Only if `categories: {ai: true}` and `ANTHROPIC_API_KEY` is set; off by default |
 | Analyst lookups | The case's domains and IPs, sent to VirusTotal, RDAP and web search | Only when you run the optional `enrich-case` skill |
+| Account check | Read-only requests to Google for the owner's own signed-in accounts' uploads around the case's time (Drive Activity, YouTube, Gmail metadata). File names, subjects and recipients are never stored | Only when you run `tapwatch account-check`; never from the alerter |
+| Update check | Nothing about the house: `git ls-remote` for the repo's release tags, at most once a day, and `git fetch` when you update | The digest's version notice (`update.notify`), and `tapwatch update` |
 
 **Hostile input handling**
 
@@ -390,9 +410,9 @@ exception, and it's optional: it goes only on computers the owner chooses (`agen
 
 | | What it does |
 |---|---|
-| **Installs** | osquery from each platform's package manager (winget, Homebrew, osquery's apt/dnf repo). On Windows, also Sysmon, downloaded from Microsoft and refused unless its Authenticode signature is Microsoft's. Both need admin rights once and run as system services (root/SYSTEM). |
-| **Collects** | Scheduled osquery queries ([osquery.conf](../agents/config/osquery.conf)): which program holds which outside connection, listening ports, persistence (startup items, services, scheduled tasks, cron, launchd), browser extensions, logged-in users and inventory. Command lines aren't logged. Sysmon records process starts and network connections in the Windows event log. |
-| **Writes** | Standalone mode: a local results log only, nothing sent anywhere. On Linux and macOS the log is mode `0644` so tapwatch can read it without root. Fleet mode sends results to the owner's own Fleet server, and the enrol secret is readable only by SYSTEM/Administrators or root. |
+| **Installs** | osquery from each platform's package manager (winget, Homebrew, osquery's apt/dnf repo); the silent Windows installer for deployment tools, or a PC where winget isn't ready, uses osquery's official MSI pinned by its SHA-256. On Windows, also Sysmon, downloaded from Microsoft and refused unless its Authenticode signature is Microsoft's (on Windows 11 26H2 and later, Windows' built-in Sysmon, which needs one restart). Both need admin rights once and run as system services (root/SYSTEM). |
+| **Collects** | Scheduled osquery queries ([osquery.conf](../agents/config/osquery.conf)): which program holds which outside connection, listening ports, persistence (startup items, services, scheduled tasks, cron, launchd), browser extensions, logged-in users, installed software and, on Linux, changes to persistence and privilege files. Command lines are reduced to yes/no signals on the PC; the line itself is kept only when a suspicious-command signal fires (R17, R24, R28), never for tunnels or staging, whose lines carry tokens and passwords. Sysmon records process starts, network connections, DNS lookups, lsass access and Startup-folder files in the Windows event log. |
+| **Writes** | Standalone mode: a local results log only, nothing sent anywhere. On Linux and macOS the log is mode `0644` so tapwatch can read it without root. Fleet mode sends results to the owner's own Fleet server (`deploy/fleet`, [setup/fleet.md](setup/fleet.md)), which writes them to the log tapwatch reads as `fleet.results_log`, and the enrol secret is readable only by SYSTEM/Administrators or root. |
 | **Removes** | `uninstall.cmd` / `uninstall.sh` stop and remove the services and the agent's files. |
 
 Installing it on someone else's computer needs their consent, and never on a work-managed device
@@ -402,9 +422,15 @@ Installing it on someone else's computer needs their consent, and never on a wor
 
 | Path | How | What runs |
 |---|---|---|
-| **Linux + Docker** | `TAP_IFACE=<nic> docker compose -f deploy/docker-compose.yml up -d --build` | `zeek` (host network, hourly rotation), `tapwatch` (alerter), `ui` (published on 127.0.0.1:8765). Profiles: `syslog` (UDP 5514) and `ids` (Suricata). Restart policies keep them up. The image runs as a non-root user. |
+| **Linux + Docker** | `TAP_IFACE=<nic> docker compose -f deploy/docker-compose.yml up -d --build` | `zeek` (Zeek 9.0 LTS with Debian's fixes, `deploy/zeek/Dockerfile`; host network, hourly rotation), `tapwatch` (alerter), `ui` (published on 127.0.0.1:8765). Profiles: `syslog` (UDP 5514) and `ids` (Suricata). Restart policies keep them up. The image runs as a non-root user. |
 | **Linux without Docker, or WSL** | `tapwatch service install --zeek-dir <dir> [--capture-iface <npcap-if>] [--syslog]` | systemd **user** units (no root): `tapwatch-alerter`, `tapwatch-ui`, `tapwatch-watchdog`, plus `tapwatch-capture` and `tapwatch-syslog` when asked. `--dry-run` prints them. Needs `loginctl enable-linger` to survive logout. |
 | **Windows PC** | Npcap captures on Windows, everything else in WSL. `deploy/windows/keep-alive.ps1` keeps WSL running without admin rights. | Same as above, with the capture unit. See [setup/windows.md](setup/windows.md). |
+| **Fleet server (optional)** | `docker compose -f deploy/fleet/docker-compose.yml --env-file deploy/fleet/.env up -d` on the tapwatch box; agents enroll with the bundle `deploy/fleet/agent-bundle.sh` builds | Fleet, MySQL and Redis, on 127.0.0.1. See [setup/fleet.md](setup/fleet.md). |
+
+The Windows, systemd and Omarchy installs are git checkouts, so `tapwatch update` moves them to the newest release and
+back if anything fails. The Docker image has no checkout: `git pull` and `docker compose up -d --build` instead.
+Moving to a new computer is `deploy/export-state.sh` on the old one and `tapwatch import-state` (or the Windows
+installer) on the new one.
 
 Prerequisites: a managed switch that can mirror the router port ([setup/mirror-port.md](setup/mirror-port.md)),
 and a spare NIC for the mirror. The endpoint agents ([agents/](../agents/README.md)) install osquery
@@ -417,7 +443,7 @@ fresh `conn.log` is the capture check. R22 (`feed_silence`) watches every feed f
 
 ## Testing and evaluation
 
-**Unit and integration tests**: 219 pytest tests in [`tests/`](../tests/). They cover each detector
+**Unit and integration tests**: about 575 pytest tests in [`tests/`](../tests/). They cover each detector
 (including expected false positives), routing guardrails, host-context verdicts against synthetic
 osquery logs and transcripts, the pipeline end to end, the case workflow, UI sessions, URL-scheme
 checks, syslog parsing, feeds and the wizard. Fixtures use documentation address ranges.
@@ -426,9 +452,10 @@ checks, syslog parsing, feeds and the wizard. Fixtures use documentation address
 
 | Workflow | Runs on | Does |
 |---|---|---|
-| `tests.yml` | push to `dev`, PR into `main` | personal-data gate, `ruff check src tests tools`, `pytest` (Python 3.12) |
+| `tests.yml` | push to `dev`, PR into `main` | personal-data gate and `ruff check src tests tools` (Python 3.12), `pytest` on Python 3.10–3.14 |
 | `sast.yml` | push and PR to `main`, weekly | Semgrep: `p/security-audit`, `p/secrets`, `p/python`, `p/dockerfile` |
 | `deps.yml` | PR into `main` | Trivy filesystem scan, fails on fixable HIGH or CRITICAL |
+| `release.yml` | a `vX.Y.Z` tag | the GitHub release, with notes from the merged PRs and the Windows installer ZIP |
 
 Actions are pinned to commit SHAs. Dependabot opens PRs against `dev`.
 

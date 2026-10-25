@@ -34,7 +34,9 @@ adds `tapwatch-syslog.service` to the other units (`--dry-run` prints them first
 - **Linux box:** nothing to do unless a host firewall is on (`sudo ufw allow from <router-ip> to any port 5514 proto udp`).
 - **Windows + WSL (mirrored networking):** inbound LAN traffic to WSL needs **two** rules, one
   in the Hyper-V firewall (the WSL side) and one in Windows Defender Firewall (the host side).
-  Both need admin, so run them yourself in an elevated PowerShell:
+  `install-windows.cmd` adds both, from the router's address only, when you answer yes to its router question
+  (Windows 11 only: Windows 10's WSL can't receive them). Installed by hand, they need admin, so run them
+  yourself in an elevated PowerShell:
 
   ```powershell
   New-NetFirewallHyperVRule -Name tapwatch-syslog -DisplayName "tapwatch syslog" -Direction Inbound `

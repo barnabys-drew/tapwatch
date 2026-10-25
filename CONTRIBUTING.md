@@ -30,11 +30,16 @@ per line) with your own hostnames, addresses and names. Run it before every push
    and how to test safely at home. `docs/detections/DESIGN.md` has the format.
 2. Implement it in `src/tapwatch/detectors.py`: a `Detector` with `feed()` returning `Case`s, and
    register it in `detectors.build()`. Put counting, timing and thresholds in code. If it learns
-   something, list it in `PERSIST`. Describe its facts in words in `summarizer.py` (no IPs).
+   something, list it in `PERSIST`. Describe its facts in words in `summarizer.py` (no IPs). A new
+   network rule must also appear in `hostrules.PAIRS` or `hostrules.NEVER_PAIRED` (a test checks).
+   An endpoint rule over the agent's osquery rows goes in `src/tapwatch/hostrules.py` instead: add it
+   to `NAMES` and `rules_for()`, and list in `PAIRS` the network rules that tell the same story (only
+   those pair with its cases).
 3. Decide routing: always-alert (`must_alert`), code-only (`router.CODE_ONLY`), or AI-assisted.
    Don't ask Jev whether a domain or address is normal. [ARCHITECTURE.md](docs/ARCHITECTURE.md#case-lifecycle-and-routing)
    explains the routing order, floors and ceilings.
-4. Add tests, including the false positives you expect.
+4. Add tests, including the false positives you expect, and a scripted shape in `src/tapwatch/selfcheck.py` if
+   the attack can be staged synthetically.
 5. Show it on data: `tapwatch eval` on a public capture or a synthetic pcap, and the noise on
    benign traffic. Share numbers, not logs.
 

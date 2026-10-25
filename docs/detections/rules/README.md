@@ -41,14 +41,16 @@ in the files are the ones osquery applies.
 | R20-lolbin-connects.yml | Built-in Windows tool connects to the internet (endpoint) | Sigma |
 | R21-bad-signature-connects.yml | Program with a bad code signature connects out (endpoint) | Sigma |
 
-**Built into `src/tapwatch/detectors.py`:** R01 `InternetExposure`, R03 `ManagementAccess`,
-R13 `CleartextAuth`, R14 `RogueDHCP`. The streaming versions differ from these specs in a few
+**Every rule here is built** as a streaming detector: R01–R16 in `src/tapwatch/detectors.py`
+(R01 `InternetExposure`, R03 `ManagementAccess`, R13 `CleartextAuth`, R14 `RogueDHCP` and the rest),
+R17–R21 in `src/tapwatch/hostrules.py`. The later rules (R22–R29, R36–R39, R48) have no file here;
+their specs are in `../DESIGN.md`. The streaming versions differ from these specs in a few
 places. R01 and R03 learn existing exposures and admin pairs during warmup. R01 skips flows
 whose direction Zeek can't know: the first 2 min after start, TCP without the outside host's SYN,
 and UDP replies to a remote the device contacted in the last 30 min. R13 also reads `ftp.log`.
 `network.gateways` is optional: `Gateways` learns each /24's router from the logs (the first address
 3 devices use for DNS, NAT-PMP or DHCP), and R14 then expects one DHCP server per LAN.
 
-R11 (UDM admin login), R12 (off-hours drift) and R15 (DNS tunnelling) are
-specified in `../DESIGN.md`. R11 needs the UDM syslog input. R12 and R15 are
-extensions of existing streaming detectors.
+R11 (UDM admin login), R12 (off-hours drift) and R15 (DNS tunnelling) are built too and
+specified only in `../DESIGN.md`. R11 reads the UDM syslog input (`udm.log`). R12 is part of
+`HourlyProfile` with R09, and R15 is the tuned `SuspiciousDNS`.

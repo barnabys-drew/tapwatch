@@ -7,7 +7,7 @@ Start with the [project README](../README.md) for what tapwatch does and how to 
 - [ARCHITECTURE.md](ARCHITECTURE.md): how it's built and why. Covers data flow, components,
   case routing and its guardrails, host context, state, the security and privacy model,
   deployment, testing, and the key design decisions.
-- [detections/DESIGN.md](detections/DESIGN.md): the detection catalogue (R01–R16). Each rule has
+- [detections/DESIGN.md](detections/DESIGN.md): the detection catalogue (R01–R29, R36–R39, R48). Each rule has
   its threat, fields, logic, baseline, expected false positives and how Jev is (or isn't) used,
   with the home measurements behind the thresholds.
 - [detections/rules/](detections/rules/README.md): Sigma and DuckDB SQL versions of the rules,
@@ -15,18 +15,20 @@ Start with the [project README](../README.md) for what tapwatch does and how to 
 
 ## Setup guides
 
+- [setup/office-unifi.md](setup/office-unifi.md): start here if you're new to this: a Windows PC in a UniFi office or home, step by step
+- [setup/helping-an-install.md](setup/helping-an-install.md): for the person helping someone else follow that guide
 - [setup/mirror-port.md](setup/mirror-port.md): configure a managed switch to mirror the router port
 - [setup/router-syslog.md](setup/router-syslog.md): send the router's IPS and admin events to tapwatch, and when Suricata adds anything
 - [setup/windows.md](setup/windows.md): run tapwatch on a Windows PC (Npcap + WSL)
 - [setup/fleet.md](setup/fleet.md): cover the house's other computers: a Fleet server their agents enroll in, and a one-file installer for each
 - [setup/account-check.md](setup/account-check.md): let triage ask your own Google accounts what a big upload to Google was
-- [setup/omarchy.md](setup/omarchy.md): run tapwatch on an Omarchy (Arch Linux) computer, or move an install to one
+- [setup/omarchy.md](setup/omarchy.md): run tapwatch on an Omarchy (Arch Linux) computer, or move an install to one (on hold: not the recommended path)
 - [../agents/README.md](../agents/README.md): endpoint agents (osquery, plus Sysmon on Windows) for host context
 
 ## Evidence and plans
 
 - [../eval/RESULTS.md](../eval/RESULTS.md): eval method, numbers, tuning history and caveats
-- [ROADMAP.md](ROADMAP.md): milestones built for v0.1, and what's planned next
+- [ROADMAP.md](ROADMAP.md): where tapwatch is (v0.3.0), what each milestone shipped, and what's planned next
 
 ## Project
 
