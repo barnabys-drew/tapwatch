@@ -28,7 +28,6 @@ import sqlite3
 import time
 from datetime import datetime
 
-from .detectors import base_domain
 from .models import Case, Route, Verdict, device_id, main_indicator
 from .router import CODE_ONLY, agent_misused, critical
 
@@ -37,10 +36,13 @@ MODEL_VERSION = "precedent-1"
 NOISE = ("false_positive", "benign_expected")
 # Who decided, from the audit actor. Only COUNTED sources are precedent.
 COUNTED = {"owner", "owner_request", "explain"}
-# Distinct local days on which the precedent cases *happened*, not when they were closed: the owner closes in
-# batches (on the live history the median close came 12 hours after the case, and one program's 130 closes fell on
-# 2 labelling days), while what the cap is for, one burst of activity training a habit, is about occurrence.
+# Two separate caps. Precedent cases must have *happened* on 3 distinct local days, so one burst of activity can't
+# train a habit, and the owner must have *closed* them on 2 distinct days, so one sitting can't either: the case
+# times are the attacker's to choose (a slow beacon once a day), and a single bulk close, explain Apply or triage
+# session would otherwise teach the judge in one go (review of #318). Labelling days alone made the live history
+# useless (the owner closes in batches: the median close came 12 hours after the case).
 MIN_PRECEDENT_DAYS = 3
+MIN_LABEL_DAYS = 2
 MAX_WEEK_SHARE = 0.5          # one ISO week gives at most this share of those days
 MAX_DEVICE_SHARE = 0.5        # at the "any_device" width, one device gives at most this share of the precedents
 TP_LOOKBACK = 30 * 86400      # a true positive on the device this recently keeps the judge off it
@@ -52,30 +54,33 @@ PRECEDENT_LINKS = 5           # case ids named in an explanation
 def label_source(actor: str) -> str | None:
     """Who made a disposition, from its audit actor. None: never an example (the judge itself)."""
     a = (actor or "").strip()
-    if a.startswith("judge"):
+    if "judge" in a.lower():
         return None
     if a.startswith("ui ") or a == "cli":
         return "owner"           # the case desk, or `tapwatch mark` typed by the owner
     if a == "tapwatch explain":
         return "explain"         # the owner applied an explain suggestion (desk button or `explain --apply`)
-    if "(requested by" in a:
+    if a.startswith("cli (requested by"):
         return "owner_request"   # a triage session closing what the owner asked it to
     if a == "tapwatch":
-        return "suppression"     # closed on arrival by an owner's rule: the rule is the decision, not this case
+        return "tapwatch"        # tapwatch's own closes: a suppression matched on arrival, R48 resolved by a patch
     return "ai"                  # an AI session deciding on its own ("claude", "cli (triage handoff)")
 
 
 def key_for(detector: str, facts: dict, indicators: list[str]) -> str:
-    """The normalised "same thing" for precedent: a program's file name when host context named one, else the
-    main indicator's registrable domain, else the indicator itself (an address, "ip:port", a dedupe fact)."""
+    """The normalised "same thing" for precedent, as narrow as the facts allow: a program's full path when host
+    context named one, else the endpoint rule's program name, else the main indicator's full host name, else the
+    indicator itself (an address, "ip:port", a dedupe fact). Not the registrable domain: every tenant of
+    trycloudflare.com, ngrok or github.io would share one key (review of #318). Wider keys are #203's to earn."""
     program = facts.get("host_program_path") or facts.get("program_path") or ""
     ind = main_indicator(indicators, facts)
-    if not program and detector.startswith("host_"):
-        program = ind   # the endpoint rules' indicator is the program itself (cmd.exe, rundll32.exe, pip)
-    if program:
-        return "program:" + str(program).replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if ind and any(c.isalpha() for c in ind.split(":")[0]):
-        return "domain:" + base_domain(ind.lower())
+    if program:   # the full path: a svchost.exe in a temp folder is not the one in System32
+        return "program:" + str(program).replace("\\", "/").lower()
+    if detector.startswith("host_") and ind:
+        return "program:" + str(ind).replace("\\", "/").rsplit("/", 1)[-1].lower()   # cmd.exe, rundll32.exe, pip
+    host = ind.split(":")[0].rstrip(".").lower() if ind else ""
+    if "." in host and any(c.isalpha() for c in host):
+        return "domain:" + host
     return f"ind:{ind}" if ind else f"detector:{detector}"
 
 
@@ -117,7 +122,8 @@ def record_example(db: sqlite3.Connection, row: sqlite3.Row, disposition: str, a
 
 def backfill(db: sqlite3.Connection) -> dict[str, int]:
     """Build examples for cases decided before the judge existed, from each case's latest disposition in the audit
-    trail. Facts are as stored now (correlations may have been added since): approximate, and marked as version 0."""
+    trail. Facts are as stored now (correlations may have been added since): approximate, and marked as version 0.
+    A case that already has an example keeps it: rerunning must not replace a live snapshot with today's facts."""
     db.row_factory = sqlite3.Row
     latest = db.execute("SELECT a.case_id, a.ts, a.actor, a.new FROM audit a JOIN (SELECT case_id, MAX(id) AS id FROM"
                         " audit WHERE action='disposition' GROUP BY case_id) m ON a.id = m.id").fetchall()
@@ -127,6 +133,8 @@ def backfill(db: sqlite3.Connection) -> dict[str, int]:
             row = db.execute("SELECT * FROM cases WHERE id=?", (a["case_id"],)).fetchone()
             if row is None or row["disposition"] != a["new"]:
                 continue   # changed outside the audit trail (an old `mark` label): no actor to trust
+            if db.execute("SELECT 1 FROM judge_examples WHERE case_id=?", (a["case_id"],)).fetchone():
+                continue
             if record_example(db, row, a["new"], a["actor"], a["ts"]):
                 db.execute("UPDATE judge_examples SET feature_version=0 WHERE case_id=?", (a["case_id"],))
                 src = label_source(a["actor"])
@@ -190,9 +198,9 @@ def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = No
         same = db.execute("SELECT * FROM judge_examples WHERE detector=? AND key=? AND labelled_ts < ?"
                           " AND case_id != ? ORDER BY labelled_ts DESC",
                           (f["detector"], f["key"], before, row["id"])).fetchall()
+    if any(p["label"] == "true_positive" for p in same):   # from any source: a TP label only makes the judge careful
+        return False, "this same thing was called a true positive before", []
     counted = [p for p in same if p["label_source"] in COUNTED]
-    if any(p["label"] == "true_positive" for p in counted):
-        return False, "the owner called this same thing a true positive before", counted
     where = "this device" if width == "device" else "any device"
     if not counted:
         ai_only = " (only closes the owner didn't make)" if same else ""
@@ -204,6 +212,9 @@ def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = No
     days = {_day(firsts.get(p["case_id"], p["labelled_ts"])) for p in counted}
     if len(days) < MIN_PRECEDENT_DAYS:
         return False, f"owner precedent on {len(days)} day(s), needs {MIN_PRECEDENT_DAYS}", counted
+    label_days = {_day(p["labelled_ts"]) for p in counted}
+    if len(label_days) < MIN_LABEL_DAYS:
+        return False, f"the owner closed them all on one day, needs {MIN_LABEL_DAYS}", counted
     weeks: dict[str, int] = {}
     for d in days:
         w = _week(datetime.strptime(d, "%Y-%m-%d").timestamp())

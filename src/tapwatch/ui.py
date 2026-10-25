@@ -561,8 +561,8 @@ def _judge_card(d) -> str:
         return ""
     try:
         widths = json.loads(d["widths"] or "{}")
-    except ValueError:
-        widths = {}
+    except (ValueError, IndexError, KeyError):   # a malformed or older row: no card rather than a broken page
+        return ""
     labels = {"device": "Same device", "any_device": "Any device"}
     rows = ""
     for width, w in widths.items():

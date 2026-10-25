@@ -307,7 +307,7 @@ A replay of all 1,198 cases on the live sensor, before any judge code, changed t
   - **Prerequisite:** record who decided at close time. #200 grows a `decided_by` field, and the CLI and skills
     pass it.
   - **Decided 2026-10-25:** desk closes, `tapwatch mark`, explain's Apply and closes made at the owner's request
-    count. An AI's own closes and suppression closes are kept but don't count (`judge.label_source`).
+    count. An AI's own closes and tapwatch's own closes are kept but don't count (`judge.label_source`).
 - **Precedent before models.** With 9 positive examples, a trained model (gradient-boosted trees, logistic
   regression) adds risk and hides its reasons. The first judge is precedent matching: exact keys first, then
   widened keys as they qualify. A model stays optional, for later, if the scorecard shows precedent plateauing.

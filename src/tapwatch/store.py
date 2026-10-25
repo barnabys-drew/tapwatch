@@ -7,6 +7,7 @@ can keep writing to a database that a newer version has already migrated.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -15,6 +16,8 @@ from dataclasses import asdict
 from . import inventory, judge
 from .detectors import base_domain, suffix_match
 from .models import Case, Route, Verdict, device_id, main_indicator
+
+log = logging.getLogger("tapwatch")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cases (
@@ -103,7 +106,7 @@ CREATE TABLE IF NOT EXISTS judge_examples (  -- the judge's training set (#200):
     case_id INTEGER PRIMARY KEY,
     labelled_ts REAL NOT NULL,
     label TEXT NOT NULL,        -- the disposition
-    label_source TEXT NOT NULL, -- judge.label_source: owner | owner_request | explain count; ai | suppression don't
+    label_source TEXT NOT NULL, -- judge.label_source: owner | owner_request | explain count; ai | tapwatch don't
     actor TEXT NOT NULL,
     detector TEXT NOT NULL,
     device TEXT NOT NULL,
@@ -369,7 +372,10 @@ class Store:
                 self.db.execute("UPDATE cases SET disposition=?, feedback=?, updated_ts=? WHERE id=?",
                                 (disposition, DISPOSITION_TO_FEEDBACK[disposition], now, case_id))
                 self._audit(case_id, actor, "disposition", row["disposition"], disposition, now)
-                judge.record_example(self.db, row, disposition, actor, now)   # the judge's training set (#200)
+                try:  # the judge's training set (#200); a bug in it must never undo the owner's close
+                    judge.record_example(self.db, row, disposition, actor, now)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("judge example for #%s not recorded: %s", case_id, e)
                 changed.append("disposition")
             if status:
                 self.db.execute("UPDATE cases SET status=?, updated_ts=? WHERE id=?", (status, now, case_id))

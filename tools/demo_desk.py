@@ -119,12 +119,12 @@ def build(out: Path) -> Path:
         case = Case(det, NET + dev, now - ago * 60, title, facts, ind, must_alert=must)
         cid = store.add(case, summarize(case, assets), verdict, route, reason)  # what Jev was shown
         if wf.get("status") == "investigating":
-            store.update_case(cid, actor="owner", status="investigating", note=wf.get("note"))
+            store.update_case(cid, actor="ui owner", status="investigating", note=wf.get("note"))
         elif wf.get("status") == "closed":
-            store.update_case(cid, actor="owner", status="closed", disposition=wf["disposition"], note=wf.get("note"))
+            store.update_case(cid, actor="ui owner", status="closed", disposition=wf["disposition"], note=wf.get("note"))
         if wf.get("suppress"):
             scope, why = wf["suppress"]
-            store.add_suppression(cid, scope, why, actor="owner", expires_ts=now + 30 * 86400)
+            store.add_suppression(cid, scope, why, actor="ui owner", expires_ts=now + 30 * 86400)
     write_zeek(out / "zeek", now)
     return db
 
