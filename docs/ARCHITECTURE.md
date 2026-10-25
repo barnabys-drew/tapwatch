@@ -344,6 +344,7 @@ Everything lives in one SQLite file (`db_path`, default `tapwatch.db`):
 | `notes`, `audit` | the case workflow and who changed what |
 | `suppressions` | scope, reason, expiry, hit count |
 | `software`, `agents` | each endpoint agent's latest software snapshot and the OS it reports, for R48 and `tapwatch software` |
+| `device_day`, `device_day_dest`, `summary_days` | per-device daily summaries for the 30-day rules (#193, `history.py`): each device's connections, bytes, active hours, ports and services per local day, and per destination (base domain or address) and port its ASN, country, bytes and up to 48 start times; `summary_days` says which days were read and over how many hours. `run` builds the day just finished each night, `tapwatch summarize --backfill` the last 30 days; kept 90 days (`summaries.retention_days`) |
 
 - **Learned state survives restarts.** Each detector lists its learned attributes in `PERSIST`
   (sliding windows are left out on purpose, except beaconing's beat times: a slow heartbeat needs hours of
@@ -355,7 +356,8 @@ Everything lives in one SQLite file (`db_path`, default `tapwatch.db`):
 - **One alerter.** `run` holds an exclusive `flock` on `<db>.run.lock`, so two alerters can never
   double-send.
 - **Logs** are Zeek's own rotated JSON files. Case evidence is read from them on demand by binary
-  search on timestamps (`evidence.py`). Nothing is copied into the database.
+  search on timestamps (`evidence.py`). Nothing is copied into the database, except the daily summaries
+  above, which keep 90 days of per-device totals after the logs themselves are pruned at 30.
 
 ## Security and privacy model
 

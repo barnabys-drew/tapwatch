@@ -84,6 +84,35 @@ that is consistency, not measured accuracy. It is no longer labelled experimenta
 a real agent-driven or hostile case happens; `tapwatch benchmark` will show the first one. Jev agreed with the
 owner on 26% of decided W42 cases it categorised and 75% in W43, on small numbers (147, then 20).
 
+## Daily summaries (#193): 12 days of home logs, measured 2026-10-25
+
+`tapwatch summarize` over the home sensor's rotated Zeek logs of 2026-10-13 to 10-24 (4.8 GB, all logs; conn, dns
+and ssl are 4.3 GB of it), into a copy of the alerter's database, on the old sensor PC (WSL, one core busy).
+The first and last days are partial (the capture started and ended mid-day: 7 and 13 local hours).
+
+| | Measured |
+|---|---|
+| Time per full day | 22–31 s (median 24 s) for 77k–146k internet connections; this includes reading the next day's conn logs for long connections |
+| Nightly cost | about 1 min: the day just finished, and the day before built again once its long connections are logged |
+| DB growth per day | 0.38–0.51 MB (about 2,400 destination rows and 21 devices a day); 90 days ≈ 36 MB |
+| Peak memory | 163 MB, the IP-to-network table included |
+| 30-day query per device (`device_day` + `device_day_dest`) | 12 real days: median 0.2 ms, worst 8.7 ms (6,700 rows). Padded to 30 days by repeating real days: median 0.6 ms, worst 21 ms (16,800 rows); the same with 90 days in the tables |
+| Devices with ≥ 10 summarized days | 20 of 29 device keys (22 have ≥ 7) |
+
+Stdlib SQLite is far inside the one-second budget, so DuckDB/Parquet is not needed. 29 keys for about 22 devices a day:
+devices first seen under a MAC before their DHCP name was learned, and phones with private (rotating) MACs, each
+count as a new device. The 14-day maturity the long-horizon rules wait for is reached by the devices present every
+day.
+
+**Long connections.** Zeek logs a connection when it ends, stamped with its start. Reading only 3 h past midnight
+missed 0 to 31 connections a day (0.03% at most), but on 2026-10-20 one of them was a 1.5 GB session logged the next
+day, 3% of that day's bytes, the kind of total R31 sums. So each day is built twice: the night after, and again once
+24 h more of logs are in; with that, the 2026-10-20 totals match a direct pass over conn.log (136,422 connections).
+
+**Log names.** 174 of the 266 conn files from before 2026-10-20 23:09 carry their close time four more times after the
+open time (`conn.<open>.<close>.<close>.<close>.<close>.log`); `zeek.ROTATED` did not match them, so replay, the
+evidence lookup and `prune` all skipped two thirds of those days. It reads the first stamp now.
+
 ## Re-run 2026-10-15, after the noise review
 
 Same captures, same home night, same model, after the day's detector changes (per-VLAN DHCP learning,

@@ -241,6 +241,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch run --zeek-dir DIR` | the live alerter: follow Zeek logs, triage, route, notify |
 | `tapwatch ui` | the case desk at http://127.0.0.1:8765/ (set `TAPWATCH_UI_TOKEN` for other devices) |
 | `tapwatch digest` | send the pending digest now (it also goes out daily) |
+| `tapwatch summarize --zeek-dir DIR` | per-device daily summaries from the rotated logs (`run` builds each night's; `--backfill` the last 30 days, `--day`/`--from`/`--to` rebuild days) |
 | `tapwatch mark 42 fp` | close case 42 as a false (`fp`) or true (`tp`) positive |
 | `tapwatch update` | move to the newest release (`--check` only looks): shows what changed, installs, runs the self-check, restarts what the change needs and runs doctor, and goes back to the old version if any of it fails. The daily digest says when there's a newer release. Windows: double-click `update-windows.cmd` |
 | `tapwatch update-feeds` | refresh the public lists: Tranco, IEEE MAC vendors, iptoasn, UT1 site categories, the Public Suffix List, the AdFection / Candiru indicators, and the vulnerability data for the agents' software (CISA KEV, OSV, NVD; weekly is plenty) |
@@ -299,6 +300,7 @@ src/tapwatch/        the package
   router.py            alert / digest / log, with guardrails
   pipeline.py          detectors -> context -> triage -> route -> store -> notify
   store.py             SQLite schema, workflow, suppressions, learned state
+  history.py           per-device daily summaries for the 30-day rules (tapwatch summarize)
   ui.py, evidence.py   case desk and Zeek evidence lookup
   notifiers.py         ntfy, Discord, Teams, email, webhook, Herdr
   syslogin.py          router CEF syslog listener

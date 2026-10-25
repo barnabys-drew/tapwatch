@@ -4,6 +4,7 @@
   tapwatch replay   --zeek-dir eval/out/x   push finished logs through the full pipeline once
   tapwatch eval     --zeek-dir ... --labels labels.yaml   Phase 0 rules-only vs Jev comparison
   tapwatch digest                           send the pending daily digest
+  tapwatch summarize --zeek-dir /logs       per-device daily summaries (nightly from run; --backfill for 30 days)
   tapwatch mark 12 fp                       record admin feedback on a case (fp / tp)
   tapwatch test-alert                       send a harmless sample card to check Teams/email
   tapwatch ui                               case queue in the browser at http://127.0.0.1:8765/
@@ -22,7 +23,7 @@ from pathlib import Path
 
 import yaml
 
-from . import benchmark, config, detectors, evaluate, evidence, selfcheck, zeek
+from . import benchmark, config, detectors, evaluate, evidence, history, selfcheck, zeek
 from .pipeline import Pipeline
 from .store import Store
 from .summarizer import summarize
@@ -97,6 +98,9 @@ FOLLOW_PC_EVERY = 300    # seconds: the agents report the PC's addresses every 5
 
 def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
     digest = DigestClock(cfg.get("digest_hour_utc", 13))
+    sums = cfg.get("summaries") or {}  # per-device daily summaries (#193), built in the background each night
+    nightly = history.NightlyClock(int(sums.get("hour", 4)), history.zone(cfg)) if sums.get("enabled", True) else None
+    summarizing = None
     keep_days, next_prune = cfg.get("zeek_retention_days", 30), 0.0
     next_save, next_follow, next_tick = time.time() + STATE_SAVE_EVERY, 0.0, time.time() + 60
     for rec in zeek.Follower(args.zeek_dir + config.host_log_dirs(cfg)).follow(idle_ticks=True):
@@ -120,6 +124,8 @@ def _run_loop(p: Pipeline, args, cfg: dict, log) -> None:
                 log.info("#%s %s %s -> %s", case_id, case.detector, case.host, route.value)
         if digest.due(time.time()):
             p.send_digest()
+        if nightly and nightly.due(time.time()) and not (summarizing and summarizing.is_alive()):
+            summarizing = history.nightly(cfg, args.zeek_dir, lambda: Store(cfg.get("db_path", "tapwatch.db")))
 
 
 class DigestClock:
@@ -188,6 +194,33 @@ def cmd_digest(args, cfg) -> int:
               file=sys.stderr)
         return 1
     print(f"sent {p.send_digest()} item(s)")
+    return 0
+
+
+def cmd_summarize(args, cfg) -> int:
+    """Per-device daily summaries (#193): the finished days not done yet (what `run` does each night), the last
+    30 days with --backfill, or the days named, rebuilt even when done."""
+    store, tz, now = Store(cfg.get("db_path", "tapwatch.db")), history.zone(cfg), time.time()
+    if args.day or args.since:
+        first = history.parse_day(args.day or args.since)
+        last = history.parse_day(args.day or args.until) if (args.day or args.until) else first
+        days = []
+        for d in history.day_range(first, last):
+            if not history.finished(d, tz, now):
+                print(f"{d}: not finished yet (its last connections are logged a few hours after midnight)",
+                      file=sys.stderr)
+            elif not history.has_logs(args.zeek_dir, d, tz):
+                print(f"{d}: no conn logs left for it in {', '.join(args.zeek_dir)}", file=sys.stderr)
+            else:
+                days.append(d)
+    else:
+        days = history.due_days(store.db, args.zeek_dir, tz, now, args.days if args.backfill else history.CATCH_UP)
+    if not days:
+        print("nothing to summarize")
+        return 0
+    for r in history.summarize(store, cfg, args.zeek_dir, days):
+        print(f"{r.day}  {r.devices:4d} devices  {r.dests:7d} destination rows  {r.records:9d} connections  "
+              f"{r.seconds:6.1f} s")
     return 0
 
 
@@ -642,6 +675,15 @@ def main(argv: list[str] | None = None) -> int:
         .set_defaults(fn=cmd_benchmark)
 
     sub.add_parser("digest", help="send the pending digest").set_defaults(fn=cmd_digest)
+
+    s = sub.add_parser("summarize", help="per-device daily summaries from the rotated logs (run does this nightly)")
+    s.add_argument("--zeek-dir", required=True, action="append", help="log dir (repeatable)")
+    s.add_argument("--backfill", action="store_true", help="every finished day of the last --days not done yet")
+    s.add_argument("--days", type=int, default=history.BACKFILL, help="how far --backfill looks back (default 30)")
+    s.add_argument("--day", help="rebuild one local day (YYYY-MM-DD)")
+    s.add_argument("--from", dest="since", help="rebuild from this day (YYYY-MM-DD) ...")
+    s.add_argument("--to", dest="until", help="... to this one, inclusive (default: the --from day)")
+    s.set_defaults(fn=cmd_summarize)
 
     s = sub.add_parser("accounts", help="sign in Google accounts for the account check (docs/setup/account-check.md)")
     s.add_argument("action", choices=["add", "list", "remove"])

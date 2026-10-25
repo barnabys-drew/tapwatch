@@ -73,8 +73,12 @@ def _dirs(log_dirs) -> list[Path]:
     return [Path(d) for d in ([log_dirs] if isinstance(log_dirs, (str, Path)) else log_dirs)]
 
 
-# Zeek's hourly rotation renames conn.log to conn.2026-10-13-14-00-00.log (UTC open time).
-ROTATED = re.compile(r"^(?P<name>[a-z_]+)\.(?P<stamp>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})\.log$")
+# Zeek's hourly rotation renames conn.log to conn.2026-10-13-14-00-00.log (UTC open time). The home sensor's logs
+# up to 2026-10-20 carry the close time three or four more times after it (conn.<open>.<close>.<close>.<close>.<close>.log,
+# 174 of 266 conn files in the home capture): the first stamp is still the open time. Unmatched, those files were
+# never replayed, summarized or pruned.
+_STAMP = r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}"
+ROTATED = re.compile(rf"^(?P<name>[a-z_]+)\.(?P<stamp>{_STAMP})(?:\.{_STAMP})*\.log$")
 
 
 def rotated_ts(path: Path) -> float | None:
@@ -93,15 +97,44 @@ def log_files(d: Path, name: str) -> list[Path]:
     return rotated + ([d / name] if (d / name).exists() else [])
 
 
-def replay(log_dirs) -> Iterator[dict]:
-    """Yield every record from every known log file (rotated ones included), oldest first."""
+def opened_between(files: list[Path], since: float, until: float) -> list[Path]:
+    """The files from log_files() that can hold records written between `since` and `until`: the rotated ones opened
+    in that span, the last one opened before it (still open at `since`), and the live one when `until` is past the
+    newest rotated file's opening (the live file was opened after it)."""
+    rotated = [p for p in files if rotated_ts(p) is not None]
+    live = [p for p in files if rotated_ts(p) is None]
+    before = [p for p in rotated if rotated_ts(p) < since][-1:]
+    inside = [p for p in rotated if since <= rotated_ts(p) < until]
+    newest = rotated_ts(rotated[-1]) if rotated else float("-inf")
+    return before + inside + (live if until > newest else [])
+
+
+def replay(log_dirs, names: set[str] | None = None, opened: tuple[float, float] | None = None,
+           skip: set[Path] | frozenset[Path] = frozenset()) -> Iterator[dict]:
+    """Yield every record from every known log file (rotated ones included), oldest first. `names` keeps to those
+    logs (conn.log, dns.log...); `opened` (since, until) to the files that can hold what was written then; `skip`
+    leaves out files already read (replay_files)."""
     streams = []
+    for files, kind in replay_files(log_dirs, names, opened):
+        files = [p for p in files if p not in skip]
+        if files:
+            streams.append(chain.from_iterable([_read_file(p, kind) for p in files]))  # bind kind now
+    yield from heapq.merge(*streams, key=lambda r: r.get("ts", 0.0))
+
+
+def replay_files(log_dirs, names: set[str] | None = None,
+                 opened: tuple[float, float] | None = None) -> list[tuple[list[Path], str]]:
+    """The files replay() reads, per log: (files oldest first, record type)."""
+    out = []
     for d in _dirs(log_dirs):
         for name, kind in LOG_TYPES.items():
+            if names is not None and name not in names:
+                continue
             files = log_files(d, name) if name.endswith(".log") else [d / name] if (d / name).exists() else []
-            if files:
-                streams.append(chain.from_iterable([_read_file(p, kind) for p in files]))  # bind kind now
-    yield from heapq.merge(*streams, key=lambda r: r.get("ts", 0.0))
+            if opened is not None and name.endswith(".log"):
+                files = opened_between(files, *opened)
+            out.append((files, kind))
+    return out
 
 
 def prune(log_dirs, keep_days: float, now: float | None = None) -> list[Path]:
