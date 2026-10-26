@@ -67,6 +67,7 @@ TOP_PORTS = 200        # per device and day; a scanning device's long tail is su
 # ("other", -1) row. A torrent client, a game or a scanner can reach a million peers in a day, and without a cap
 # that day would hold ~650 bytes per peer in the alerter's memory and write a row for each (review of #321).
 MAX_UNNAMED = 2000
+ROTATE_RETRY = 60      # seconds to wait before reading again when Zeek rotated a log away mid-read
 CATCH_UP = 3           # days the nightly run looks back for a day not summarized or not settled (a stopped alerter)
 BACKFILL = 30          # days `summarize --backfill` looks back
 NAME_LOOKBACK = 30 * 86400   # s of DHCP logs before a day searched for the names of its MACs (known_names)
@@ -449,14 +450,25 @@ def nightly(cfg: dict, log_dirs, store_factory, now: float | None = None,
     The thread opens its own database connection (store_factory); each day is written in one short transaction,
     which the alerter's writes wait for (Store's 10 s timeout) rather than fail. `then(store)` runs on the same
     thread once the days are written (the long-horizon rules, longhaul.queue_into); it must not touch the pipeline."""
+    def run_once(store):
+        days = due_days(store.db, log_dirs, zone(cfg), time.time() if now is None else now, CATCH_UP)
+        for r in summarize(store, cfg, log_dirs, days, asn=asn, configure=False):
+            log.info("summarized %s: %d device(s), %d destination row(s) from %d connection(s) in %.0f s",
+                     r.day, r.devices, r.dests, r.records, r.seconds)
+
     def work():
         store = None
         try:
             store = store_factory()
-            days = due_days(store.db, log_dirs, zone(cfg), time.time() if now is None else now, CATCH_UP)
-            for r in summarize(store, cfg, log_dirs, days, asn=asn, configure=False):
-                log.info("summarized %s: %d device(s), %d destination row(s) from %d connection(s) in %.0f s",
-                         r.day, r.devices, r.dests, r.records, r.seconds)
+            try:
+                run_once(store)
+            except FileNotFoundError as e:
+                # Zeek rotates its logs on the hour, and this runs just after one: a file listed a moment ago can be
+                # renamed before it's opened (2026-10-26, dhcp.log at 04:00:23). Its records are in the rotated file,
+                # which a fresh listing finds; each day is written whole, so the retry starts that day over.
+                log.warning("a log rotated away mid-read (%s): reading again in %d s", e.filename, ROTATE_RETRY)
+                time.sleep(ROTATE_RETRY)
+                run_once(store)
         except Exception:  # a failed summary must never take the alerter down
             log.exception("daily summaries failed")
         if then is not None and store is not None:   # after a failed night too: the days already summarized still hold weeks of history
