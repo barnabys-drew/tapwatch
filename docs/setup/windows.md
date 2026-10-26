@@ -82,8 +82,8 @@ for example `TAPWATCH_DISCORD_URL=https://discord.com/api/webhooks/…`), then r
 characters such as `$` and quotes, so check a typed command before pressing Enter, or type
 your user name in place of `$USER`.
 
-`service install` starts five systemd user services: capture, alerter, case desk, watchdog
-(and syslog). Check them with `systemctl --user status 'tapwatch-*'`, and the whole install with
+`service install` starts four systemd user services: capture, alerter, case desk and watchdog
+(five with `--syslog`, which adds the router's syslog listener). Check them with `systemctl --user status 'tapwatch-*'`, and the whole install with
 `.venv/bin/tapwatch doctor`.
 
 **The PC agent (optional).** osquery and Sysmon on Windows name the program behind a connection, and run the

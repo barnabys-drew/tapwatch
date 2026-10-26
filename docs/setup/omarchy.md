@@ -1,6 +1,6 @@
 # tapwatch on Omarchy (Arch Linux)
 
-> **On hold.** This install exists and worked in tests, but it isn't the supported path right now. On Linux,
+> **On hold.** This install exists and worked in tests, but it isn't maintained as a primary path right now. On Linux,
 > run tapwatch with Docker Compose as in the [README](../../README.md); on a Windows PC, use
 > [the Windows installer](office-unifi.md).
 

@@ -40,10 +40,12 @@ in the files are the ones osquery applies.
 | R19-temp-folder-connects.yml | Program in a temp or download folder connects out (endpoint) | Sigma |
 | R20-lolbin-connects.yml | Built-in Windows tool connects to the internet (endpoint) | Sigma |
 | R21-bad-signature-connects.yml | Program with a bad code signature connects out (endpoint) | Sigma |
+| _common.sql | Shared macros and views; the SQL files `.read` it first | SQL |
 
 **Every rule here is built** as a streaming detector: R01–R16 in `src/tapwatch/detectors.py`
 (R01 `InternetExposure`, R03 `ManagementAccess`, R13 `CleartextAuth`, R14 `RogueDHCP` and the rest),
-R17–R21 in `src/tapwatch/hostrules.py`. The later rules (R22–R29, R36–R39, R48) have no file here;
+R17–R21 in `src/tapwatch/hostrules.py`. The later rules (R22 in `detectors.py`, R23–R29 and R36–R39 in
+`hostrules.py`, R48 in `vulnkev.py`, v0.4's long-horizon R30–R34 in `longhaul.py`) have no file here;
 their specs are in `../DESIGN.md`. The streaming versions differ from these specs in a few
 places. R01 and R03 learn existing exposures and admin pairs during warmup. R01 skips flows
 whose direction Zeek can't know: the first 2 min after start, TCP without the outside host's SYN,

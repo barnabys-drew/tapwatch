@@ -155,7 +155,7 @@ a 32-bit tool too: the wrapper starts 64-bit PowerShell.
 | Exit code | Meaning |
 |---|---|
 | 0 | the agent is running |
-| 1 | it isn't; the reason is in `%ProgramData%\tapwatch\agent-install.log` (only SYSTEM and Administrators can read it) |
+| 1 | it isn't; the reason is in `%ProgramData%\tapwatch\agent-install.log`. That folder also holds the installer's downloads, and only SYSTEM and Administrators can open it |
 | 1618 | another installation (Windows Update, the tool's next package) kept running for 10 minutes; retry later. Intune retries this code by default. |
 | 3010 | installed; **a restart finishes it**. On Windows 11 26H2 and later the agent uses Windows' built-in Sysmon, whose event log Windows only starts at boot. Intune and most RMMs treat 3010 as "success, restart pending". |
 
@@ -213,5 +213,7 @@ SELECT datetime, data FROM windows_eventlog
   and elsewhere it downloads Sysinternals Sysmon, signature-checked (`Sysmon64a` on ARM PCs). Windows' built-in
   Sysmon starts its event log only at boot, so the installer then asks for **one restart**. Until then osquery's
   snapshots still show which program holds a connection, but program starts and DNS lookups aren't recorded.
+- **ARM PCs (Windows):** Sysmon runs natively (`Sysmon64a`). osquery's pinned MSI is x64 only, so on ARM it runs
+  under Windows' x64 emulation.
 - **Uninstall:** `./uninstall.sh`, or double-click `uninstall.cmd` on Windows.
 - Re-running an installer is safe: it upgrades osquery and rewrites the config.
