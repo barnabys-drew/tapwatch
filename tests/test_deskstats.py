@@ -87,3 +87,49 @@ def test_an_empty_store_renders():
 def test_week_old_installs_show_at_least_a_week():
     days = deskstats._days(7, datetime.fromtimestamp(NOW).date())
     assert days[-1] == "2026-10-20" and days[0] == (datetime(2026, 10, 20) - timedelta(days=6)).date().isoformat()
+
+
+def test_machine_dispositions_dont_time_the_wait(tmp_path):
+    # review of #340: a judge close or tapwatch's own close at arrival made the median look like minutes
+    store = Store(str(tmp_path / "t.db"))
+    from tapwatch import judge
+    a = add(store, NOW - 3 * DAY)
+    store.update_case(a, actor=judge.ACTOR, status="closed", disposition="benign_expected")
+    store.update_case(a, actor="ui owner", disposition="false_positive")   # the owner overrides, two days later
+    rows = store.db.execute("SELECT id, actor FROM audit WHERE case_id = ? AND action = 'disposition' ORDER BY id",
+                            (a,)).fetchall()
+    store.db.execute("UPDATE audit SET ts = ? WHERE id = ?", (NOW - 3 * DAY + 300, rows[0]["id"]))
+    store.db.execute("UPDATE audit SET ts = ? WHERE id = ?", (NOW - DAY, rows[1]["id"]))
+    b = add(store, NOW - 2 * DAY)
+    store.update_case(b, actor="tapwatch", status="closed", disposition="benign_expected")   # suppressed on arrival
+    store.db.commit()
+    w = deskstats.waits(store.db, now=NOW)
+    assert w["timed"] == 1 and w["median_h"] == 48 and w["undecided"] == 0
+
+
+def test_a_reopened_case_is_open_again_only_from_the_reopen(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    cid = add(store, NOW - 5 * DAY)
+    store.update_case(cid, actor="ui owner", status="closed", disposition="benign_expected")
+    store.update_case(cid, actor="ui owner", status="investigating")   # reopened
+    ts = [NOW - 4 * DAY, NOW - DAY]   # closed four days ago, reopened yesterday
+    for row, t in zip(store.db.execute("SELECT id FROM audit WHERE case_id = ? AND action = 'status' ORDER BY id",
+                                       (cid,)).fetchall(), ts):
+        store.db.execute("UPDATE audit SET ts = ? WHERE id = ?", (t, row["id"]))
+    store.db.commit()
+    d = deskstats.daily(store.db, days=6, now=NOW)
+    assert [d["backlog"][k] for k in d["days"]] == [1, 0, 0, 0, 1, 1]
+
+
+def test_judge_closes_are_their_own_bucket_not_undecided(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    from tapwatch import judge
+    cid = add(store, NOW - DAY)
+    store.update_case(cid, actor=judge.ACTOR, status="closed", disposition="benign_expected")
+    store.db.execute("INSERT INTO judge_closures (case_id, ts, detector, width, model_version, precedent_ids, explanation)"
+                     " VALUES (?, ?, ?, ?, ?, ?, ?)", (cid, NOW, "beaconing", "device", "test", "[]", "closed like earlier"))
+    store.db.commit()
+    disp = deskstats.dispositions(store.db, now=NOW)
+    assert disp["judge"] == 1 and disp[""] == 0 and disp["benign_expected"] == 0
+    assert deskstats.waits(store.db, now=NOW)["undecided"] == 0
+    assert "closed by the judge" in ui.render_stats(store)[1]

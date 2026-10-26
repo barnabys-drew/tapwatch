@@ -1146,15 +1146,15 @@ def _trends(db, assets: Assets) -> str:
     def bucket(**f) -> str:
         return "/?" + urlencode({"status": "all", "route": "all", **f})
 
-    tiles = (tile(sum(per_day), "Cases", "blue", f"{per_day[-1]} today", bucket(), spark=per_day)
-             + tile(sum(alerts), "Alerts", "red" if alerts[-1] else "green", f"{alerts[-1]} today",
-                    bucket(route="alert"), spark=alerts)
+    # The 30-day tiles don't link: the queue has no date filter, and the all-time tiles below open their cases.
+    tiles = (tile(sum(per_day), "Cases", "blue", f"{per_day[-1]} today", spark=per_day)
+             + tile(sum(alerts), "Alerts", "red" if alerts[-1] else "green", f"{alerts[-1]} today", spark=alerts)
              + tile(backlog[-1], "Open backlog", "amber" if backlog[-1] else "green", "alert and digest cases",
                     "/?status=open", spark=backlog)
              + tile(f"{noise / decided:.0%}" if decided else "–", "Noise rate", "amber", f"of {decided} decided",
-                    bucket(disposition="noise"), spark=noise_daily)
+                    spark=noise_daily)
              + tile(_hours(w["median_h"]), "Time to decide", "violet", f"median of {w['timed']}")
-             + tile(tps, "True positives", "red" if tps else "green", "last 30 days", bucket(disposition="true_positive")))
+             + tile(tps, "True positives", "red" if tps else "green", "last 30 days"))
 
     legend = ('<div class="legend"><span><i class="k-alert"></i>alert</span><span><i class="k-digest"></i>digest</span>'
               '<span><i class="k-log"></i>log only</span></div>')
@@ -1197,9 +1197,11 @@ def _trends(db, assets: Assets) -> str:
 
     disp = deskstats.dispositions(db)
     total30 = sum(disp.values()) or 1
-    disp_html = ranks([(badge(k or "none", label(k) if k else "undecided"), "", f"<b>{n}</b> · {n / total30:.0%}",
-                        n / total30, {"true_positive": "red", "false_positive": "green", "benign_expected": "accent"}.get(k, "blue"))
-                       for k, n in disp.items()])
+    names = {"": "undecided", "judge": "closed by the judge"}
+    disp_html = ranks([(badge("ai" if k == "judge" else k or "none", names.get(k, label(k))), "",
+                        f"<b>{n}</b> · {n / total30:.0%}", n / total30,
+                        {"true_positive": "red", "false_positive": "green", "benign_expected": "accent", "judge": "violet"}.get(k, "blue"))
+                       for k, n in disp.items() if n or k != "judge"])
 
     return (f'<div class="tiles">{tiles}</div>'
             f'<h2>Cases a day · last {len(days)} days</h2><div class="card">{legend}{volume}</div>'

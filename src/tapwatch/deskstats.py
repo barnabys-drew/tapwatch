@@ -12,7 +12,8 @@ import statistics
 import time
 from datetime import date, datetime, timedelta
 
-from .store import DISPOSITIONS, OWNER_DISPOSITION
+from .judge import label_source
+from .store import DISPOSITIONS, JUDGE_DECIDED, OWNER_DISPOSITION
 
 ROUTES = ("alert", "digest", "log")
 # Time from a case's first hit to its first disposition, in hours: the histogram's buckets.
@@ -22,6 +23,12 @@ WAIT_BUCKETS = ((0, 1, "under 1 h"), (1, 6, "1–6 h"), (6, 24, "6–24 h"), (24
 
 def _days(n: int, today: date) -> list[str]:
     return [(today - timedelta(days=n - 1 - i)).isoformat() for i in range(n)]
+
+
+def _start(days: int, now: float) -> float:
+    """Local midnight at the start of the window: the same `days` calendar days daily() charts, for every count."""
+    first = datetime.fromtimestamp(now).date() - timedelta(days=days - 1)
+    return datetime(first.year, first.month, first.day).timestamp()
 
 
 def _day_end(day: str) -> float:
@@ -34,7 +41,7 @@ def daily(db, days: int = 30, now: float | None = None) -> dict:
     and the open backlog at the end of each day."""
     now = time.time() if now is None else now
     keys = _days(days, datetime.fromtimestamp(now).date())
-    start = datetime.fromisoformat(keys[0]).timestamp()
+    start = _start(days, now)
     by_route = {d: dict.fromkeys(ROUTES, 0) for d in keys}
     for r in db.execute("SELECT date(first_ts, 'unixepoch', 'localtime') AS day, COALESCE(route, 'log') AS route, "
                         "COUNT(*) AS n FROM cases WHERE first_ts >= ? GROUP BY day, route", (start,)):
@@ -55,41 +62,51 @@ def daily(db, days: int = 30, now: float | None = None) -> dict:
             "backlog": backlog(db, keys, now)}
 
 
-def _closed_at(db) -> dict[int, float]:
-    """Each closed case's last move to closed, from the audit trail. A case closed without an audit row (older
-    stores, direct updates) counts as closed at its updated_ts."""
-    out = {r["case_id"]: r["ts"] for r in db.execute(
-        "SELECT case_id, MAX(ts) AS ts FROM audit WHERE action = 'status' AND new = 'closed' GROUP BY case_id")}
-    for r in db.execute("SELECT id, COALESCE(updated_ts, last_ts) AS ts FROM cases WHERE status = 'closed'"):
-        out.setdefault(r["id"], r["ts"])
-    return out
-
-
 def backlog(db, days: list[str], now: float | None = None) -> dict[str, int]:
-    """Cases still open (any status but closed) at the end of each day, alert and digest routes only."""
+    """Cases open (any status but closed) at the end of each day, alert and digest routes only. Each case's status
+    is replayed from the audit trail, so a reopened case is open again from the reopen, and closed during each
+    closed spell. A case closed with no status row (older stores, direct updates) counts as closed at updated_ts."""
     now = time.time() if now is None else now
-    closed = _closed_at(db)
-    rows = db.execute("SELECT id, first_ts, status FROM cases WHERE COALESCE(route, 'log') != 'log'").fetchall()
-    out = {}
-    for d in days:
-        end = min(_day_end(d), now)
-        out[d] = sum(1 for r in rows if r["first_ts"] <= end
-                     and not (r["status"] == "closed" and closed.get(r["id"], now) <= end))
-    return out
+    moves: dict[int, list[tuple[float, bool]]] = {}
+    for r in db.execute("SELECT case_id, ts, new FROM audit WHERE action = 'status' ORDER BY case_id, ts, id"):
+        moves.setdefault(r["case_id"], []).append((r["ts"], r["new"] == "closed"))
+    rows = db.execute("SELECT id, first_ts, status, COALESCE(updated_ts, last_ts) AS upd FROM cases "
+                      "WHERE COALESCE(route, 'log') != 'log'").fetchall()
+
+    def open_at(r, t: float) -> bool:
+        if r["first_ts"] > t:
+            return False
+        m = moves.get(r["id"])
+        if not m:
+            return not (r["status"] == "closed" and r["upd"] <= t)
+        closed = False
+        for ts, is_closed in m:
+            if ts > t:
+                break
+            closed = is_closed
+        return not closed
+
+    return {d: sum(1 for r in rows if open_at(r, min(_day_end(d), now))) for d in days}
 
 
 def waits(db, days: int = 30, now: float | None = None) -> dict:
-    """How long cases raised in the last `days` days waited for their first disposition: a histogram over
-    WAIT_BUCKETS, the median in hours, and how many are still undecided."""
+    """How long cases raised in the last `days` days waited for their first disposition by a person or a triage
+    session: a histogram over WAIT_BUCKETS, the median in hours, and how many are still undecided. Machine
+    dispositions don't time anything (judge.label_source): the judge's auto-closes, and tapwatch's own (a
+    suppression matched on arrival, R48 resolved by a patch). A case the judge closed isn't undecided either."""
     now = time.time() if now is None else now
-    start = now - days * 86400
-    first = {r["case_id"]: r["ts"] for r in db.execute(
-        "SELECT case_id, MIN(ts) AS ts FROM audit WHERE action = 'disposition' GROUP BY case_id")}
+    start = _start(days, now)
+    first: dict[int, float] = {}
+    for r in db.execute("SELECT case_id, ts, actor FROM audit WHERE action = 'disposition' AND new IS NOT NULL "
+                        "ORDER BY case_id, ts"):
+        if r["case_id"] not in first and label_source(r["actor"]) not in (None, "tapwatch"):
+            first[r["case_id"]] = r["ts"]
     hours, undecided = [], 0
-    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- a constant
-    for r in db.execute(f"SELECT id, first_ts, {OWNER_DISPOSITION} AS d FROM cases WHERE first_ts >= ?", (start,)):
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- constants
+    for r in db.execute(f"SELECT id, first_ts, {OWNER_DISPOSITION} AS d, {JUDGE_DECIDED} AS by_judge FROM cases "
+                        "WHERE first_ts >= ?", (start,)):
         if r["d"] is None:
-            undecided += 1
+            undecided += not r["by_judge"]
         elif r["id"] in first:
             hours.append(max(0.0, (first[r["id"]] - r["first_ts"]) / 3600))
     hist = {name: 0 for _, _, name in WAIT_BUCKETS}
@@ -105,7 +122,7 @@ def hour_of_day(db, days: int = 30, now: float | None = None) -> dict[str, list[
     out = {"alert": [0] * 24, "other": [0] * 24}
     for r in db.execute("SELECT CAST(strftime('%H', first_ts, 'unixepoch', 'localtime') AS INTEGER) AS h, "
                         "route = 'alert' AS a, COUNT(*) AS n FROM cases WHERE first_ts >= ? GROUP BY h, a",
-                        (now - days * 86400,)):
+                        (_start(days, now),)):
         out["alert" if r["a"] else "other"][r["h"]] += r["n"]
     return out
 
@@ -121,18 +138,19 @@ def top(db, column: str, days: int = 30, limit: int = 8, now: float | None = Non
                       f"SUM({OWNER_DISPOSITION} IN ('false_positive', 'benign_expected')) AS noise, "
                       f"SUM({OWNER_DISPOSITION} IS NOT NULL) AS decided, MAX(facts) AS facts "
                       f"FROM cases WHERE first_ts >= ? GROUP BY {column} ORDER BY n DESC, k LIMIT ?",
-                      (now - days * 86400, limit)).fetchall()
+                      (_start(days, now), limit)).fetchall()
     return [{"key": r["k"], "cases": r["n"], "alerts": r["alerts"] or 0, "noise": r["noise"] or 0,
              "decided": r["decided"] or 0, "facts": r["facts"]} for r in rows]
 
 
 def dispositions(db, days: int = 30, now: float | None = None) -> dict[str, int]:
-    """The owner's dispositions of cases raised in the last `days` days, plus '' for undecided."""
+    """The owner's dispositions of cases raised in the last `days` days, 'judge' for the judge's auto-closes (never
+    counted as the owner's), and '' for undecided."""
     now = time.time() if now is None else now
-    out = {d: 0 for d in (*DISPOSITIONS, "")}
-    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- a constant
-    for r in db.execute(f"SELECT COALESCE({OWNER_DISPOSITION}, '') AS d, COUNT(*) AS n FROM cases "
-                        "WHERE first_ts >= ? GROUP BY d", (now - days * 86400,)):
+    out = {d: 0 for d in (*DISPOSITIONS, "judge", "")}
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- constants
+    for r in db.execute(f"SELECT CASE WHEN {JUDGE_DECIDED} THEN 'judge' ELSE COALESCE({OWNER_DISPOSITION}, '') END AS d, "
+                        "COUNT(*) AS n FROM cases WHERE first_ts >= ? GROUP BY d", (_start(days, now),)):
         if r["d"] in out:
             out[r["d"]] = r["n"]
     return out
