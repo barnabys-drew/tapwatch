@@ -7,7 +7,7 @@ Start with the [project README](../README.md) for what tapwatch does and how to 
 - [ARCHITECTURE.md](ARCHITECTURE.md): how it's built and why. Covers data flow, components,
   case routing and its guardrails, host context, state, the security and privacy model,
   deployment, testing, and the key design decisions.
-- [detections/DESIGN.md](detections/DESIGN.md): the detection catalogue (R01–R29, R36–R39, R48). Each rule has
+- [detections/DESIGN.md](detections/DESIGN.md): the detection catalogue (R01–R34, R36–R39, R48). Each rule has
   its threat, fields, logic, baseline, expected false positives and how Jev is (or isn't) used,
   with the home measurements behind the thresholds.
 - [detections/rules/](detections/rules/README.md): Sigma and DuckDB SQL versions of the rules,
