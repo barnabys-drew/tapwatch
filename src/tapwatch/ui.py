@@ -32,7 +32,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from . import benchmark, evidence, judge
+from . import benchmark, deskstats, evidence, judge
 from .store import (
     DISPOSITIONS,
     JUDGE_DECIDED,
@@ -82,73 +82,74 @@ def is_loopback(host: str) -> bool:
 
 # ---------------------------------------------------------------- page shell
 
-# Look borrowed from the finance dashboard (gradient panels, big-number
-# stat tiles, small uppercase section labels, pill filters and tinted badges), recoloured:
-# deep navy with a teal accent instead of GitHub grey and blue. Hand-written
-# rather than Tailwind, because the CSP allows no scripts and there's no build step.
+# The look of homebase, the owner's hub page: pine-green on near-black (or paper-white in light mode), flat
+# cards with thin borders, small uppercase section labels, big numbers with their label above. Hand-written rather
+# than Tailwind, because the CSP allows no scripts and there's no build step. Charts are inline SVG with classes.
 CSS = """
-:root { --bg:#0a0f16; --panel:#141b25; --panel-a:#162030; --panel-b:#111823; --panel2:#0f1620; --ink:#dbe4ee;
-  --strong:#ffffff; --muted:#8a99ab; --faint:#64748b; --line:#243244; --line2:#1a2533; --accent:#2dd4bf;
-  --on-accent:#04201c; --red:#fb7185; --amber:#fbbf24; --green:#34d399; --violet:#a5b4fc; --blue:#60a5fa;
-  --shadow:0 2px 8px rgba(0,0,0,.25); --lift:0 8px 24px rgba(0,0,0,.45); color-scheme:dark; }
-@media (prefers-color-scheme: light) { :root { --bg:#f4f7f9; --panel:#ffffff; --panel-a:#ffffff; --panel-b:#f9fbfc;
-  --panel2:#eef3f6; --ink:#1b2733; --strong:#0b1520; --muted:#526273; --faint:#7b8a99; --line:#d3dde5;
-  --line2:#e4ebf0; --accent:#0f766e; --on-accent:#ffffff; --red:#e11d48; --amber:#b45309; --green:#047857;
-  --violet:#4f46e5; --blue:#2563eb; --shadow:0 1px 3px rgba(15,30,45,.08); --lift:0 8px 24px rgba(15,30,45,.12); color-scheme:light; } }
+:root { --bg:#f6f7f5; --panel:#ffffff; --panel2:#eef1ee; --ink:#1d2320; --strong:#0f1411; --muted:#66706b;
+  --faint:#8b948f; --line:#dde2de; --line2:#e9ece9; --accent:#2f7d63; --on-accent:#ffffff; --red:#d24b3e;
+  --amber:#b8772a; --green:#2f9a6c; --violet:#7a55b8; --blue:#3c6fc2; --shadow:none;
+  --lift:0 6px 18px rgba(20,30,25,.10); color-scheme:light; }
+@media (prefers-color-scheme: dark) { :root { --bg:#121715; --panel:#1a201d; --panel2:#161c19; --ink:#e3e9e5;
+  --strong:#f4f8f5; --muted:#8d9792; --faint:#68716c; --line:#2a322e; --line2:#222a26; --accent:#5cc29a;
+  --on-accent:#0c1f17; --red:#e76a5c; --amber:#d89a45; --green:#46b884; --violet:#a37ad6; --blue:#5687d6;
+  --shadow:none; --lift:0 8px 22px rgba(0,0,0,.45); color-scheme:dark; } }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--ink); min-height:100vh; -webkit-font-smoothing:antialiased;
-  font:14px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
 ::-webkit-scrollbar { width:6px; height:6px; } ::-webkit-scrollbar-track { background:var(--panel2); }
 ::-webkit-scrollbar-thumb { background:var(--line); border-radius:3px; }
 
 /* header + nav */
-.top { position:sticky; top:0; z-index:5; background:color-mix(in srgb, var(--bg) 85%, transparent);
+.top { position:sticky; top:0; z-index:5; background:color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter:blur(8px); border-bottom:1px solid var(--line2); }
 .top-in { max-width:1400px; margin:0 auto; padding:10px 24px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
-.brand { display:flex; align-items:center; gap:9px; color:var(--strong); font-weight:800; font-size:16px; letter-spacing:-.01em; }
+.brand { display:flex; align-items:center; gap:8px; color:var(--strong); font-weight:700; font-size:19px; letter-spacing:-.01em; }
 .brand:hover { text-decoration:none; }
 .brand svg { color:var(--accent); }
 .brand small { color:var(--faint); font-weight:500; font-size:12px; }
 .tabs { display:flex; gap:4px; flex-wrap:wrap; }
-.tab { color:var(--muted); padding:6px 14px; border-radius:20px; font-weight:500; font-size:13px; border:1px solid transparent; }
-.tab:hover { color:var(--ink); border-color:var(--line); text-decoration:none; }
-.tab.on { background:var(--accent); color:var(--on-accent); font-weight:600; }
+.tabs { gap:2px 14px; } .tab { color:var(--muted); padding:4px 0; font-size:15px; border-bottom:2px solid transparent; }
+.tab:hover { color:var(--ink); text-decoration:none; }
+.tab.on { color:var(--ink); font-weight:600; border-bottom-color:var(--accent); }
 .top form { margin-left:auto; }
-main { max-width:1400px; margin:0 auto; padding:24px; animation:fade .28s ease both; }
+main { max-width:1400px; margin:0 auto; padding:22px 24px 48px; animation:fade .22s ease both; }
 @keyframes fade { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:none; } }
 
 /* type */
-h1 { font-size:22px; font-weight:700; margin:0; color:var(--strong); letter-spacing:-.01em; }
+h1 { font-size:21px; font-weight:650; margin:0; color:var(--strong); letter-spacing:-.01em; }
 .sub { color:var(--muted); font-size:13px; margin:3px 0 18px; }
-h2, .section { font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.1em; font-weight:600;
-  margin:26px 0 10px; }
+h2, .section { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; font-weight:650;
+  margin:24px 0 8px; }
 .card > h2:first-child { margin-top:0; }
 .muted { color:var(--muted); } .faint { color:var(--faint); } .err { color:var(--red); font-weight:600; }
 code, .mono, pre { font-family:ui-monospace, SFMono-Regular, Consolas, monospace; font-size:12.5px; overflow-wrap:anywhere; }
 .tnum, td.num, th.num { font-variant-numeric:tabular-nums; } td.num, th.num { text-align:right; }
 
 /* panels */
-.card { background:linear-gradient(180deg, var(--panel-a) 0%, var(--panel-b) 100%); border:1px solid var(--line);
-  border-radius:12px; padding:16px 18px; margin-bottom:16px; box-shadow:0 1px 0 rgba(255,255,255,.02) inset, var(--shadow); }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
 .card.flush { padding:0; overflow:hidden; }
 .scroll { overflow-x:auto; }
-.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-.grid2 { margin-bottom:16px; } .grid2 > .card { margin-bottom:0; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; } .grid2 > .card { margin-bottom:0; }
+.grid2 > div > h2:first-child, .grid2 > section > h2:first-child { margin-top:0; }
+.grid3 { display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:12px; margin-bottom:12px; } .grid3 > .card { margin-bottom:0; }
 .accent-alert { border-left:4px solid var(--red); } .accent-digest { border-left:4px solid var(--amber); }
 .accent-log { border-left:4px solid var(--line); } .accent-critical { border-left:4px solid var(--red);
   box-shadow:0 0 0 1px color-mix(in srgb, var(--red) 35%, transparent), var(--shadow); }
 
 /* stat tiles */
-.tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:14px; margin:0 0 18px; }
-.tile { display:block; background:linear-gradient(180deg, var(--panel-a) 0%, var(--panel-b) 100%); border:1px solid var(--line);
-  border-radius:12px; padding:16px 18px; color:var(--ink); position:relative; overflow:hidden;
-  transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
-a.tile:hover { transform:translateY(-2px); box-shadow:var(--lift); border-color:color-mix(in srgb, var(--accent) 45%, var(--line)); text-decoration:none; }
-.tile::before { content:""; position:absolute; inset:0 0 auto 0; height:3px; background:var(--tone, var(--accent)); }
-.tile .v { font-size:28px; font-weight:700; color:var(--strong); line-height:1.1; letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
-.tile .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-top:6px; font-weight:600; }
-.tile .h { font-size:12px; color:var(--faint); margin-top:2px; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px; margin:0 0 14px; }
+.tile { display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  padding:12px 14px; color:var(--ink); position:relative; overflow:hidden; transition:border-color .15s ease; }
+a.tile:hover, a.tile:focus { border-color:var(--accent); text-decoration:none; outline:none; }
+.tile .l { order:-1; display:flex; align-items:center; gap:7px; font-size:11px; color:var(--muted); text-transform:uppercase;
+  letter-spacing:.07em; font-weight:600; }
+.tile .l::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--tone, var(--accent)); flex:none; }
+.tile .v { font-size:26px; font-weight:650; color:var(--strong); line-height:1.15; letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums; margin-top:4px; }
+.tile .h { font-size:12px; color:var(--muted); margin-top:1px; }
+.tile svg.spark { margin-top:8px; }
 .t-red { --tone:var(--red); } .t-amber { --tone:var(--amber); } .t-green { --tone:var(--green); }
 .t-blue { --tone:var(--accent); } .t-violet { --tone:var(--violet); }
 
@@ -225,8 +226,39 @@ button.danger:hover { background:color-mix(in srgb, var(--red) 12%, transparent)
 .h2 { background:color-mix(in srgb, var(--accent) 32%, transparent); color:var(--strong); }
 .h3 { background:color-mix(in srgb, var(--accent) 55%, transparent); color:var(--strong); font-weight:700; }
 .track { fill:var(--line2); } .fill-red { fill:var(--red); } .fill-green { fill:var(--green); } .fill-amber { fill:var(--amber); }
+.fill-accent { fill:var(--accent); } .fill-violet { fill:var(--violet); } .fill-blue { fill:var(--blue); }
+.chart .s-alert { fill:var(--red); } .chart .s-digest { fill:var(--amber); } .chart .s-log { fill:var(--faint); opacity:.55; }
+.chart .s-other { fill:var(--accent); opacity:.75; }
+.chart .now { fill:var(--strong); font-weight:600; }
+svg.spark, svg.line { display:block; width:100%; overflow:visible; }
+svg.spark polyline, svg.line polyline { fill:none; stroke:var(--tone, var(--accent)); stroke-width:1.6;
+  vector-effect:non-scaling-stroke; stroke-linejoin:round; }
+svg.spark polygon, svg.line polygon { fill:color-mix(in srgb, var(--tone, var(--accent)) 16%, transparent); stroke:none; }
+svg.line circle { fill:var(--tone, var(--accent)); }
+.legend { display:flex; gap:14px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin:0 0 8px; }
+.legend span { display:inline-flex; align-items:center; gap:6px; }
+.legend i { width:10px; height:10px; border-radius:3px; display:inline-block; }
+.legend .k-alert { background:var(--red); } .legend .k-digest { background:var(--amber); }
+.legend .k-log { background:var(--faint); opacity:.55; } .legend .k-other { background:var(--accent); opacity:.75; }
+.ranks { display:grid; gap:7px; } .rank { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:2px 12px; align-items:center; }
+.rank .who { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.rank .who small { color:var(--faint); margin-left:6px; font-size:11.5px; }
+.rank .n { font-variant-numeric:tabular-nums; font-size:12.5px; color:var(--muted); text-align:right; white-space:nowrap; }
+.rank .n b { color:var(--strong); font-weight:650; }
+.rank svg { grid-column:1 / -1; width:100%; height:6px; }
+.headline { display:flex; gap:24px; flex-wrap:wrap; margin:2px 0 10px; }
+.headline div span { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+.headline div b { font-size:20px; font-weight:650; color:var(--strong); font-variant-numeric:tabular-nums; }
+.headline div small { color:var(--muted); font-size:12px; margin-left:4px; }
+details.more { margin:0 0 10px; } details.more > summary { cursor:pointer; list-style:none; display:flex; align-items:center;
+  gap:8px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; font-weight:650; padding:10px 0 8px; }
+details.more > summary::-webkit-details-marker { display:none; }
+details.more > summary::before { content:"▸"; font-size:11px; color:var(--accent); transition:transform .15s ease; }
+details.more[open] > summary::before { transform:rotate(90deg); }
+details.more > summary small { text-transform:none; letter-spacing:0; font-weight:400; color:var(--faint); font-size:12px; }
+details.more > summary:hover { color:var(--ink); }
 
-@media (max-width: 800px) { .grid2 { grid-template-columns:1fr; } main { padding:14px; } .top-in { padding:10px 14px; }
+@media (max-width: 800px) { .grid2, .grid3 { grid-template-columns:1fr; } main { padding:14px; } .top-in { padding:10px 14px; }
   tbody td, thead th { padding:7px 8px; } .tile .v { font-size:24px; } dl { grid-template-columns:1fr; gap:2px; }
   dd { margin-bottom:8px; } .hide-sm { display:none; } }
 """
@@ -263,8 +295,9 @@ def badge(value: str | None, text: str | None = None) -> str:
     return f'<span class="badge b-{e(value)}">{e(text or label(value))}</span>'
 
 
-def tile(value, name: str, tone: str = "blue", hint: str = "", href: str = "") -> str:
-    inner = f'<div class="v">{e(value)}</div><div class="l">{e(name)}</div>' + (f'<div class="h">{e(hint)}</div>' if hint else "")
+def tile(value, name: str, tone: str = "blue", hint: str = "", href: str = "", spark: list | None = None) -> str:
+    inner = (f'<div class="v">{e(value)}</div><div class="l">{e(name)}</div>' + (f'<div class="h">{e(hint)}</div>' if hint else "")
+             + (sparkline(spark) if spark else ""))
     if href:
         return f'<a class="tile t-{tone}" href="{e(href)}">{inner}</a>'
     return f'<div class="tile t-{tone}">{inner}</div>'
@@ -822,6 +855,92 @@ def render_explained(store: Store, csrf: str) -> str:
 CONF_BUCKETS = [(0.0, 0.6, "under 60%"), (0.6, 0.8, "60–80%"), (0.8, 0.9, "80–90%"), (0.9, 1.01, "90–100%")]
 
 
+NOW = ' class="now"'   # the last label on a chart: today
+
+
+def _points(values: list, width: float, height: float, top: float | None = None, pad: float = 2) -> list[tuple]:
+    """(x, y) for each value, spread over width, scaled to top (the largest value by default). None is skipped."""
+    top = top or max([v for v in values if v is not None] or [1]) or 1
+    n = max(len(values) - 1, 1)
+    return [(round(i * width / n, 2), round(pad + (height - 2 * pad) * (1 - v / top), 2))
+            for i, v in enumerate(values) if v is not None]
+
+
+def sparkline(values: list, height: int = 26) -> str:
+    """A tile's trend line: no axes, the area under it lightly filled (homebase's spark)."""
+    pts = _points(values, 100, height)
+    if len(pts) < 2:
+        return ""
+    line = " ".join(f"{x},{y}" for x, y in pts)
+    return (f'<svg class="spark" viewBox="0 0 100 {height}" height="{height}" preserveAspectRatio="none" aria-hidden="true">'
+            f'<polygon points="{pts[0][0]},{height} {line} {pts[-1][0]},{height}"/><polyline points="{line}"/></svg>')
+
+
+def stacked_chart(labels: list[str], series: list[tuple[str, list[int]]], height: int = 190, every: int = 5,
+                  what: str = "cases", width: int = 1300) -> str:
+    """Columns stacked by series (class s-<name>), one per label, with a hover title per column. width is the
+    viewBox's: about the card's width in pixels, so the labels come out at the page's text size."""
+    n = max(len(labels), 1)
+    left, base = 34, height - 22
+    totals = [sum(vals[i] for _, vals in series) for i in range(n)]
+    top = max(totals or [1]) or 1
+    slot = (width - left) / n
+    parts = [f'<line class="grid" x1="{left}" x2="{width}" y1="{base}" y2="{base}"/>',
+             f'<line class="grid" x1="{left}" x2="{width}" y1="8" y2="8"/>',
+             f'<text x="{left - 6}" y="12" text-anchor="end">{top}</text>',
+             f'<text x="{left - 6}" y="{base}" text-anchor="end">0</text>']
+    for i in range(n):
+        x, w, y = round(left + i * slot + slot * 0.16, 1), round(slot * 0.68, 1), base
+        tip = f"{labels[i]}: {totals[i]} {what}" + "".join(f", {vals[i]} {name}" for name, vals in series if vals[i])
+        parts.append(f"<g><title>{e(tip)}</title>")
+        for name, vals in series:
+            h = (base - 8) * vals[i] / top
+            if h > 0:
+                parts.append(f'<rect class="s-{e(name)}" x="{x}" y="{round(y - h, 1)}" width="{w}" height="{round(h, 1)}"/>')
+                y -= h
+        parts.append("</g>")
+        if i % every == 0 or i == n - 1:
+            parts.append(f'<text x="{round(left + i * slot + slot / 2, 1)}" y="{height - 4}" '
+                         f'text-anchor="middle"{NOW if i == n - 1 else ""}>{e(labels[i])}</text>')
+    return (f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="{e(what)} over time">'
+            f'{"".join(parts)}</svg>')
+
+
+def line_chart(labels: list[str], values: list[int], height: int = 150, every: int = 5, what: str = "",
+               width: int = 1300) -> str:
+    """An area line over the labels, with the last value marked (width as in stacked_chart)."""
+    left, base = 34, height - 22
+    top = max(values or [1]) or 1
+    pts = [(round(left + x * (width - left) / width, 2), y) for x, y in _points(values, width, base, top, pad=8)]
+    if len(pts) < 2:
+        return '<div class="empty">Not enough days yet.</div>'
+    line = " ".join(f"{x},{y}" for x, y in pts)
+    n = len(labels)
+    ticks = "".join(f'<text x="{pts[i][0]}" y="{height - 4}" text-anchor="middle"'
+                    f'{NOW if i == n - 1 else ""}>{e(labels[i])}</text>'
+                    for i in range(n) if i % every == 0 or i == n - 1)
+    dots = "".join(f'<circle cx="{x}" cy="{y}" r="7" opacity="0"><title>{e(labels[i])}: {values[i]} {e(what)}</title></circle>'
+                   for i, (x, y) in enumerate(pts))
+    return (f'<svg class="line chart" viewBox="0 0 {width} {height}" role="img" aria-label="{e(what)}">'
+            f'<line class="grid" x1="{left}" x2="{width}" y1="{base}" y2="{base}"/>'
+            f'<line class="grid" x1="{left}" x2="{width}" y1="8" y2="8"/>'
+            f'<text x="{left - 6}" y="12" text-anchor="end">{top}</text><text x="{left - 6}" y="{base}" text-anchor="end">0</text>'
+            f'<polygon points="{pts[0][0]},{base} {line} {pts[-1][0]},{base}"/><polyline points="{line}"/>'
+            f'<circle cx="{pts[-1][0]}" cy="{pts[-1][1]}" r="4"/>{dots}{ticks}</svg>')
+
+
+def ranks(rows: list[tuple[str, str, str, float, str]]) -> str:
+    """A ranked list: (label html, small text, count html, fraction of the longest bar, tone) per row."""
+    if not rows:
+        return '<div class="empty">Nothing yet.</div>'
+    return '<div class="ranks">' + "".join(
+        f'<div class="rank"><div class="who">{who}{f"<small>{e(sub)}</small>" if sub else ""}</div>'
+        f'<div class="n">{n}</div>'
+        f'<svg viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="track" width="100" height="6" rx="3"/>'
+        f'<rect class="fill-{tone}" width="{max(1.5, round(100 * frac, 1))}" height="6" rx="3"/></svg></div>'
+        for who, sub, n, frac, tone in rows) + "</div>"
+
+
 def column_chart(values: list[int], labels: list[str], height: int = 170) -> str:
     """Bar chart as inline SVG. Sizes are SVG attributes, so the CSP needs no inline styles."""
     n = max(len(values), 1)
@@ -844,7 +963,7 @@ def column_chart(values: list[int], labels: list[str], height: int = 170) -> str
             f'{"".join(parts)}</svg>')
 
 
-def render_stats(store: Store, qualify: benchmark.Qualify | None = None) -> tuple[str, str]:
+def render_stats(store: Store, qualify: benchmark.Qualify | None = None, assets: Assets | None = None) -> tuple[str, str]:
     db = store.db
     total = db.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
     # The owner's dispositions only: a judge auto-close (#204) is counted on its own tile, never as the owner's call.
@@ -985,16 +1104,114 @@ def render_stats(store: Store, qualify: benchmark.Qualify | None = None) -> tupl
                  f'Where code claimed benign or hostile, your disposition agreed {_pct(h["accuracy"])} of {h["claims"]} times.</p></div>') \
         if h["cases"] else '<div class="card empty">No cases with host context yet.</div>'
 
-    return "Stats", (f'<h1>Stats</h1><p class="sub">How noisy each detector is, and how far to trust Jev</p>'
-                     f'<div class="tiles">{tiles}</div>'
-                     f'<h2>Cases per hour · last 48 hours</h2><div class="card">{chart}</div>'
+    def more(title: str, hint: str, inner: str) -> str:   # a folded section: <details> needs no script
+        return f'<details class="more"><summary>{e(title)} <small>{e(hint)}</small></summary>{inner}</details>'
+
+    return "Stats", (f'<h1>Stats</h1><p class="sub">The last 30 days, then all time: how much arrives, how fast it '
+                     f'gets decided, how noisy each detector is and how far to trust Jev</p>'
+                     f"{_trends(db, assets or Assets())}"
+                     f'<h2>All time</h2><div class="tiles">{tiles}</div>'
                      f"<h2>Week by week</h2>{week_html}"
-                     f"<h2>Cases per detector per day</h2>{per_day_html}"
-                     f"<h2>False-positive rate per detector</h2>{fp_html}"
-                     f"<h2>Jev confidence vs disposition</h2>{conf_html}"
-                     f"<h2>Host context: code, Jev and you</h2>{host_html}"
-                     f"<h2>Judge scorecard (shadow)</h2>{_judge_scorecard(db, qualify)}"
-                     f"<h2>Suppression hits</h2>{sup_html}")
+                     f'<h2>Cases per hour · last 48 hours</h2><div class="card">{chart}</div>'
+                     + more("Cases per detector per day", "the last 14 days with cases", per_day_html)
+                     + more("False-positive rate per detector", f"{len(fp_rows)} detectors", fp_html)
+                     + more("Jev confidence vs disposition", f"{triaged} triaged", conf_html)
+                     + more("Host context: code, Jev and you", f"{h['cases']} cases on this PC", host_html)
+                     + more("Judge scorecard (shadow)", "would-closes graded against you", _judge_scorecard(db, qualify))
+                     + more("Suppression hits", f"{len(sup)} rules, {sup_hits} hits", sup_html))
+
+
+def _hours(h: float | None) -> str:
+    if h is None:
+        return "–"
+    return f"{round(h * 60)} min" if h < 1 else f"{h:.1f} h" if h < 48 else f"{h / 24:.1f} days"
+
+
+def _trends(db, assets: Assets) -> str:
+    """The Stats page's top half: 30-day tiles with sparklines, then volume, backlog, waits, hours and the busiest
+    devices and detectors (deskstats has the queries)."""
+    d = deskstats.daily(db)
+    first = next((i for i, k in enumerate(d["days"]) if sum(d["routes"][k].values())), len(d["days"]) - 1)
+    first = min(first, len(d["days"]) - 7)
+    days, routes = d["days"][first:], d["routes"]
+    per_day = [sum(routes[k].values()) for k in days]
+    alerts = [routes[k]["alert"] for k in days]
+    backlog = [d["backlog"][k] for k in days]
+    decided, noise = sum(d["decided"].values()), sum(d["noise"].values())
+    noise_daily = [d["noise"][k] / d["decided"][k] if d["decided"][k] else None for k in days]
+    w = deskstats.waits(db)
+    tps = sum(d["true_positives"].values())
+    short = [k[5:] for k in days]
+
+    def bucket(**f) -> str:
+        return "/?" + urlencode({"status": "all", "route": "all", **f})
+
+    # The 30-day tiles don't link: the queue has no date filter, and the all-time tiles below open their cases.
+    tiles = (tile(sum(per_day), "Cases", "blue", f"{per_day[-1]} today", spark=per_day)
+             + tile(sum(alerts), "Alerts", "red" if alerts[-1] else "green", f"{alerts[-1]} today", spark=alerts)
+             + tile(backlog[-1], "Open backlog", "amber" if backlog[-1] else "green", "alert and digest cases",
+                    "/?status=open", spark=backlog)
+             + tile(f"{noise / decided:.0%}" if decided else "–", "Noise rate", "amber", f"of {decided} decided",
+                    spark=noise_daily)
+             + tile(_hours(w["median_h"]), "Time to decide", "violet", f"median of {w['timed']}")
+             + tile(tps, "True positives", "red" if tps else "green", "last 30 days"))
+
+    legend = ('<div class="legend"><span><i class="k-alert"></i>alert</span><span><i class="k-digest"></i>digest</span>'
+              '<span><i class="k-log"></i>log only</span></div>')
+    volume = stacked_chart(short, [(r, [routes[k][r] for k in days]) for r in deskstats.ROUTES], every=max(1, len(days) // 10))
+
+    top_wait = max(w["hist"].values()) or 1
+    waits_html = (f'<div class="headline"><div><span>median</span><b>{_hours(w["median_h"])}</b></div>'
+                  f'<div><span>decided</span><b>{w["timed"]}</b></div>'
+                  f'<div><span>still undecided</span><b>{w["undecided"]}</b></div></div>'
+                  + ranks([(e(name), "", f"<b>{n}</b>", n / top_wait, "violet") for name, n in w["hist"].items()]))
+
+    hod = deskstats.hour_of_day(db)
+    hours_html = ('<div class="legend"><span><i class="k-alert"></i>alert</span><span><i class="k-other"></i>digest and log</span></div>'
+                  + stacked_chart([f"{h:02d}" for h in range(24)], [("alert", hod["alert"]), ("other", hod["other"])],
+                                  height=200, every=3, width=520))
+
+    devs = deskstats.top(db, "host")
+    most = max([r["cases"] for r in devs] or [1])
+
+    def who(r) -> tuple[str, str]:
+        try:
+            facts = json.loads(r["facts"]) if r["facts"] else None
+        except ValueError:
+            facts = None
+        name = assets.name(r["key"], facts)
+        return (e(name), r["key"]) if name != r["key"] else (f'<span class="mono">{e(r["key"])}</span>', "")
+
+    dev_rows = []
+    for r in devs:
+        name, sub = who(r)
+        dev_rows.append((f'<a href="{e(bucket(device=r["key"]))}">{name}</a>', sub,
+                         f'<b>{r["cases"]}</b>' + (f' · {r["alerts"]} alert{"s" * (r["alerts"] != 1)}' if r["alerts"] else ""),
+                         r["cases"] / most, "red" if r["alerts"] else "accent"))
+    dets = deskstats.top(db, "detector", limit=10)
+    most_d = max([r["cases"] for r in dets] or [1])
+    det_rows = [(f'<a class="mono" href="{e(bucket(detector=r["key"]))}">{e(r["key"])}</a>', "",
+                 f'<b>{r["cases"]}</b>' + (f' · {r["noise"] / r["decided"]:.0%} noise' if r["decided"] else ""),
+                 r["cases"] / most_d, "amber" if r["decided"] and r["noise"] / r["decided"] > .9 else "accent")
+                for r in dets]
+
+    disp = deskstats.dispositions(db)
+    total30 = sum(disp.values()) or 1
+    names = {"": "undecided", "judge": "closed by the judge"}
+    disp_html = ranks([(badge("ai" if k == "judge" else k or "none", names.get(k, label(k))), "",
+                        f"<b>{n}</b> · {n / total30:.0%}", n / total30,
+                        {"true_positive": "red", "false_positive": "green", "benign_expected": "accent", "judge": "violet"}.get(k, "blue"))
+                       for k, n in disp.items() if n or k != "judge"])
+
+    return (f'<div class="tiles">{tiles}</div>'
+            f'<h2>Cases a day · last {len(days)} days</h2><div class="card">{legend}{volume}</div>'
+            f'<div class="grid2"><section><h2>Open backlog at the end of each day</h2><div class="card">'
+            f'{line_chart(short, backlog, every=max(1, len(days) // 6), what="open", width=640, height=200)}</div></section>'
+            f'<section><h2>Time to a disposition</h2><div class="card">{waits_html}</div></section></div>'
+            f'<div class="grid3"><section><h2>When cases arrive · hour of day</h2><div class="card">{hours_html}</div></section>'
+            f'<section><h2>Busiest devices</h2><div class="card">{ranks(dev_rows)}</div></section>'
+            f'<section><h2>Busiest detectors</h2><div class="card">{ranks(det_rows)}</div></section></div>'
+            f'<h2>How the last 30 days were decided</h2><div class="card">{disp_html}</div>')
 
 
 def _judge_scorecard(db, qualify: benchmark.Qualify | None = None) -> str:
@@ -1233,7 +1450,7 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/":
                 title, body = render_queue(store, self.app.assets, params, csrf)
             elif url.path == "/stats":
-                title, body = render_stats(store, self.app.judge.qualify)
+                title, body = render_stats(store, self.app.judge.qualify, self.app.assets)
                 refresh = STATS_REFRESH_S
             elif url.path == "/suppressions":
                 title, body = render_suppressions(store, csrf)
