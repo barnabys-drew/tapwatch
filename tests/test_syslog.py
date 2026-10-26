@@ -176,6 +176,11 @@ def test_router_ips_routing():
     assert (a.base_severity, a.must_alert, a.host) == (1, False, "192.168.50.20")
     assert (b.base_severity, b.must_alert, b.facts["direction"]) == (5, True, "outbound")
     assert det.feed(udm(name="Client connected", UNIFIcategory="Monitoring")) == []
+    # a burst of SSH from one house device to another's Tailscale address (2026-10-26): neither end is outside
+    lateral = udm(name="Threat Detected", src="192.168.50.20", dst="100.64.1.5", dpt="22", UNIFIrisk="medium",
+                  UNIFIipsSignature="ET SCAN Potential SSH Scan OUTBOUND", UNIFIipsSignatureId="2003068")
+    c = det.feed(lateral)[0]
+    assert (c.facts["direction"], c.host, c.base_severity) == ("internal", "192.168.50.20", 2)
 
 
 def test_real_admin_event_is_learned_then_alerts_from_a_new_place():

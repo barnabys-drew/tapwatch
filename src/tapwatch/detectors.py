@@ -2558,7 +2558,8 @@ class UdmIps(Detector):
         sev = 5 if must else 1 if blocked and not outbound else 3 if risk in ("high", "critical") else 2
         return [Case(self.name, host, rec["ts"], "Router IPS signature matched",
                      {"signature": sig, "risk": risk or "unknown", "blocked": blocked,
-                      "direction": "outbound" if outbound else "inbound" if is_internal(dst) else "other",
+                      "direction": "outbound" if outbound else "internal" if is_internal(src) and is_internal(dst)
+                      else "inbound" if is_internal(dst) else "other",
                       "port": rec.get("dpt"), "dedupe": rec.get("UNIFIipsSignatureId") or sig},
                      must_alert=must, base_severity=sev)]
 

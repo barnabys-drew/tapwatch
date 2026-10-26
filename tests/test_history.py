@@ -165,6 +165,23 @@ def test_nightly_summarizes_in_the_background(setup):
     assert [r[0] for r in table(store, "summary_days")] == ["2026-09-20", "2026-09-21", "2026-09-22"]
 
 
+def test_nightly_reads_again_when_a_log_rotates_away_mid_read(setup, monkeypatch):
+    d, store, cfg, _ = setup
+    real, calls = history.summarize, []
+
+    def flaky(*a, **k):   # the first pass meets a file Zeek just renamed
+        calls.append(1)
+        if len(calls) == 1:
+            raise FileNotFoundError(2, "No such file or directory", str(d / "dhcp.log"))
+        return real(*a, **k)
+
+    monkeypatch.setattr(history, "summarize", flaky)
+    monkeypatch.setattr(history, "ROTATE_RETRY", 0)
+    history.nightly(cfg, [d], lambda: Store(str(d / "t.db")), now=END + 86400 + 12 * 3600).join(10)
+    assert len(calls) == 2
+    assert [r[0] for r in table(store, "summary_days")] == ["2026-09-20", "2026-09-21", "2026-09-22"]
+
+
 def test_summarize_command_rebuilds_a_named_day(setup, capsys):
     d = setup[0]
     (d / "config.yaml").write_text(f"db_path: {d / 't.db'}\ntimezone: UTC\n")
