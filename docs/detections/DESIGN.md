@@ -6,8 +6,9 @@ are built in `src/tapwatch/detectors.py`, and R08 is the code-routed `new_domain
 from these specs, and [ARCHITECTURE.md](../ARCHITECTURE.md) for how cases are routed. R17–R21, the
 first [endpoint rules](#endpoint-rules-r17r21-what-the-pc-itself-says-built-2026-10-15-hostrulespy), were
 designed and built 2026-10-15 in `src/tapwatch/hostrules.py` (issues #26, #27). The rest followed through v0.3
-(released 2026-10-25 as v0.3.0): R22 and R23–R29, R36–R39 and R48 are built, and the [summary](#summary) lists
-every rule with its route._
+(released 2026-10-25 as v0.3.0): R22 and R23–R29, R36–R39 and R48 are built. v0.4's long-horizon rules R30–R34
+are built too (`src/tapwatch/longhaul.py`, over the daily summaries). The [summary](#summary) lists every rule with
+its route._
 
 **Scope.** This is a home network with limited telemetry. There is no EDR raw-event
 feed (no CrowdStrike FDR or Sysmon pipeline) and no SaaS audit logs (no GitHub,
@@ -104,7 +105,8 @@ What these numbers imply:
   minute, which read as beaconing to an unnamed address (2026-10-24, three devices after joining Fleet over
   Tailscale). Listed, a record between a LAN device and that address is skipped before the detectors (the
   address doesn't become a LAN device: that raised new-device and admin-port cases on it in review), and the
-  host rules don't count it as outside. The internet reaching it, as in the router's IPS hits, is unchanged.
+  host rules don't count it as outside (`hostrules.outside`); the daily summaries and the eval harness skip the
+  same records. The internet reaching it, as in the router's IPS hits, is unchanged.
   tapwatch can't learn it: the router's logs never carry it. A stale entry hides traffic to whoever has the
   address now, so it's set by hand and must follow the ISP.
 - **Same-switch east-west traffic isn't mirrored.** PC → NAS on the same USW, or

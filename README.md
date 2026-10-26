@@ -64,7 +64,7 @@ The full design, routing rules and trade-offs are in **[docs/ARCHITECTURE.md](do
 
 ## Highlights
 
-- **39 case types (22 network, 17 host)** tuned for homes (table below). Each is plain Python with
+- **44 case types (22 network, 5 long-horizon, 17 host)** tuned for homes (table below). Each is plain Python with
   tests and a written spec. Learned baselines survive restarts and follow the *device* (DHCP
   hostname, then MAC, then IP), so a laptop keeps its history when it moves between addresses.
 - **Sites named by kind.** First contacts, odd TLS sessions and upload spikes carry the kind of
@@ -271,7 +271,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 Optional extras: [router syslog](docs/setup/router-syslog.md) adds the router's own IPS verdicts
 and admin logins, the [endpoint agents](agents/README.md) (osquery) name the program behind a
 connection and feed the host rules, and a [Fleet server](docs/setup/fleet.md) brings in the agents on
-the house's other computers.
+the house's other computers (`agents/install-silent.cmd` installs one from a deployment tool, with no prompts).
 
 ## What leaves the network
 
@@ -311,6 +311,7 @@ src/tapwatch/        the package
   pipeline.py          detectors -> context -> triage -> route -> store -> notify
   store.py             SQLite schema, workflow, suppressions, learned state
   history.py           per-device daily summaries for the 30-day rules (tapwatch summarize)
+  judge.py             the learned judge: training set, guardrails, shadow answers, auto-close, back-off
   longhaul.py          the long-horizon rules over them: R30 slow beacon, R31 low-and-slow upload, R32 rare
                        nameless destination, R33 dormant device waking, R34 routine shift
   ui.py, evidence.py   case desk and Zeek evidence lookup
@@ -335,7 +336,7 @@ tools/               personal-data gate, demo case desk
 | Doc | What's in it |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | data flow, components, routing guardrails, host context, security model, design decisions |
-| [docs/detections/DESIGN.md](docs/detections/DESIGN.md) | the detection catalogue (R01–R29, R36–R39, R48), with measured baselines and how Jev is used |
+| [docs/detections/DESIGN.md](docs/detections/DESIGN.md) | the detection catalogue (R01–R34, R36–R39, R48), with measured baselines and how Jev is used |
 | [docs/detections/rules/](docs/detections/rules/README.md) | Sigma and DuckDB SQL versions of the rules |
 | [eval/RESULTS.md](eval/RESULTS.md) | eval method, numbers, tuning history and caveats |
 | [docs/setup/](docs/README.md#setup-guides) | a UniFi office, mirror port, router syslog, Windows, Fleet, account check |
@@ -369,7 +370,7 @@ home network since 2026-10-13, so expect rough edges.
 - **Detection:** the network rules, the router's syslog (verified against a live UniFi gateway), and
   the endpoint rules R17–R21, R23–R29 and R36–R39 on Windows and Linux (the Linux set verified live on 2026-10-18),
   plus R48 known-exploited software. Other computers report through a Fleet server and get the same host
-  rules. A scripted
+  rules. The long-horizon rules R30–R34 run each night over the per-device daily summaries. A scripted
   detection-rate check runs in CI; a feed-silence rule watches every log source, the router included.
 - **Measuring:** the stats page and `tapwatch benchmark` report noise rate, Jev agreement,
   host-context accuracy and the shadow judge's scorecard week by week. Judge auto-close and its back-off are
@@ -377,9 +378,11 @@ home network since 2026-10-13, so expect rough edges.
   nearly all noise while the baselines learn, 2 true positives (both digest items); host context answered on
   all 136 PC cases and named the program for 106, and its intent verdicts have not yet fired on real traffic.
 
-v0.2 (evidence outside one house), v0.2.5 (easy install) and v0.3 (endpoint rules) are done. Next, per the
-[roadmap](docs/ROADMAP.md): "which program" for network cases on the Fleet computers, then learning from the
-owner's closed cases (v0.4). The Omarchy/Arch install is on hold. macOS waits until there's a Mac to test on.
+v0.2 (evidence outside one house), v0.2.5 (easy install) and v0.3 (endpoint rules) are done. v0.4 (learning
+from history) is largely built: the daily summaries, R30–R34 and the learned judge, with auto-close off. Next, per
+the [roadmap](docs/ROADMAP.md): a 30-day re-measure of R30–R34, the judge's first detector switched on once it
+qualifies, and "which program" for network cases on the Fleet computers. The Omarchy/Arch install is on hold.
+macOS waits until there's a Mac to test on.
 
 ## License
 

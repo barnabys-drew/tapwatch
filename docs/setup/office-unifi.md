@@ -137,6 +137,11 @@ check again after 15 minutes.
 - **No alerts for days:** run the check in step 7. tapwatch also sends an alert when its own capture
   stops.
 - **The PC was off or restarted:** tapwatch starts again by itself, even before anyone signs in.
+- **Alerts about a device "beaconing" to the office's own internet address** (a computer using Tailscale, or a
+  port forward used from inside the office): put that address in `~/tapwatch/config.yaml` under
+  `network.public_ips`, for example `public_ips: [203.0.113.7]` (see `config.example.yaml`), then
+  `systemctl --user restart tapwatch-alerter`. Update it if the internet provider changes the address. If the router's
+  internet (WAN) address starts with `100.64` to `100.127` (CGNAT), leave it empty.
 - **To update tapwatch:** double-click **update-windows.cmd** in the folder you extracted. It shows what changed,
   asks first, and goes back to the version you had if the new one doesn't pass its checks. The daily summary says
   when a new version is out. Running install-windows.cmd from a newer ZIP also works, and keeps your settings.
