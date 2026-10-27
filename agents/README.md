@@ -46,6 +46,9 @@ the new rule has nothing to read.
 | `chrome_extensions` | 1 day | browser add-ons |
 | `sysmon_events` (Windows) | 1 min | Sysmon, as it happens: every process start with its parent and **command-line signals**, every outgoing connection and every DNS lookup, each with the program behind it |
 | `software_programs` (Windows), `software_deb` / `software_rpm` (Linux), `software_brew` (macOS) | 1 day | installed software and versions, for the known-exploited check (`tapwatch software`). Windows keeps name, version and publisher only: a per-user program's install path holds the user's name |
+| `security_products`, `security_center` (Windows) | 1 h | Defender and the firewall on or off, signatures current, and Security Center's health per area (UAC included) |
+| `usb_storage` (Windows) | 1 h | every USB drive the PC has seen; a new row is a drive not seen before |
+| `windows_update` (Windows) | 1 day | when an update last installed, failed installs in 30 days, and whether a restart is waiting (osquery can't list the updates still to install) |
 | `logged_in_users`, `system_info`, `os_version` | 1 h – 1 day | inventory |
 
 Results go to `/var/log/osquery/osqueryd.results.log` (macOS and Linux) or

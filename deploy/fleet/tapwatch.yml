@@ -500,6 +500,66 @@ spec:
 apiVersion: v1
 kind: report
 spec:
+  name: security_products
+  description: Antivirus and firewall products Windows Security Center knows, whether each is on, and whether its signatures
+    are current (Defender included).
+  query: SELECT name, type, state, signatures_up_to_date FROM windows_security_products;
+  interval: 3600
+  platform: windows
+  logging: snapshot
+  automations_enabled: true
+  discard_data: true
+  observer_can_run: false
+---
+apiVersion: v1
+kind: report
+spec:
+  name: security_center
+  description: Windows Security Center's overall health per area (Good, Poor, Snoozed, Not Monitored).
+  query: SELECT antivirus, firewall, autoupdate, internet_settings, windows_security_center_service, user_account_control
+    FROM windows_security_center;
+  interval: 3600
+  platform: windows
+  logging: snapshot
+  automations_enabled: true
+  discard_data: true
+  observer_can_run: false
+---
+apiVersion: v1
+kind: report
+spec:
+  name: usb_storage
+  description: USB storage devices this PC has ever seen (one registry entry per drive, its serial in the key); an added row
+    is a drive not seen before. osquery's usb_devices table doesn't exist on Windows.
+  query: SELECT key, data AS friendly_name FROM registry WHERE key LIKE 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\USBSTOR\%\%'
+    AND name = 'FriendlyName';
+  interval: 3600
+  platform: windows
+  logging: differential
+  automations_enabled: true
+  discard_data: true
+  observer_can_run: false
+---
+apiVersion: v1
+kind: report
+spec:
+  name: windows_update
+  description: 'Windows Update: when an update (not a Defender signature) last installed, failed installs in 30 days, and
+    whether a restart is waiting. osquery can''t list updates still to install.'
+  query: SELECT (SELECT max(date) FROM windows_update_history WHERE result_code = 'Succeeded' AND title NOT LIKE 'Security
+    Intelligence Update%') AS last_installed, (SELECT count(*) FROM windows_update_history WHERE result_code = 'Failed' AND
+    date > CAST(strftime('%s', 'now') AS INTEGER) - 2592000) AS failed_30d, (SELECT count(*) FROM registry WHERE key = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto
+    Update\RebootRequired') AS reboot_pending;
+  interval: 86400
+  platform: windows
+  logging: snapshot
+  automations_enabled: true
+  discard_data: true
+  observer_can_run: false
+---
+apiVersion: v1
+kind: report
+spec:
   name: file_changes
   description: 'R39: a write to a persistence or privilege file (ld.so.preload, sudoers, sudoers.d, profile.d, the shells''
     start-up files, XDG autostart) as it happens, from inotify. file_paths watches the directories, not the files: a file
