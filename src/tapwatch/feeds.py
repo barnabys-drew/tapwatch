@@ -8,6 +8,7 @@ and renamed into place, so a failed download never leaves a half-written list be
   ip2asn-v4.tsv.gz   iptoasn.com IP range -> network (ASN) and country, for IoT drift (R02)
   public_suffix_list.dat  the Public Suffix List, for registrable domains (bbc.co.uk, not co.uk)
   iocs-adfection.tsv  AdFection / Candiru spyware indicators, tiered, for ioc_match
+  nrd/YYYY-MM-DD.txt  newly registered domains, one file per day for the last 30 days, for new_domain (R08)
   kev.json, osv-*.tsv.gz, nvd-ranges.json   known-exploited and distro vulnerability data for the software
                      inventory (vulns.py), fetched only for what the agents report installed
 """
@@ -20,9 +21,12 @@ import hashlib
 import io
 import ipaddress
 import json
+import re
 import tarfile
+import urllib.error
 import urllib.request
 import zipfile
+from datetime import date, timedelta
 from pathlib import Path
 
 from . import inventory, vulns
@@ -64,6 +68,15 @@ UT1_CATEGORIES = {
     "webhosting": "web_hosting",
 }
 CATEGORIES_FILE = "categories.tsv"
+
+# Newly registered domains (#18): WhoisFreaks' free daily list on GitHub, 10,000 domains a day from about 300,000
+# registrations, gTLDs only, a few days behind. A sample, so only a hit means anything: a domain not on it may still be
+# new. Each install downloads the files for itself (the repo carries no licence to redistribute them); nothing
+# about the house is sent. The newest days sit in the repo's root, older ones in archive/.
+NRD_URL = "https://raw.githubusercontent.com/WhoisFreaks/daily-newly-registered-domains/main/{}{}-free-newly-registered-domains.csv"
+NRD_DIR = "nrd"
+NRD_DAYS = 30          # R08 grades a domain registered in the last 30 days
+NRD_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.txt$")   # the only files nrd_feed writes, reads and deletes
 
 
 def _fetch(url: str, timeout: float = 120) -> bytes:
@@ -168,6 +181,60 @@ def vuln_feeds(d: Path, ecosystems: dict[str, set[str]], fetch=_fetch, sleep=Non
     return report
 
 
+def _domains(text: str) -> list[str]:
+    """The list's names, lower-cased; anything that isn't a plain domain name (a header, a blank) is dropped."""
+    out = []
+    for line in text.splitlines():
+        name = line.strip().strip(".").lower()
+        if "." in name and len(name) <= 253 and all(c.isalnum() or c in ".-" for c in name):
+            out.append(name)
+    return out
+
+
+def nrd_feed(d: Path, fetch=_fetch, today: date | None = None) -> str:
+    """Keep the last NRD_DAYS daily lists in d/nrd as YYYY-MM-DD.txt: fetch the days not there yet (a day missing
+    upstream is skipped, so the next run tries it again), delete older ones."""
+    out = d / NRD_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    today = today or date.today()
+    days = [today - timedelta(days=n) for n in range(1, NRD_DAYS + 1)]
+    fetched = missing = failed = 0
+    for day in days:
+        path = out / f"{day.isoformat()}.txt"
+        if path.exists():
+            continue
+        names: list[str] = []
+        try:
+            for folder in ("", "archive/"):
+                try:
+                    names = _domains(fetch(NRD_URL.format(folder, day.isoformat())).decode("utf-8", "replace"))
+                except urllib.error.HTTPError as e:
+                    if e.code != 404:
+                        raise
+                    continue
+                break
+        except OSError:          # a 5xx, a rate limit, a timeout: this day waits for the next run, the rest go on
+            failed += 1
+            continue
+        if not names:            # not published yet, or a page that held no domain names: never cache an empty day
+            missing += 1
+            continue
+        _write(path, ("\n".join(names) + "\n").encode())
+        fetched += 1
+    keep = {f"{day.isoformat()}.txt" for day in days}
+    for old in out.iterdir():
+        if NRD_NAME.match(old.name) and old.name not in keep:
+            old.unlink()
+    have = sorted(p for p in out.iterdir() if NRD_NAME.match(p.name))
+    total = 0
+    for p in have:
+        with p.open() as fh:
+            total += sum(1 for _ in fh)
+    return (f"ok, {len(have)} days, {total:,} domains ({fetched} fetched now"
+            + (f", {missing} not published" if missing else "") + (f", {failed} failed, retried next run" if failed else "")
+            + ")")
+
+
 def update(directory: str, fetch=_fetch, ecosystems: dict[str, set[str]] | None = None,
            sleep=None) -> dict[str, str]:
     """Download every list into `directory`. Returns {file: "ok, N bytes" | "failed: reason"}. `ecosystems`
@@ -202,6 +269,10 @@ def update(directory: str, fetch=_fetch, ecosystems: dict[str, set[str]] | None 
             report[name] = f"ok, {rows} indicators"
         except Exception as e:  # noqa: BLE001 - as above
             report[name] = f"failed: {e}"
+    try:
+        report[NRD_DIR + "/"] = nrd_feed(d, fetch)
+    except Exception as e:  # noqa: BLE001 - as above
+        report[NRD_DIR + "/"] = f"failed: {e}"
     report.update(vuln_feeds(d, ecosystems or {}, fetch, sleep))
     return report
 

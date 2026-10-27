@@ -83,7 +83,8 @@ characters such as `$` and quotes, so check a typed command before pressing Ente
 your user name in place of `$USER`.
 
 `service install` starts four systemd user services: capture, alerter, case desk and watchdog
-(five with `--syslog`, which adds the router's syslog listener). Check them with `systemctl --user status 'tapwatch-*'`, and the whole install with
+(five with `--syslog`, which adds the router's syslog listener), plus a daily timer that refreshes the public lists
+(`tapwatch-feeds.timer`, around 05:30). Check them with `systemctl --user status 'tapwatch-*'`, and the whole install with
 `.venv/bin/tapwatch doctor`.
 
 **The PC agent (optional).** osquery and Sysmon on Windows name the program behind a connection, and run the

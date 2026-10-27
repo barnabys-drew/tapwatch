@@ -34,6 +34,8 @@ def with_feeds(cfg: dict) -> dict:
     for key, name in FEED_FILES.items():
         if not cfg.get(key) and (d / name).exists():
             cfg[key] = str(d / name)
+    if not cfg.get("newly_registered_dir") and (d / "nrd").is_dir():   # feeds.NRD_DIR: one file per day
+        cfg["newly_registered_dir"] = str(d / "nrd")
     if not cfg.get("learned_categories_file"):  # an output: it need not exist yet
         cfg["learned_categories_file"] = str(d / LEARNED_CATEGORIES)
     return cfg

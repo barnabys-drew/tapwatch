@@ -124,7 +124,10 @@ def test_service_units_run_this_python_and_code_from_the_home_dir(tmp_path):
     from tapwatch import service
     u = service.units(str(tmp_path), str(tmp_path / "logs"), capture_iface="Ethernet 2", syslog=True)
     assert set(u) == {"tapwatch-alerter.service", "tapwatch-ui.service", "tapwatch-watchdog.service",
-                      "tapwatch-capture.service", "tapwatch-syslog.service"}
+                      "tapwatch-capture.service", "tapwatch-syslog.service", "tapwatch-feeds.service",
+                      "tapwatch-feeds.timer"}
+    assert "Type=oneshot" in u["tapwatch-feeds.service"] and "update-feeds" in u["tapwatch-feeds.service"]
+    assert "OnCalendar=" in u["tapwatch-feeds.timer"] and "Persistent=true" in u["tapwatch-feeds.timer"]
     a = u["tapwatch-alerter.service"]
     assert f"WorkingDirectory={tmp_path}" in a and f"Environment=PYTHONPATH={service.CODE}" in a
     assert f"run --zeek-dir {tmp_path / 'logs'}" in a and "Restart=on-failure" in a
@@ -138,10 +141,11 @@ def test_service_install_and_uninstall(tmp_path):
     calls = []
     run = lambda cmd, check=False: calls.append(cmd)
     paths = service.install(service.units(str(tmp_path), str(tmp_path)), run=run, unit_dir=tmp_path / "units")
-    assert len(paths) == 3 and calls[0] == ["systemctl", "--user", "daemon-reload"]
+    assert len(paths) == 5 and calls[0] == ["systemctl", "--user", "daemon-reload"]
     assert calls[1][:4] == ["systemctl", "--user", "enable", "--now"]
+    assert "tapwatch-feeds.timer" in calls[1] and "tapwatch-feeds.service" not in calls[1]   # the timer starts it
     removed = service.uninstall(run=run, unit_dir=tmp_path / "units")
-    assert len(removed) == 3 and not list((tmp_path / "units").iterdir())
+    assert len(removed) == 5 and not list((tmp_path / "units").iterdir())
 
 
 def test_wizard_proposes_the_lans_ipv6_prefix_and_skips_privacy_addresses():
