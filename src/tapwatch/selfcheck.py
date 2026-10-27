@@ -128,7 +128,7 @@ def _new_usb():
     """R50: the first run lists two known drives, and three days later a new one appears."""
     def drive(ts, serial, name):
         return {"_type": "osquery", "_log": WIN, "name": "usb_storage", "unixTime": int(ts), "ts": ts, "action": "added",
-                "columns": {"key": "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\USBSTOR\\"
+                "counter": "0" if ts == T0 or ts == T0 + 1 else "3", "columns": {"key": "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\USBSTOR\\"
                                    f"Disk&Ven_Example&Prod_Stick&Rev_1.00\\{serial}&0", "friendly_name": name}}
     return [drive(T0, "OLD1", "Example Stick USB Device"), drive(T0 + 1, "OLD2", "Example Stick USB Device"),
             drive(T0 + 3 * 86400, "NEW9", "Example Stick USB Device")]

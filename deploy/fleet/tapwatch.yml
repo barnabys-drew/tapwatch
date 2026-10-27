@@ -544,11 +544,15 @@ apiVersion: v1
 kind: report
 spec:
   name: windows_update
-  description: 'Windows Update: when an update (not a Defender signature) last installed, failed installs in 30 days, and
-    whether a restart is waiting. osquery can''t list updates still to install.'
+  description: 'Windows Update: when an update last installed (not Defender''s signatures, platform or the removal tool),
+    failed installs in 30 days and the newest failure, and whether a restart is waiting. osquery can''t list updates still
+    to install.'
   query: SELECT (SELECT max(date) FROM windows_update_history WHERE result_code = 'Succeeded' AND title NOT LIKE 'Security
-    Intelligence Update%') AS last_installed, (SELECT count(*) FROM windows_update_history WHERE result_code = 'Failed' AND
-    date > CAST(strftime('%s', 'now') AS INTEGER) - 2592000) AS failed_30d, (SELECT count(*) FROM registry WHERE key = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto
+    Intelligence Update%' AND title NOT LIKE '%antimalware platform%' AND title NOT LIKE '%Malicious Software Removal Tool%')
+    AS last_installed, (SELECT count(*) FROM windows_update_history WHERE result_code = 'Failed' AND title NOT LIKE 'Security
+    Intelligence Update%' AND date > CAST(strftime('%s', 'now') AS INTEGER) - 2592000) AS failed_30d, (SELECT max(date) FROM
+    windows_update_history WHERE result_code = 'Failed' AND title NOT LIKE 'Security Intelligence Update%') AS last_failed,
+    (SELECT count(*) FROM registry WHERE key = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto
     Update\RebootRequired') AS reboot_pending;
   interval: 86400
   platform: windows

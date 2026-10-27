@@ -1405,9 +1405,9 @@ def test_r49_a_third_party_antivirus_covers_defender_and_servers_are_skipped():
     assert fw.facts["problems"] == ["no firewall on"] and fw.base_severity == 4   # was protected an hour before
 
 
-def usb(t, key, name, action="added"):
+def usb(t, key, name, action="added", counter="5"):
     return {"_type": "osquery", "name": "usb_storage", "action": action, "unixTime": int(t), "ts": int(t),
-            "columns": {"key": key, "friendly_name": name}}
+            "counter": counter, "columns": {"key": key, "friendly_name": name}}
 
 
 USBSTOR = "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\USBSTOR\\"
@@ -1416,19 +1416,24 @@ USBSTOR = "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\USBSTOR\\"
 def test_r50_drives_known_at_the_first_run_are_learned_and_a_new_one_is_a_digest_item():
     from tapwatch.hostrules import NewUsbDrive
     det = NewUsbDrive(st())
-    first = [usb(T0, USBSTOR + f"Disk&Ven_Old&Prod_Stick{i}&Rev_1.00\\SER{i}&0", f"Old Stick {i}") for i in range(4)]
+    first = [usb(T0, USBSTOR + f"Disk&Ven_Old&Prod_Stick{i}&Rev_1.00\\SER{i}&0", f"Old Stick {i}", counter="0")
+             for i in range(4)]
     assert run(det, *first) == []
     (c,) = run(det, usb(T0 + 3 * 86400, USBSTOR + "Disk&Ven_Kingston&Prod_DataTraveler_3.0&Rev_0000\\E0D55EA5&0",
                         "Kingston DataTraveler 3.0 USB Device"))
-    assert c.base_severity == 2 and c.indicators == ["Kingston DataTraveler 3.0 USB Device"]
-    assert (c.facts["vendor"], c.facts["product"], c.facts["serial"]) == ("Kingston", "DataTraveler_3.0", "E0D55EA5&0")
+    assert c.base_severity == 2 and c.indicators == ["Kingston DataTraveler_3.0 [E0D55EA5]"]   # this drive, not the model
+    assert (c.facts["vendor"], c.facts["product"], c.facts["serial"]) == ("Kingston", "DataTraveler_3.0", "E0D55EA5")
     assert route(c, None)[0] is Route.DIGEST and "never seen" in summarize(c, Assets())
     assert run(det, usb(T0 + 4 * 86400, USBSTOR + "Disk&Ven_Kingston&Prod_DataTraveler_3.0&Rev_0000\\E0D55EA5&0",
                         "Kingston DataTraveler 3.0 USB Device")) == []   # the same drive again
     saved = json.loads(json.dumps(det.snapshot()))
     again = NewUsbDrive(st())
     again.restore(saved)
-    assert run(again, first[0]) == []                             # a restart keeps what it learned
+    assert run(again, dict(first[0], counter="7")) == []          # a restart keeps what it learned
+    # osquery's database reset: every drive comes back as added with counter 0, an inventory, never a flood
+    resent = [usb(T0 + 9 * 86400, USBSTOR + f"Disk&Ven_Hist&Prod_Old{i}&Rev_1\\H{i}&0", f"Hist {i}", counter="0")
+              for i in range(10)]
+    assert run(again, *resent) == []
 
 
 def test_r51_windows_update_behind_restart_waiting_and_failures():
@@ -1447,6 +1452,36 @@ def test_r51_windows_update_behind_restart_waiting_and_failures():
     assert o.facts["problems"] == ["no update installed"] and o.facts["days_since_update"] == 40
     assert run(WindowsUpdateBehind(st()), snap("windows_update", T0, {"last_installed": "", "failed_30d": "0",
                                                                      "reboot_pending": "0"})) == []   # no history: no verdict
+
+
+def test_r49_stale_then_off_still_alerts_and_problems_are_weekly_each():
+    from tapwatch.hostrules import AntivirusOff
+    det = AntivirusOff(st())
+    (s,) = run(det, snap("security_products", T0, product(DEFENDER, "Antivirus", current="0"), product(FIREWALL, "Firewall")))
+    assert s.base_severity == 3 and s.indicators == ["antivirus signatures out of date"]
+    (off,) = run(det, snap("security_products", T0 + 3600, product(DEFENDER, "Antivirus", "Off"), product(FIREWALL, "Firewall")))
+    assert off.base_severity == 4 and off.facts["switched_off"]          # stale before, off now: still switched off
+    assert run(det, snap("security_products", T0 + 7200, product(DEFENDER, "Antivirus", "Off"),
+                         product(FIREWALL, "Firewall"))) == []           # the same state an hour later
+    (fw,) = run(det, snap("security_products", T0 + 3 * 3600, product(DEFENDER, "Antivirus", "Off"),
+                          product(FIREWALL, "Firewall", "Off")))
+    assert fw.base_severity == 4 and fw.facts["problems"] == ["no antivirus on", "no firewall on"]
+    # Security Center's service stopped: the products list comes back empty, so the service is read too
+    down = {"_type": "osquery", "name": "security_center", "action": "snapshot", "ts": T0, "unixTime": int(T0),
+            "snapshot": [{"antivirus": "Poor", "firewall": "Poor", "windows_security_center_service": "Poor"}]}
+    (c,) = run(AntivirusOff(st()), down)
+    assert c.title == "Windows Security Center not running on the PC" and c.base_severity == 3
+
+
+def test_r51_failures_count_only_while_nothing_installed_since():
+    from tapwatch.hostrules import WindowsUpdateBehind
+    det = WindowsUpdateBehind(st())
+    recovered = {"last_installed": str(int(T0 - 86400)), "failed_30d": "4", "last_failed": str(int(T0 - 5 * 86400)),
+                 "reboot_pending": "0"}
+    assert run(det, snap("windows_update", T0, recovered)) == []
+    stuck = dict(recovered, last_installed=str(int(T0 - 20 * 86400)))
+    (c,) = run(det, snap("windows_update", T0 + 86400, stuck))
+    assert c.facts["problems"] == ["updates failing"] and c.indicators == ["updates failing"]
 
 
 def test_r49_r51_need_no_jev_and_pair_as_intended():

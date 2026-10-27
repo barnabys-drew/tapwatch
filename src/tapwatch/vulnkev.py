@@ -206,7 +206,8 @@ class DeviceKev:
             return False
         products = sorted({f.get("product", "") for f in kev})
         case.facts["device_kev"] = {"products": products[:5], "cves": sum(int(f.get("kev_cves") or 0) for f in kev)}
-        if case.base_severity >= 2:
+        from .hostrules import STANDING  # here: hostrules imports this module
+        if case.base_severity >= 2 and case.detector not in STANDING:
             # digest items move up a level; log-level ones stay in the log. Measured 2026-10-20 on the live case
             # store: 358 of 987 cases in eight days were new_domain at severity 1 (an ordinary new domain), and a
             # flat +1 would have made every one a digest item on any device with an unpatched browser.
