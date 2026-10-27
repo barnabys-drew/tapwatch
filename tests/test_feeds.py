@@ -46,6 +46,8 @@ KEV = (b'{"catalogVersion": "2026.10.20", "count": 1, "vulnerabilities": [{"cveI
 
 
 def fake_fetch(url):
+    if "newly-registered-domains" in url:
+        return b"fresh-shop.example\nanother-new.example\n"
     if "cisa.gov" in url:
         return KEV
     if url.startswith("https://iocs.example/"):
@@ -192,3 +194,54 @@ def test_iocs_reads_your_list_and_the_tiered_feed(tmp_path):
     assert labels["c2.example"] == {"list": "AdFection / Candiru", "tier": "cc", "confidence": "primary",
                                     "source": "citizenlab"}
     assert labels["198.51.100.66"]["tier"] == "candiru-ip" and "bad.example" not in labels
+
+
+def test_nrd_keeps_a_rolling_30_days_and_finds_archived_days(tmp_path):
+    import urllib.error
+    from datetime import date
+
+    asked = []
+
+    def fetch(url):
+        asked.append(url)
+        day = url.rsplit("/", 1)[1][:10]
+        if day == "2026-10-20":
+            raise urllib.error.HTTPError(url, 404, "missing", {}, None)        # not published at all
+        if "/archive/" not in url and day < "2026-10-15":
+            raise urllib.error.HTTPError(url, 404, "moved", {}, None)          # older days sit in archive/
+        return f"domain\nNew-{day}.Example.\n\nnot a domain!\n".encode()
+
+    nrd = tmp_path / "nrd"
+    nrd.mkdir()
+    (nrd / "2026-09-01.txt").write_text("too-old.example\n")                 # older than 30 days: deleted
+    note = feeds.nrd_feed(tmp_path, fetch, today=date(2026, 10, 27))
+    names = sorted(p.name for p in nrd.glob("*.txt"))
+    assert len(names) == 29 and names[0] == "2026-09-27.txt" and names[-1] == "2026-10-26.txt"
+    assert "2026-10-20.txt" not in names and "2026-09-01.txt" not in names
+    assert (nrd / "2026-10-01.txt").read_text() == "new-2026-10-01.example\n"   # lower-cased, junk lines dropped
+    assert "29 days" in note and "1 not published" in note
+    assert any("/archive/2026-10-01" in u for u in asked)
+    asked.clear()
+    feeds.nrd_feed(tmp_path, fetch, today=date(2026, 10, 27))
+    assert [u.rsplit("/", 1)[1][:10] for u in asked] == ["2026-10-20", "2026-10-20"]   # only the missing day again
+    (nrd / "my-notes.txt").write_text("keep me\n")                         # not one of its own files: left alone
+    feeds.nrd_feed(tmp_path, fetch, today=date(2026, 11, 27))
+    assert (nrd / "my-notes.txt").exists() and not (nrd / "2026-10-01.txt").exists()
+
+
+def test_nrd_never_caches_an_empty_day_and_one_error_skips_only_that_day(tmp_path):
+    import urllib.error
+    from datetime import date
+
+    def fetch(url):
+        day = url.rsplit("/", 1)[1][:10]
+        if day == "2026-10-26":
+            return b"<html>rate limited</html>"                             # a 200 with no domain names in it
+        if day == "2026-10-25":
+            raise urllib.error.HTTPError(url, 503, "busy", {}, None)
+        return f"ok-{day}.example\n".encode()
+
+    note = feeds.nrd_feed(tmp_path, fetch, today=date(2026, 10, 27))
+    names = {p.name for p in (tmp_path / "nrd").iterdir()}
+    assert "2026-10-26.txt" not in names and "2026-10-25.txt" not in names and len(names) == 28
+    assert "1 not published" in note and "1 failed" in note

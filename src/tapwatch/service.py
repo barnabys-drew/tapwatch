@@ -45,6 +45,20 @@ WantedBy=default.target
 """
 
 
+FEEDS_TIMER = """[Unit]
+Description=Refresh tapwatch's public lists every day
+
+[Timer]
+OnCalendar=*-*-* 05:30
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+ONESHOTS = ("tapwatch-feeds.service",)   # started by their timer, never enabled on their own
+
+
 def units(home: str, zeek_dir: str, capture_iface: str | None = None, syslog: bool = False,
           python: str = sys.executable) -> dict[str, str]:
     home, zeek_dir = str(Path(home).resolve()), str(Path(zeek_dir).resolve())
@@ -64,6 +78,22 @@ def units(home: str, zeek_dir: str, capture_iface: str | None = None, syslog: bo
             f"{REPO}/eval/capture_mirror.sh {shlex.quote(zeek_dir)} 87600 {shlex.quote(capture_iface)}", home,
             restart="always",
             extra="ExecStartPre=-/usr/bin/docker rm -f tapwatch-mirror\nExecStopPost=-/usr/bin/docker rm -f tapwatch-mirror\n")
+    # The public lists, refreshed daily: the newly registered domains (#18) are one file a day and useless once
+    # stale, and the known-exploited list and the popular domains drift too. Before this, an install kept what it
+    # downloaded on the first day.
+    out["tapwatch-feeds.service"] = f"""[Unit]
+Description=tapwatch public lists (update-feeds)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={home}
+Environment=PYTHONPATH={CODE}
+# "-": one list host being down mustn't fail the unit (and a `restart 'tapwatch-*'` with it); the log says which
+ExecStart=-{tw} update-feeds
+Nice=10
+"""
+    out["tapwatch-feeds.timer"] = FEEDS_TIMER
     if syslog:
         out["tapwatch-syslog.service"] = _unit("tapwatch router syslog listener",
                                                f"{tw} syslog --out {shlex.quote(zeek_dir)}", home)
@@ -75,12 +105,12 @@ def install(unit_texts: dict[str, str], run=subprocess.run, unit_dir: Path = UNI
     for name, text in unit_texts.items():
         (unit_dir / name).write_text(text)
     run(["systemctl", "--user", "daemon-reload"], check=True)
-    run(["systemctl", "--user", "enable", "--now", *unit_texts], check=True)
+    run(["systemctl", "--user", "enable", "--now", *(n for n in unit_texts if n not in ONESHOTS)], check=True)
     return [str(unit_dir / n) for n in unit_texts]
 
 
 def uninstall(run=subprocess.run, unit_dir: Path = UNIT_DIR) -> list[str]:
-    names = sorted(p.name for p in unit_dir.glob("tapwatch-*.service"))
+    names = sorted(p.name for pattern in ("tapwatch-*.service", "tapwatch-*.timer") for p in unit_dir.glob(pattern))
     if names:
         run(["systemctl", "--user", "disable", "--now", *names], check=False)
         for n in names:

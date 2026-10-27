@@ -163,6 +163,8 @@ if [ ${#NEW_GROUPS[@]} -gt 0 ]; then
   if ask_no "Restart now?"; then sudo systemctl reboot; fi
   exit 0
 fi
-systemctl --user restart 'tapwatch-*.service'
+# The long-running units only: a glob would also start tapwatch-feeds (update-feeds, which just ran above).
+systemctl --user restart $(systemctl --user list-units 'tapwatch-*.service' --all --no-legend --plain \
+  | awk '$1 != "tapwatch-feeds.service" {print $1}')
 say "Checking the install"
 .venv/bin/tapwatch doctor --send || true
