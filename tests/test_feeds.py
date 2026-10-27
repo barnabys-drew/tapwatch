@@ -224,3 +224,24 @@ def test_nrd_keeps_a_rolling_30_days_and_finds_archived_days(tmp_path):
     asked.clear()
     feeds.nrd_feed(tmp_path, fetch, today=date(2026, 10, 27))
     assert [u.rsplit("/", 1)[1][:10] for u in asked] == ["2026-10-20", "2026-10-20"]   # only the missing day again
+    (nrd / "my-notes.txt").write_text("keep me\n")                         # not one of its own files: left alone
+    feeds.nrd_feed(tmp_path, fetch, today=date(2026, 11, 27))
+    assert (nrd / "my-notes.txt").exists() and not (nrd / "2026-10-01.txt").exists()
+
+
+def test_nrd_never_caches_an_empty_day_and_one_error_skips_only_that_day(tmp_path):
+    import urllib.error
+    from datetime import date
+
+    def fetch(url):
+        day = url.rsplit("/", 1)[1][:10]
+        if day == "2026-10-26":
+            return b"<html>rate limited</html>"                             # a 200 with no domain names in it
+        if day == "2026-10-25":
+            raise urllib.error.HTTPError(url, 503, "busy", {}, None)
+        return f"ok-{day}.example\n".encode()
+
+    note = feeds.nrd_feed(tmp_path, fetch, today=date(2026, 10, 27))
+    names = {p.name for p in (tmp_path / "nrd").iterdir()}
+    assert "2026-10-26.txt" not in names and "2026-10-25.txt" not in names and len(names) == 28
+    assert "1 not published" in note and "1 failed" in note

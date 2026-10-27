@@ -17,7 +17,7 @@ import time
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 from zoneinfo import ZoneInfo
@@ -1234,26 +1234,59 @@ def looks_random(name: str) -> bool:
 
 
 # Newly registered domains (#18, feeds.nrd_feed): registrable domain -> the day its list named it. A sample of the
-# day's registrations, so only a hit is a fact: a domain missing from it says nothing about its age.
+# day's registrations, so only a hit is a fact: a domain missing from it says nothing about its age. update-feeds
+# adds a day and drops the oldest each day while the alerter runs, so the folder is checked again every
+# NRD_RECHECK seconds and reloaded when it changed, and a day older than NRD_MAX_AGE never counts (review of #345).
 NEWLY_REGISTERED: dict[str, str] = {}
+NRD_RECHECK = 600
+NRD_MAX_AGE = 31          # days: the feed keeps 30, one more for the time zones
+_NRD = {"dir": None, "mtime": None, "checked": 0.0}
+_NRD_FILE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.txt$")
 
 
 def set_newly_registered(directory: str | None) -> int:
     """Load the daily lists in `directory` (YYYY-MM-DD.txt). Returns the number of domains (0: none loaded)."""
     NEWLY_REGISTERED.clear()
+    _NRD.update(dir=directory, mtime=None, checked=time.time())
     if not directory or not Path(directory).is_dir():
         return 0
-    for path in sorted(Path(directory).glob("*.txt"), reverse=True):   # newest first: the earliest day wins below
-        day = path.stem
+    d = Path(directory)
+    _NRD["mtime"] = d.stat().st_mtime
+    days = sorted(((m.group(1), p) for p in d.iterdir() if (m := _NRD_FILE.match(p.name))), reverse=True)
+    for day, path in days:   # newest first: the earliest day wins below
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if name := line.strip():
                 NEWLY_REGISTERED[name] = day
     return len(NEWLY_REGISTERED)
 
 
-def registered_on(name: str) -> str | None:
-    """The day a newly registered domain list named this host's registrable domain (or the name itself), or None."""
-    return NEWLY_REGISTERED.get(base_domain(name)) or NEWLY_REGISTERED.get(name.rstrip(".").lower())
+def _nrd_fresh(now: float) -> None:
+    """Reload the lists when update-feeds changed the folder since the last look."""
+    if not _NRD["dir"] or now - _NRD["checked"] < NRD_RECHECK:
+        return
+    _NRD["checked"] = now
+    try:
+        mtime = Path(_NRD["dir"]).stat().st_mtime
+    except OSError:
+        return
+    if mtime != _NRD["mtime"]:
+        set_newly_registered(_NRD["dir"])
+
+
+def registered_on(name: str, now: float | None = None) -> str | None:
+    """The day a newly registered domain list named this name's domain, or None. Every label suffix is tried, since
+    the list holds names under suffixes the ICANN list doesn't split (`v8club.eu.com`); a day too old is ignored."""
+    now = time.time() if now is None else now
+    _nrd_fresh(now)
+    if not NEWLY_REGISTERED:
+        return None
+    labels = name.rstrip(".").lower().split(".")
+    oldest = (datetime.fromtimestamp(now) - timedelta(days=NRD_MAX_AGE)).date().isoformat()
+    for i in range(len(labels) - 1):
+        day = NEWLY_REGISTERED.get(".".join(labels[i:]))
+        if day:
+            return day if day >= oldest else None
+    return None
 
 
 class NewExternalDomain(Detector):
@@ -1313,7 +1346,7 @@ class NewExternalDomain(Detector):
                              # numbered CDN hosts under widely used domains aren't DGA (home eval 2026-10-13:
                              # googlevideo, microsoftaik, cdn77 made 16 of 26 digest items)
                              "random": looks_random(name) and dom not in self.popular,
-                             "registered": registered_on(name),
+                             "registered": registered_on(name, rec["ts"]),
                              "others": others, "popular": dom in self.popular,
                              "category": cat, "category_source": cat_source})
         return out

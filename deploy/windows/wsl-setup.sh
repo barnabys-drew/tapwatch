@@ -108,7 +108,9 @@ app)
     say "Starting tapwatch's services"
     .venv/bin/tapwatch "${args[@]}"
     # `enable --now` leaves already-running units alone, so on a re-run (an update) they'd keep the old code.
-    systemctl --user restart 'tapwatch-*.service'
+    # The long-running units only: a glob would also start tapwatch-feeds (update-feeds, which just ran above).
+    systemctl --user restart $(systemctl --user list-units 'tapwatch-*.service' --all --no-legend --plain \
+      | awk '$1 != "tapwatch-feeds.service" {print $1}')
     ;;
 
 test-alert)

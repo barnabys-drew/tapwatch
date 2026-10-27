@@ -21,6 +21,7 @@ import hashlib
 import io
 import ipaddress
 import json
+import re
 import tarfile
 import urllib.error
 import urllib.request
@@ -69,12 +70,13 @@ UT1_CATEGORIES = {
 CATEGORIES_FILE = "categories.tsv"
 
 # Newly registered domains (#18): WhoisFreaks' free daily list on GitHub, 10,000 domains a day from about 300,000
-# registrations, gTLDs only, a day behind. A sample, so only a hit means anything: a domain not on it may still be
+# registrations, gTLDs only, a few days behind. A sample, so only a hit means anything: a domain not on it may still be
 # new. Each install downloads the files for itself (the repo carries no licence to redistribute them); nothing
 # about the house is sent. The newest days sit in the repo's root, older ones in archive/.
 NRD_URL = "https://raw.githubusercontent.com/WhoisFreaks/daily-newly-registered-domains/main/{}{}-free-newly-registered-domains.csv"
 NRD_DIR = "nrd"
 NRD_DAYS = 30          # R08 grades a domain registered in the last 30 days
+NRD_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}\.txt$")   # the only files nrd_feed writes, reads and deletes
 
 
 def _fetch(url: str, timeout: float = 120) -> bytes:
@@ -196,31 +198,41 @@ def nrd_feed(d: Path, fetch=_fetch, today: date | None = None) -> str:
     out.mkdir(parents=True, exist_ok=True)
     today = today or date.today()
     days = [today - timedelta(days=n) for n in range(1, NRD_DAYS + 1)]
-    fetched = missing = 0
+    fetched = missing = failed = 0
     for day in days:
         path = out / f"{day.isoformat()}.txt"
         if path.exists():
             continue
-        for folder in ("", "archive/"):
-            try:
-                names = _domains(fetch(NRD_URL.format(folder, day.isoformat())).decode("utf-8", "replace"))
-            except urllib.error.HTTPError as e:
-                if e.code == 404:
+        names: list[str] = []
+        try:
+            for folder in ("", "archive/"):
+                try:
+                    names = _domains(fetch(NRD_URL.format(folder, day.isoformat())).decode("utf-8", "replace"))
+                except urllib.error.HTTPError as e:
+                    if e.code != 404:
+                        raise
                     continue
-                raise
-            _write(path, ("\n".join(names) + "\n").encode())
-            fetched += 1
-            break
-        else:
+                break
+        except OSError:          # a 5xx, a rate limit, a timeout: this day waits for the next run, the rest go on
+            failed += 1
+            continue
+        if not names:            # not published yet, or a page that held no domain names: never cache an empty day
             missing += 1
+            continue
+        _write(path, ("\n".join(names) + "\n").encode())
+        fetched += 1
     keep = {f"{day.isoformat()}.txt" for day in days}
-    for old in out.glob("*.txt"):
-        if old.name not in keep:
+    for old in out.iterdir():
+        if NRD_NAME.match(old.name) and old.name not in keep:
             old.unlink()
-    have = sorted(out.glob("*.txt"))
-    total = sum(1 for p in have for _ in p.open())
+    have = sorted(p for p in out.iterdir() if NRD_NAME.match(p.name))
+    total = 0
+    for p in have:
+        with p.open() as fh:
+            total += sum(1 for _ in fh)
     return (f"ok, {len(have)} days, {total:,} domains ({fetched} fetched now"
-            + (f", {missing} not published" if missing else "") + ")")
+            + (f", {missing} not published" if missing else "") + (f", {failed} failed, retried next run" if failed else "")
+            + ")")
 
 
 def update(directory: str, fetch=_fetch, ecosystems: dict[str, set[str]] | None = None,

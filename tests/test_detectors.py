@@ -1847,24 +1847,45 @@ def test_a_newly_registered_domain_always_opens_a_case_at_severity_3(tmp_path):
     from tapwatch import detectors
     from tapwatch.summarizer import Assets, summarize
 
-    (tmp_path / "2026-10-25.txt").write_text("fresh-shop.example\n")
-    (tmp_path / "2026-10-20.txt").write_text("fresh-shop.example\nolder-new.example\n")
+    (tmp_path / "2026-09-18.txt").write_text("fresh-shop.example\n")      # T0 is 2026-09-21
+    (tmp_path / "2026-09-12.txt").write_text("fresh-shop.example\nolder-new.example\n")
+    (tmp_path / "notes.txt").write_text("not-a-day.example\n")              # not a day file: never read
     try:
         assert detectors.set_newly_registered(str(tmp_path)) == 2
-        assert detectors.registered_on("cdn.fresh-shop.example") == "2026-10-20"      # the earliest listing wins
+        assert detectors.registered_on("cdn.fresh-shop.example", T0) == "2026-09-12"   # the earliest listing wins
         popular = {"fresh-shop.example", "big.example"}   # even a name on the popular list counts as a hit
         det = NewExternalDomain(Warmup(0), popular=popular)
         recs = [dns(T0, "www.big.example"), dns(T0 + 5, "cdn.fresh-shop.example")]
         cases = run(det, recs) + det.flush()
         assert len(cases) == 1 and cases[0].base_severity == 3
         f = cases[0].facts
-        assert f["newly_registered"] == 1 and f["registered_since"] == "2026-10-20"
+        assert f["newly_registered"] == 1 and f["registered_since"] == "2026-09-12"
         assert cases[0].indicators[0] == "cdn.fresh-shop.example"                      # shown first
         text = summarize(cases[0], Assets())
-        assert "newly registered" in text and "2026-10-20" in text
+        assert "newly registered" in text and "2026-09-12" in text
         # a name missing from the list is never called old: the case is graded as before
         quiet = NewExternalDomain(Warmup(0), popular=popular)
         assert run(quiet, [dns(T0, "www.big.example")]) + quiet.flush() == []
     finally:
         detectors.set_newly_registered(None)
-    assert detectors.registered_on("cdn.fresh-shop.example") is None
+    assert detectors.registered_on("cdn.fresh-shop.example", T0) is None
+
+
+def test_newly_registered_list_reloads_expires_and_matches_private_suffixes(tmp_path):
+    import os
+
+    from tapwatch import detectors
+    (tmp_path / "2026-09-18.txt").write_text("v8club.eu.com\n")
+    try:
+        detectors.set_newly_registered(str(tmp_path))
+        assert detectors.registered_on("www.v8club.eu.com", T0) == "2026-09-18"   # under a suffix the PSL can't split
+        assert detectors.registered_on("eu.com", T0) is None
+        assert detectors.registered_on("www.v8club.eu.com", T0 + 40 * 86400) is None   # over a month on: not new
+        # update-feeds adds a day while the alerter runs: seen at the next check of the folder
+        (tmp_path / "2026-09-19.txt").write_text("brand-new.example\n")
+        os.utime(tmp_path, (T0 + 5, T0 + 5))
+        detectors._NRD["checked"] = T0                                             # looked at the folder just now
+        assert detectors.registered_on("brand-new.example", T0 + 60) is None       # not again until NRD_RECHECK
+        assert detectors.registered_on("brand-new.example", T0 + detectors.NRD_RECHECK + 1) == "2026-09-19"
+    finally:
+        detectors.set_newly_registered(None)

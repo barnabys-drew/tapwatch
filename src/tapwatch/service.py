@@ -89,7 +89,8 @@ After=network-online.target
 Type=oneshot
 WorkingDirectory={home}
 Environment=PYTHONPATH={CODE}
-ExecStart={tw} update-feeds
+# "-": one list host being down mustn't fail the unit (and a `restart 'tapwatch-*'` with it); the log says which
+ExecStart=-{tw} update-feeds
 Nice=10
 """
     out["tapwatch-feeds.timer"] = FEEDS_TIMER
