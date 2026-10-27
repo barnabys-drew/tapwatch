@@ -6,7 +6,7 @@ are built in `src/tapwatch/detectors.py`, and R08 is the code-routed `new_domain
 from these specs, and [ARCHITECTURE.md](../ARCHITECTURE.md) for how cases are routed. R17–R21, the
 first [endpoint rules](#endpoint-rules-r17r21-what-the-pc-itself-says-built-2026-10-15-hostrulespy), were
 designed and built 2026-10-15 in `src/tapwatch/hostrules.py` (issues #26, #27). The rest followed through v0.3
-(released 2026-10-25 as v0.3.0): R22 and R23–R29, R36–R39 and R48 are built. v0.4's long-horizon rules R30–R34
+(released 2026-10-25 as v0.3.0): R22 and R23–R29, R36–R39 and R48 are built, and R49–R51 (Windows protection, USB drives, updates) since. v0.4's long-horizon rules R30–R34
 are built too (`src/tapwatch/longhaul.py`, over the daily summaries). The [summary](#summary) lists every rule with
 its route._
 
@@ -1315,6 +1315,52 @@ listeners, all learned as the first run's inventory. R28 gains `lcmd_miner` (str
   run; a browser updated in memory before the day's snapshot (the next snapshot closes it). Windows itself and
   Office are not covered, and Edge is under-reported (#225).
 
+### R49 Antivirus or firewall off, or signatures out of date (`host_av_off`) — **built** 2026-10-27
+- **Threat:** protection switched off before ransomware or hands-on activity (T1562.001), or a PC that has quietly
+  been unprotected for weeks. R24 sees the commands that switch Defender off; this sees the result, whichever way
+  it happened.
+- **Data:** the Windows agent's hourly `security_products` snapshot (osquery `windows_security_products`, the
+  products Windows Security Center knows), and `security_center` for one thing: Security Center's own service. With
+  that service stopped the products list comes back empty, which would otherwise read as "nothing to judge".
+- **Logic (`hostrules.AntivirusOff`):** a problem is no antivirus on, an antivirus on with signatures out of date,
+  or no firewall on. A product that is off while another of its kind is on is normal (Defender steps aside for a
+  third-party antivirus), and a snapshot with no rows (Windows Server, an older agent) is no verdict.
+- **Route:** severity 3, the digest, repeated weekly per problem while it lasts. Severity 4, an alert, when a
+  problem other than stale signatures appears that the previous snapshot didn't have (switched off, even on a PC
+  that already had stale signatures). The problem is the indicator, so "no firewall on" can be suppressed alone, and
+  the judge's precedent is per problem. Code-only. Pairs with `ioc_match`, `ids_alert`, `udm_ips`, `takeover` and
+  `beaconing`. R48 doesn't raise it, and it doesn't back long-horizon cases (`hostrules.STANDING`, with R50, R51
+  and R48 itself): otherwise stale signatures on a PC with an unpatched browser would become a critical alert.
+- **Safe test:** `tapwatch selfcheck` (Defender on, then off an hour later). On a real PC, turning off real-time
+  protection in Windows Security for one check is enough; turn it back on.
+
+### R50 A USB drive the PC has never seen (`host_usb_new`) — **built** 2026-10-27
+- **Threat:** files walking out of a small office on a thumb drive, or malware walking in on one.
+- **Data:** the Windows agent's hourly `usb_storage` query, which reads the USBSTOR registry keys Windows keeps for
+  every USB storage device ever connected (osquery's `usb_devices` table doesn't exist on Windows). It's
+  differential, so an `added` row is a key not seen before.
+- **Logic (`hostrules.NewUsbDrive`):** osquery's first run of the query (a new config, or its database reset)
+  lists every drive already known as `added` rows with counter 0. Those are learned, as R23 learns a first-run
+  inventory, and never reported. The learned set survives restarts. After that, each new key is one case, with the
+  vendor, product and serial as Windows recorded them.
+- **Route:** severity 2, the digest (a new drive is usually just that). The indicator is the model and its serial,
+  so suppressing a known office drive suppresses that drive, not every stick of its model; a drive names itself.
+  Code-only; pairs with nothing.
+- **Blind spot:** phones and cameras (MTP devices) aren't USB storage, so they never appear here.
+
+### R51 Windows Update falling behind (`host_patch`) — **built** 2026-10-27
+- **Threat:** a PC that stopped taking fixes. Unpatched Windows is how most small offices get broken into; R48
+  names known-exploited third-party software, and this covers Windows itself.
+- **Data:** the Windows agent's daily `windows_update` snapshot: when an update last installed (Defender signature
+  updates, platform updates and the removal tool excluded), failed installs in 30 days and the newest failure, and
+  whether a restart is waiting. osquery has no table of updates still to install, so "pending updates" can't be
+  listed.
+- **Logic (`hostrules.WindowsUpdateBehind`):** a problem is no update installed in 35 days, a restart waiting for
+  7 days (counted from the first snapshot that showed it), or 3 or more failed installs in 30 days with nothing
+  installed since the newest failure. No update history at all is no verdict.
+- **Route:** severity 2, the digest, weekly per problem while it lasts; the problem is the indicator. Code-only;
+  pairs with nothing.
+
 ### Host ↔ network correlation (built 2026-10-17)
 - **Idea:** a host case (R17–R23, what the PC's own agent saw) and a network case (what the wire saw) on the
   same device within five minutes are one story: `certutil` fetched something and a new domain was contacted;
@@ -1403,6 +1449,9 @@ VirusTotal) dropped out. What remains is browsing, which logs only.
 | — | R38 Files staged or sent somewhere new (built) | command-line signals, destination | digest, alert when paired with an upload | code-only |
 | — | R39 A persistence or credential file changes (built) | osquery file_events, Sysmon event 11 | digest; alert for severity 4 since v0.3 | code-only |
 | — | R48 Known-exploited vulnerability in installed software (built) | agents' software snapshots + KEV/OSV/NVD | digest; raises the device's other digest-level cases | code-only |
+| — | R49 Antivirus or firewall off, signatures stale (built) | `security_products` snapshot | digest; alert when switched off | code-only |
+| — | R50 A USB drive the PC has never seen (built) | `usb_storage` (USBSTOR registry) | digest | code-only |
+| — | R51 Windows Update falling behind (built) | `windows_update` snapshot | digest | code-only |
 
 ## Host context: owner's agent, agent misused, or attacker (built)
 

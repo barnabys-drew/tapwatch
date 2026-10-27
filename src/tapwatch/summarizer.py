@@ -361,6 +361,8 @@ def _endpoint(c: Case) -> str:
     f = c.facts
     if c.detector == "vuln_kev":
         return _vuln_kev(f)
+    if c.detector in ("host_av_off", "host_usb_new", "host_patch"):
+        return _baseline(c.detector, f)
     prog = _program(f.get("program", ""))
     port = f" on port {f['port']}" if f.get("port") else ""
     started_by = (f" It was started by {_program(f['parent'])}, {PARENT_WORDS.get(f.get('parent_class'), 'another program')}."
@@ -500,6 +502,40 @@ def _endpoint(c: Case) -> str:
                 "a reboot; installers and updaters do too, which is why only scripts, shells and user folders are "
                 "reported.")
     return c.title + "."
+
+
+def _baseline(detector: str, f: dict) -> str:
+    """R49-R51: the PC's protection and patch state from its own agent. Product and drive names come from the PC
+    (a USB drive names itself), so they are quoted as untrusted."""
+    if detector == "host_av_off":
+        what = {"no antivirus on": "no antivirus is switched on", "no firewall on": "no firewall is switched on",
+                "antivirus signatures out of date": "the antivirus is on but its signatures are out of date"}
+        said = "; ".join(what.get(p, p) for p in f.get("problems") or ()) or "its protection is off"
+        products = ", ".join(f"{_program(p['name'])} ({p['state'].lower()})" for p in f.get("products") or () if p.get("name"))
+        start = ("On the PC itself, protection that was on in the agent's previous check is now off: " if f.get("switched_off")
+                 else "On the PC itself, Windows Security Center reports that ")
+        tail = (" Switching protection off is how ransomware and most hands-on attackers begin; if nobody here did it on "
+                "purpose, treat it as urgent." if f.get("switched_off")
+                else " Without it, malware that arrives by email or download runs unchecked. Turn it back on in Windows "
+                "Security, or update its signatures there.")
+        return f"{start}{said}.{' Products: ' + products + '.' if products else ''}{tail}"
+    if detector == "host_usb_new":
+        made = " ".join(x for x in (f.get("vendor"), f.get("product")) if x)
+        return (f"On the PC itself, a USB drive this computer had never seen was plugged in: {_program(f.get('drive'))}"
+                f"{' (' + _program(made) + ')' if made else ''}. Drives are how files walk out of an office and still a "
+                "way malware walks in. If it's a drive someone here owns, close the case and suppress it.")
+    if detector == "host_patch":
+        parts = []
+        if "no update installed" in (f.get("problems") or ()):
+            parts.append(f"no Windows update has installed in {f.get('days_since_update')} days")
+        if "restart waiting" in (f.get("problems") or ()):
+            parts.append(f"a restart to finish an update has waited {f.get('restart_waiting_days')} days")
+        if "updates failing" in (f.get("problems") or ()):
+            parts.append(f"{f.get('failed_30d')} update installs failed in the last 30 days")
+        return (f"On the PC itself, Windows Update is falling behind: {'; '.join(parts) or 'updates are not installing'}. "
+                "Unpatched Windows is how most small offices get broken into. Restart the PC, then open Windows Update "
+                "and let it finish.")
+    return ""
 
 
 def _vuln_kev(f: dict) -> str:
