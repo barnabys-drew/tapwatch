@@ -24,12 +24,12 @@ flowchart LR
 **[v0.3.0](https://github.com/barnabys-drew/tapwatch/releases/tag/v0.3.0)** is the current release (2026-10-25), the first made by
 the release workflow and the first an install can move to with `tapwatch update`;
 tapwatch has been running on a real home network since v0.1.0 shipped. It watches a mirror port with Zeek, runs
-22 network and 17 host case types from plain-code detectors (44 on `main`, with v0.4's five long-horizon rules), and asks a small AI model (Jev) for triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
+22 network and 17 host case types from plain-code detectors (47 on `main`, with v0.4's five long-horizon rules and R49–R51, the Windows protection, USB and update rules), and asks a small AI model (Jev) for triage. Code-proven facts can floor or cap that triage. Alerts go to a phone, a daily digest catches
 the rest, and a no-JavaScript case desk handles the workflow. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Area | State |
 |---|---|
-| Network detection | **Solid.** 22 network case types, baselines that survive restarts, a scripted self-check at 32/32 in CI. [Eval](../eval/RESULTS.md), re-run 2026-10-15: 2/7 infected hosts alerted with Jev vs 1/7 rules-only; a home night gave 10 items to read and 1–2 false alerts |
+| Network detection | **Solid.** 22 network case types, baselines that survive restarts, a scripted self-check at 35/35 in CI. [Eval](../eval/RESULTS.md), re-run 2026-10-15: 2/7 infected hosts alerted with Jev vs 1/7 rules-only; a home night gave 10 items to read and 1–2 false alerts |
 | AI triage | **Solid.** Guardrails measured; cost is well under a cent a day at home volumes |
 | Linux install | **Solid.** `docker compose up`, verified end to end on a live interface. Zeek runs from a patched 9.0 LTS image as the user, not root ([#252](https://github.com/barnabys-drew/tapwatch/pull/252)). A native host install for Arch-based desktops (Omarchy, [#267](https://github.com/barnabys-drew/tapwatch/pull/267)) is on hold: the live sensor runs on Windows |
 | Windows install | **Passed on a clean machine.** The one-step installer went from the ZIP to a test alert on a fresh Windows 11 VM (v0.2.5, [#175](https://github.com/barnabys-drew/tapwatch/issues/175)), and `tapwatch doctor` names what's wrong. On 2026-10-24 it moved a running sensor to a new mini PC, cases and baselines included (`import-state`, [#272](https://github.com/barnabys-drew/tapwatch/pull/272)). The first outside install is next |

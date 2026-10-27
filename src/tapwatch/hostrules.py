@@ -92,7 +92,8 @@ SHARED_DIRS = ("/users/public/", "/$recycle.bin/", "c:/perflogs/")  # writable b
 
 NAMES = ("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
          "host_destructive", "host_recon", "host_extension", "host_linux_connect", "host_linux_cmd",
-         "host_lsass", "host_rmm", "host_tunnel", "host_staging", "host_fim", "vuln_kev")
+         "host_lsass", "host_rmm", "host_tunnel", "host_staging", "host_fim", "host_av_off", "host_usb_new",
+         "host_patch", "vuln_kev")
 FIM = "file_changes"   # R39: the Linux agent's inotify query over the file_paths in osquery.conf
 # Queries whose every row is one event (a process start, a connection, a file change). The same row read twice is
 # the same event read twice: a log replayed after the follower took a drvfs rewrite for a rotation, or re-read
@@ -1515,6 +1516,212 @@ class FileChanged(HostDetector):
 # the router's IPS) are rare and strong, so they pair.
 CONTACT = frozenset({"new_domain", "beaconing", "dns_anomaly", "tls_odd", "takeover", "ioc_match", "upload_spike",
                      "odd_port", "ids_alert", "udm_ips"})
+class _SnapshotRule(HostDetector):
+    """A rule over one whole snapshot of a query (`judge(rows, ts)`), rather than row by row. (Not `snapshot`:
+    that is Detector's saved state.)"""
+
+    SNAPSHOT_QUERY = ""
+
+    def feed(self, rec: dict) -> list[Case]:
+        out = super().feed(rec)   # QUERIES is empty: this keeps the PC's address current, nothing more
+        if rec.get("_type") == OSQUERY and rec.get("name") == self.SNAPSHOT_QUERY and rec.get("action") == "snapshot":
+            rows = [r for r in rec.get("snapshot") or () if isinstance(r, dict)]
+            out += self.judge(rows, float(rec.get("ts") or 0))
+        return out
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:   # pragma: no cover - QUERIES is empty
+        return []
+
+    def judge(self, rows: list[dict], ts: float) -> list[Case]:  # pragma: no cover - interface
+        raise NotImplementedError
+
+
+class AntivirusOff(_SnapshotRule):
+    """R49. Windows Security Center says no antivirus is on, an antivirus's signatures are out of date, or no firewall
+    is on (the agent's hourly `security_products` snapshot, windows_security_products), or Security Center itself
+    isn't running (`security_center`: with its service stopped the products list comes back empty, which would
+    otherwise read as "nothing to judge").
+
+    A product that is off while another of its kind is on is normal (Defender switches itself off when a third-party
+    antivirus registers), so only "none of its kind on" counts. A products snapshot with no rows is a Windows Server or
+    an agent too old to read the table: nothing to judge. Severity 3, the digest, repeated weekly per problem while it
+    lasts; 4, an alert, when protection switched off since the previous snapshot (a problem other than stale
+    signatures that the previous snapshot didn't have), since that is how ransomware and most hands-on attackers start
+    (R24 sees the commands that do it, this sees the result whichever way it happened). The indicator is the problem
+    ("no firewall on"), so an owner who runs without one on purpose suppresses that and nothing else."""
+
+    name = "host_av_off"
+    SNAPSHOT_QUERY = "security_products"
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "seen", "previous")
+    STALE = "antivirus signatures out of date"
+    CENTER_DOWN = "Windows Security Center not running"
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7):
+        super().__init__(state, reported_days)
+        self.previous: list[str] | None = None   # the previous products snapshot's problems on this PC
+
+    def feed(self, rec: dict) -> list[Case]:
+        out = super().feed(rec)
+        if rec.get("_type") == OSQUERY and rec.get("name") == "security_center" and rec.get("action") == "snapshot":
+            rows = [r for r in rec.get("snapshot") or () if isinstance(r, dict)]
+            if rows and str(rows[0].get("windows_security_center_service") or "").lower() not in ("good", ""):
+                out += self._report([self.CENTER_DOWN], [], [], float(rec.get("ts") or 0), switched_off=False)
+        return out
+
+    def judge(self, rows: list[dict], ts: float) -> list[Case]:
+        if not rows:
+            return []
+        def kind(t):
+            return [r for r in rows if str(r.get("type") or "").lower() == t]
+        def on(r):
+            return str(r.get("state") or "").lower() == "on"
+        av, fw = kind("antivirus"), kind("firewall")
+        problems = []
+        if av and not any(on(r) for r in av):
+            problems.append("no antivirus on")
+        stale = [str(r.get("name") or "an antivirus") for r in av if on(r) and str(r.get("signatures_up_to_date")) != "1"]
+        if stale:
+            problems.append(self.STALE)
+        if fw and not any(on(r) for r in fw):
+            problems.append("no firewall on")
+        previous, self.previous = self.previous, problems
+        switched = previous is not None and any(p != self.STALE and p not in previous for p in problems)
+        products = [{"name": str(r.get("name") or "")[:80], "type": str(r.get("type") or "")[:20],
+                     "state": str(r.get("state") or "")[:20],
+                     "signatures_current": str(r.get("signatures_up_to_date")) == "1"} for r in rows][:6]
+        return self._report(problems, products, stale, ts, switched_off=switched)
+
+    def _report(self, problems: list[str], products: list, stale: list, ts: float, switched_off: bool) -> list[Case]:
+        if not problems:
+            return []
+        # weekly per problem: a second problem joining a known one is news, the known one isn't
+        fresh = [p for p in problems if not still_reported(self.reported, (p,), ts, self.ttl)]
+        if not fresh and not switched_off:
+            return []
+        for p in problems:
+            self.reported[(p,)] = ts
+        title = "Antivirus signatures out of date on the PC" if problems == [self.STALE] \
+            else "Windows Security Center not running on the PC" if problems == [self.CENTER_DOWN] \
+            else "Antivirus or firewall off on the PC"
+        return self.emit(ts, title, {"problems": problems, "products": products, "stale": stale[:3],
+                                     "switched_off": switched_off},
+                         4 if switched_off else 3, "; ".join(problems), ("r49", ts))
+
+
+class NewUsbDrive(HostDetector):
+    """R50. A USB storage device this PC has never seen is plugged in (the agent's hourly `usb_storage` query over the
+    USBSTOR registry keys, which Windows keeps for every drive ever connected; a new key is a new drive). The way data
+    walks out of a small office, and still a way malware walks in.
+
+    osquery's first run of the query (a new config, or its database reset) lists every drive already known as
+    `added` rows with counter 0: those are learned, as R23 learns a first-run inventory, never reported. After that
+    each new drive is one case at severity 2, the digest (a new thumb drive is usually just that), with its vendor,
+    product and serial as Windows recorded them. The indicator is the model and its serial, so suppressing a known
+    office drive suppresses that drive, not every stick of its model (a drive names itself, so the name alone is
+    the attacker's to choose)."""
+
+    name = "host_usb_new"
+    QUERIES: ClassVar[tuple[str, ...]] = ("usb_storage",)
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "seen", "known")
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7):
+        super().__init__(state, reported_days)
+        self.known: dict[str, float] = {}   # USBSTOR key -> when it was first seen
+
+    def feed(self, rec: dict) -> list[Case]:
+        if rec.get("_type") == OSQUERY and rec.get("name") in self.QUERIES and rec.get("action") == "added" \
+                and str(rec.get("counter", "")) == "0":
+            key = str((rec.get("columns") or {}).get("key") or "")
+            if key:
+                self._learn(key, float(rec.get("ts") or 0))
+            return super().feed(dict(rec, name="_learned"))   # keeps the PC's address current, judges nothing
+        return super().feed(rec)
+
+    def _learn(self, key: str, ts: float) -> None:
+        self.known.setdefault(key, ts)
+        if len(self.known) > KNOWN_MAX:   # the newest half stay
+            self.known = dict(sorted(self.known.items(), key=lambda kv: kv[1])[-KNOWN_MAX // 2:])
+
+    def row(self, query: str, c: dict, ts: float) -> list[Case]:
+        key = str(c.get("key") or "")
+        if not key or key in self.known:
+            return []
+        self._learn(key, ts)
+        parts = key.replace("/", "\\").split("\\")
+        model = parts[-2] if len(parts) >= 2 else ""
+        fields = dict(p.split("_", 1) for p in model.split("&") if "_" in p)
+        serial = (parts[-1] if parts else "").removesuffix("&0")[:60]
+        name = str(c.get("friendly_name") or "").strip() or "a USB drive"
+        vendor, product = fields.get("Ven", "")[:40], fields.get("Prod", "")[:60]
+        facts = {"drive": name[:80], "vendor": vendor or None, "product": product or None, "serial": serial or None}
+        indicator = f"{(vendor + ' ' + product).strip() or name[:60]} [{serial}]"
+        return self.emit(ts, "New USB drive plugged into the PC", facts, 2, indicator[:120], (key,))
+
+
+PATCH_DAYS = 35         # days without an installed update before it's a case (Windows ships monthly, plus slack)
+REBOOT_DAYS = 7         # days a restart can wait for an update before it's a case
+FAILED_MIN = 3          # failed update installs in 30 days
+
+
+class WindowsUpdateBehind(_SnapshotRule):
+    """R51. Windows Update is falling behind on the PC (the agent's daily `windows_update` snapshot): no update has
+    installed in PATCH_DAYS days, a restart for an installed update has waited REBOOT_DAYS days (seen by this rule;
+    osquery can't say since when), or FAILED_MIN or more installs failed in the last 30 days with nothing installed
+    since. Defender's signature and platform updates and the removal tool don't count as updates. Unpatched Windows is how most small offices get breached, and R48 names the
+    known-exploited software; this says the machine stopped taking fixes. Severity 2, the digest, weekly per
+    problem while it lasts; the indicator is the problem, so the judge's precedent and a suppression are per problem."""
+
+    name = "host_patch"
+    SNAPSHOT_QUERY = "windows_update"
+    PERSIST: ClassVar[tuple[str, ...]] = ("reported", "seen", "reboot_since")
+
+    def __init__(self, state: EndpointState | None = None, reported_days: float = 7):
+        super().__init__(state, reported_days)
+        self.reboot_since: float | None = None
+
+    def judge(self, rows: list[dict], ts: float) -> list[Case]:
+        if not rows:
+            return []
+        r = rows[0]
+        def num(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        last, failed, reboot = num(r.get("last_installed")), num(r.get("failed_30d")) or 0, num(r.get("reboot_pending"))
+        last_failed = num(r.get("last_failed"))
+        if reboot:
+            self.reboot_since = self.reboot_since or ts
+        else:
+            self.reboot_since = None
+        problems, facts = [], {"failed_30d": int(failed)}
+        if last:
+            days = (ts - last) / DAY
+            facts["days_since_update"] = int(days)
+            if days >= PATCH_DAYS:
+                problems.append("no update installed")
+        if self.reboot_since and ts - self.reboot_since >= REBOOT_DAYS * DAY:
+            problems.append("restart waiting")
+            facts["restart_waiting_days"] = int((ts - self.reboot_since) / DAY)
+        # failing only while nothing has installed since the newest failure (an agent from before `last_failed`
+        # existed sends none: counted then, as before)
+        if failed >= FAILED_MIN and not (last and last_failed and last > last_failed):
+            problems.append("updates failing")
+        fresh = [p for p in problems if not still_reported(self.reported, (p,), ts, self.ttl)]
+        if not fresh:
+            return []
+        for p in problems:   # weekly per problem: a second one joining is news, the known one isn't
+            self.reported[(p,)] = ts
+        return self.emit(ts, "Windows Update is falling behind on the PC", {"problems": problems, **facts}, 2,
+                         "; ".join(problems), ("r51", ts))
+
+
+# States of a PC rather than events on it, and a drive with no network side: R48 doesn't raise them (#227 raises a
+# device's other cases; a stale-signatures digest item would become an alert), and they don't back a long-horizon case
+# (longhaul.backers: a weekly patch reminder would back every one on that PC). Review of #349.
+STANDING = frozenset({"vuln_kev", "host_av_off", "host_usb_new", "host_patch"})
+
+
 PAIRS: dict[str, frozenset[str]] = {
     **dict.fromkeys(("host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig",
                      "host_linux_connect", "host_linux_cmd"), CONTACT),
@@ -1529,6 +1736,10 @@ PAIRS: dict[str, frozenset[str]] = {
     "host_tunnel": frozenset({"takeover", "ids_alert", "udm_ips", "exposure"}),
     "host_staging": frozenset({"upload_spike", "takeover", "ids_alert", "udm_ips"}),  # the upload, or file-drop sites
     "host_fim": frozenset(),                                 # a file change has no network side
+    # protection switched off next to a known-bad destination or a signature hit is one story
+    "host_av_off": frozenset({"ioc_match", "ids_alert", "udm_ips", "takeover", "beaconing"}),
+    "host_usb_new": frozenset(),                             # a drive has no network side
+    "host_patch": frozenset(),                               # a state of the PC, not an event
     # R48 is a daily inventory fact, not an event; #227 (vulnkev.DeviceKev) raises the device's other cases instead
     "vuln_kev": frozenset(),
 }
@@ -1583,6 +1794,9 @@ def rules_for(cfg: dict, state: EndpointState, warmup: Warmup | None = None) -> 
     rules.append(TunnelOpened(state, **d.get(TunnelOpened.name, {})))
     rules.append(FilesStaged(state, **d.get(FilesStaged.name, {})))
     rules.append(FileChanged(state, **d.get(FileChanged.name, {})))
+    rules.append(AntivirusOff(state, **d.get(AntivirusOff.name, {})))
+    rules.append(NewUsbDrive(state, **d.get(NewUsbDrive.name, {})))
+    rules.append(WindowsUpdateBehind(state, **d.get(WindowsUpdateBehind.name, {})))
     if (d.get(vulnkev.NAME) or {}).get("enabled", True):
         # `_vuln_index`: an in-memory index (selfcheck's fixture) instead of the feeds directory
         opts = {k: v for k, v in (d.get(vulnkev.NAME) or {}).items() if k != "enabled"}

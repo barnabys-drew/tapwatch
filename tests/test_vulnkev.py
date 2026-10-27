@@ -1,5 +1,7 @@
 """R48 vuln_kev (#226) and its effect on the device's other cases (#227), on fixture inventories and feeds."""
 
+from pathlib import Path
+
 import pytest
 from conftest import T0
 
@@ -200,3 +202,26 @@ def test_benchmark_what_if_counts_only_rules_routed_cases_that_move(tmp_path):
     k = benchmark.kev_what_if(store.db)
     assert (k["cases"], k["rules_routed"], k["up"], k["maybe"]) == (6, 5, 1, 1)
     assert "1 of 6 cases would have routed one step louder" in benchmark.markdown(store.db)
+
+
+def test_349_standing_rules_are_not_raised_by_an_open_r48_case():
+    """A stale-signatures digest item (R49, severity 3) must not become a critical alert because the PC also has an
+    unpatched browser: R49-R51 describe the PC's state, the same story R48 tells (review of #349)."""
+    from tapwatch.hostrules import STANDING
+    store = Store(":memory:")
+    p = Pipeline([VulnKev(EndpointState(PC), index=index())], Assets(), store)
+    p.process(snap("os_version", [WIN]))
+    p.process(chrome("150.0"))
+    dk = DeviceKev(store)
+    for name in sorted(STANDING - {NAME}):
+        case = other_case(detector=name, severity=3)
+        dk.apply(case)
+        assert case.base_severity == 3, name
+    usual = other_case(severity=3)
+    assert dk.apply(usual) and usual.base_severity == 4                        # other host rules still rise
+
+
+def test_349_standing_rules_do_not_back_a_long_horizon_case():
+    from tapwatch import hostrules, longhaul
+    assert {"host_av_off", "host_usb_new", "host_patch", "vuln_kev"} == hostrules.STANDING
+    assert "hostrules.STANDING" in Path(longhaul.__file__).read_text()

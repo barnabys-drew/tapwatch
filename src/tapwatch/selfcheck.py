@@ -110,6 +110,30 @@ def _extension():
                         version="1.0", permissions="storage, debugger"), tick(T0 + 130)]
 
 
+def _agent_snapshot(name, ts, rows):
+    return {"_type": "osquery", "_log": WIN, "name": name, "unixTime": int(ts), "ts": ts, "action": "snapshot",
+            "snapshot": rows}
+
+
+def _protection_off():
+    """R49: Defender and the firewall on, then an hour later Defender off."""
+    def products(av_state):
+        return [{"name": "Microsoft Defender Antivirus", "type": "Antivirus", "state": av_state, "signatures_up_to_date": "1"},
+                {"name": "Windows Firewall", "type": "Firewall", "state": "On", "signatures_up_to_date": "1"}]
+    return [_agent_snapshot("security_products", T0, products("On")),
+            _agent_snapshot("security_products", T0 + 3600, products("Off"))]
+
+
+def _new_usb():
+    """R50: the first run lists two known drives, and three days later a new one appears."""
+    def drive(ts, serial, name):
+        return {"_type": "osquery", "_log": WIN, "name": "usb_storage", "unixTime": int(ts), "ts": ts, "action": "added",
+                "counter": "0" if ts == T0 or ts == T0 + 1 else "3", "columns": {"key": "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\USBSTOR\\"
+                                   f"Disk&Ven_Example&Prod_Stick&Rev_1.00\\{serial}&0", "friendly_name": name}}
+    return [drive(T0, "OLD1", "Example Stick USB Device"), drive(T0 + 1, "OLD2", "Example Stick USB Device"),
+            drive(T0 + 3 * 86400, "NEW9", "Example Stick USB Device")]
+
+
 def _inventory(chrome_version):
     """R48 (#226): the Windows agent's daily software snapshot after its os_version, with a Chrome build. The vuln
     data is the fixture below (no download): one KEV-listed Chrome bug fixed in 152."""
@@ -280,6 +304,11 @@ SCENARIOS: list[Scenario] = [
     Scenario("R48 a browser build with a known-exploited bug (digest: patching, not an incident)",
              _inventory("150.0.7000.1"), "vuln_kev", Route.DIGEST, config=VULN_FIXTURE),
     Scenario("quiet: R48 the same browser, patched", _inventory("155.0.8059.85"), "vuln_kev", None, config=VULN_FIXTURE),
+    Scenario("R49 Defender switched off between two hourly checks", _protection_off(), "host_av_off", Route.ALERT),
+    Scenario("R50 a USB drive the PC has never seen (digest)", _new_usb(), "host_usb_new", Route.DIGEST),
+    Scenario("R51 no Windows update in 40 days (digest)",
+             [_agent_snapshot("windows_update", T0, [{"last_installed": str(int(T0 - 40 * 86400)), "failed_30d": "0",
+                                                      "reboot_pending": "0"}])], "host_patch", Route.DIGEST),
     Scenario("R22 the Zeek conn feed stops for 21 minutes", [conn(T0)] + [tick(T0 + 60 * i) for i in range(1, 22)],
              "feed_silence", Route.ALERT, config={"detectors": {"feed_silence": {"enabled": True}}}),
     Scenario("quiet: a 15-minute UDP voice call split into minute records (#63)", _video_call(), "beaconing", None),

@@ -373,7 +373,7 @@ def backers(recent: list[Recent], device, ips: list[str], dest, asn: int | None,
             why = "a threat-list hit"
         elif r.route not in ("digest", "alert"):
             continue
-        elif r.detector in hostrules.NAMES and r.detector != "vuln_kev":
+        elif r.detector in hostrules.NAMES and r.detector not in hostrules.STANDING:
             # digest or louder only: on the dev PC a logged host case (the owner's agent work) comes every few hours
             why = "a case from the PC's own agent"
         elif wanted & (r.names | r.addrs):
