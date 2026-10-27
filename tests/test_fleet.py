@@ -110,3 +110,8 @@ def test_the_fleet_spec_is_generated_from_osquery_conf():
     by = {r["spec"]["name"]: r["spec"] for r in reports}
     assert by["sysmon_events"]["platform"] == "windows" and by["crontab"]["platform"] == "darwin,linux"
     assert by["host_addresses"]["logging"] == "snapshot" and by["listening_ports"]["logging"] == "differential"
+    # the Windows baseline a small office asks about: Defender, USB drives, Windows Update (checked live on 26H2)
+    for name, logging in (("security_products", "snapshot"), ("security_center", "snapshot"),
+                          ("usb_storage", "differential"), ("windows_update", "snapshot")):
+        assert by[name]["platform"] == "windows" and by[name]["logging"] == logging, name
+    assert "USBSTOR" in by["usb_storage"]["query"] and "RebootRequired" in by["windows_update"]["query"]
