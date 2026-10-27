@@ -39,7 +39,7 @@ CODE_ONLY = {"new_domain",
              "host_encoded_cmd", "host_app_shell", "host_temp_exec", "host_lolbin", "host_bad_sig", "host_persist",
              "host_destructive", "host_recon", "host_extension", "host_linux_connect",
              "host_linux_cmd", "host_lsass", "host_rmm",
-             "host_tunnel", "host_staging", "host_fim",
+             "host_tunnel", "host_staging", "host_fim", "host_av_off", "host_usb_new", "host_patch",
              # R48: whether a version is inside a known-exploited range is a fact from the feeds, never a judgement.
              "vuln_kev",
              # R30-R34 (longhaul.py): weeks of timing, byte counts, prevalence and score distributions are arithmetic,

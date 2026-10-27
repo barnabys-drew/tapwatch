@@ -1356,3 +1356,100 @@ def test_the_rekey_dry_run_lists_every_case_and_writes_nothing(tmp_path, capsys)
     assert f"#{lone} left on the address (endpoint cases within 60 min: none)" in out
     assert "1 case(s) to move to 1 device(s); 1 left on the address" in out and "applied" not in out
     assert "device_name" not in json.loads(Store(str(tmp_path / "t.db")).get(cid)["facts"])
+
+
+# R49-R51: the Windows baseline queries (agents/config/osquery.conf, #347)
+
+def snap(name, t, *rows):
+    return {"_type": "osquery", "name": name, "action": "snapshot", "unixTime": int(t), "ts": int(t),
+            "snapshot": list(rows)}
+
+
+def product(name, kind, state="On", current="1"):
+    return {"name": name, "type": kind, "state": state, "signatures_up_to_date": current}
+
+
+DEFENDER, FIREWALL = "Microsoft Defender Antivirus", "Windows Firewall"
+
+
+def test_r49_protection_off_is_a_digest_item_and_switched_off_is_an_alert():
+    from tapwatch.hostrules import AntivirusOff
+    det = AntivirusOff(st())
+    ok = snap("security_products", T0, product(DEFENDER, "Antivirus"), product(FIREWALL, "Firewall"))
+    assert run(det, ok) == []
+    (c,) = run(det, snap("security_products", T0 + 3600, product(DEFENDER, "Antivirus", "Off"),
+                         product(FIREWALL, "Firewall")))
+    assert c.base_severity == 4 and c.facts["switched_off"] and c.facts["problems"] == ["no antivirus on"]
+    assert route(c, None)[0] is Route.ALERT and c.host == PC
+    text = summarize(c, Assets())
+    assert "previous check" in text and "Microsoft Defender Antivirus" in text
+    # the same state an hour later: reported once a week, not every snapshot
+    assert run(det, snap("security_products", T0 + 7200, product(DEFENDER, "Antivirus", "Off"),
+                         product(FIREWALL, "Firewall"))) == []
+    # a new PC that starts out with stale signatures: a digest item, never an alert
+    fresh = AntivirusOff(st())
+    (s,) = run(fresh, snap("security_products", T0, product(DEFENDER, "Antivirus", current="0"), product(FIREWALL, "Firewall")))
+    assert s.base_severity == 3 and s.title == "Antivirus signatures out of date on the PC"
+    assert route(s, None)[0] is Route.DIGEST
+
+
+def test_r49_a_third_party_antivirus_covers_defender_and_servers_are_skipped():
+    from tapwatch.hostrules import AntivirusOff
+    det = AntivirusOff(st())
+    third = snap("security_products", T0, product(DEFENDER, "Antivirus", "Off"), product("Bitdefender", "Antivirus"),
+                 product(FIREWALL, "Firewall"))
+    assert run(det, third) == []                                  # Defender steps aside for another antivirus
+    assert run(det, snap("security_products", T0 + 3600)) == []   # no rows: a server, or an older agent
+    (fw,) = run(det, snap("security_products", T0 + 7200, product("Bitdefender", "Antivirus"),
+                          product(FIREWALL, "Firewall", "Off")))
+    assert fw.facts["problems"] == ["no firewall on"] and fw.base_severity == 4   # was protected an hour before
+
+
+def usb(t, key, name, action="added"):
+    return {"_type": "osquery", "name": "usb_storage", "action": action, "unixTime": int(t), "ts": int(t),
+            "columns": {"key": key, "friendly_name": name}}
+
+
+USBSTOR = "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Enum\\USBSTOR\\"
+
+
+def test_r50_drives_known_at_the_first_run_are_learned_and_a_new_one_is_a_digest_item():
+    from tapwatch.hostrules import NewUsbDrive
+    det = NewUsbDrive(st())
+    first = [usb(T0, USBSTOR + f"Disk&Ven_Old&Prod_Stick{i}&Rev_1.00\\SER{i}&0", f"Old Stick {i}") for i in range(4)]
+    assert run(det, *first) == []
+    (c,) = run(det, usb(T0 + 3 * 86400, USBSTOR + "Disk&Ven_Kingston&Prod_DataTraveler_3.0&Rev_0000\\E0D55EA5&0",
+                        "Kingston DataTraveler 3.0 USB Device"))
+    assert c.base_severity == 2 and c.indicators == ["Kingston DataTraveler 3.0 USB Device"]
+    assert (c.facts["vendor"], c.facts["product"], c.facts["serial"]) == ("Kingston", "DataTraveler_3.0", "E0D55EA5&0")
+    assert route(c, None)[0] is Route.DIGEST and "never seen" in summarize(c, Assets())
+    assert run(det, usb(T0 + 4 * 86400, USBSTOR + "Disk&Ven_Kingston&Prod_DataTraveler_3.0&Rev_0000\\E0D55EA5&0",
+                        "Kingston DataTraveler 3.0 USB Device")) == []   # the same drive again
+    saved = json.loads(json.dumps(det.snapshot()))
+    again = NewUsbDrive(st())
+    again.restore(saved)
+    assert run(again, first[0]) == []                             # a restart keeps what it learned
+
+
+def test_r51_windows_update_behind_restart_waiting_and_failures():
+    from tapwatch.hostrules import WindowsUpdateBehind
+    det = WindowsUpdateBehind(st())
+    fine = {"last_installed": str(int(T0 - 10 * 86400)), "failed_30d": "0", "reboot_pending": "1"}
+    assert run(det, snap("windows_update", T0, fine)) == []      # a restart waiting for a day is normal
+    (c,) = run(det, snap("windows_update", T0 + 8 * 86400, dict(fine, failed_30d="3")))
+    assert c.facts["problems"] == ["restart waiting", "updates failing"] and c.facts["restart_waiting_days"] == 8
+    assert c.base_severity == 2 and route(c, None)[0] is Route.DIGEST
+    text = summarize(c, Assets())
+    assert "waited 8 days" in text and "3 update installs failed" in text
+    old = WindowsUpdateBehind(st())
+    (o,) = run(old, snap("windows_update", T0, {"last_installed": str(int(T0 - 40 * 86400)), "failed_30d": "0",
+                                                "reboot_pending": "0"}))
+    assert o.facts["problems"] == ["no update installed"] and o.facts["days_since_update"] == 40
+    assert run(WindowsUpdateBehind(st()), snap("windows_update", T0, {"last_installed": "", "failed_30d": "0",
+                                                                     "reboot_pending": "0"})) == []   # no history: no verdict
+
+
+def test_r49_r51_need_no_jev_and_pair_as_intended():
+    from tapwatch.hostrules import PAIRS
+    assert {"host_av_off", "host_usb_new", "host_patch"} <= set(NAMES) & CODE_ONLY
+    assert "ioc_match" in PAIRS["host_av_off"] and not PAIRS["host_usb_new"] and not PAIRS["host_patch"]

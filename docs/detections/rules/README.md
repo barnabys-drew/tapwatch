@@ -45,7 +45,7 @@ in the files are the ones osquery applies.
 **Every rule here is built** as a streaming detector: R01–R16 in `src/tapwatch/detectors.py`
 (R01 `InternetExposure`, R03 `ManagementAccess`, R13 `CleartextAuth`, R14 `RogueDHCP` and the rest),
 R17–R21 in `src/tapwatch/hostrules.py`. The later rules (R22 in `detectors.py`, R23–R29 and R36–R39 in
-`hostrules.py`, R48 in `vulnkev.py`, v0.4's long-horizon R30–R34 in `longhaul.py`) have no file here;
+`hostrules.py`, R48 in `vulnkev.py`, R49–R51 in `hostrules.py`, v0.4's long-horizon R30–R34 in `longhaul.py`) have no file here;
 their specs are in `../DESIGN.md`. The streaming versions differ from these specs in a few
 places. R01 and R03 learn existing exposures and admin pairs during warmup. R01 skips flows
 whose direction Zeek can't know: the first 2 min after start, TCP without the outside host's SYN,
