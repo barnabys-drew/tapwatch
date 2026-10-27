@@ -1841,3 +1841,30 @@ def test_a_long_connection_counts_only_its_share_of_the_hour():
     det.feed(short)
     assert det.current[det.dev_key("192.168.50.10")][1] > 800e6   # a real half-hour upload counts in full
     assert det._share_now({"ts": h * 3600 - 3600, "duration": 3700}) == 1.0   # just over an hour, all within the window
+
+
+def test_a_newly_registered_domain_always_opens_a_case_at_severity_3(tmp_path):
+    from tapwatch import detectors
+    from tapwatch.summarizer import Assets, summarize
+
+    (tmp_path / "2026-10-25.txt").write_text("fresh-shop.example\n")
+    (tmp_path / "2026-10-20.txt").write_text("fresh-shop.example\nolder-new.example\n")
+    try:
+        assert detectors.set_newly_registered(str(tmp_path)) == 2
+        assert detectors.registered_on("cdn.fresh-shop.example") == "2026-10-20"      # the earliest listing wins
+        popular = {"fresh-shop.example", "big.example"}   # even a name on the popular list counts as a hit
+        det = NewExternalDomain(Warmup(0), popular=popular)
+        recs = [dns(T0, "www.big.example"), dns(T0 + 5, "cdn.fresh-shop.example")]
+        cases = run(det, recs) + det.flush()
+        assert len(cases) == 1 and cases[0].base_severity == 3
+        f = cases[0].facts
+        assert f["newly_registered"] == 1 and f["registered_since"] == "2026-10-20"
+        assert cases[0].indicators[0] == "cdn.fresh-shop.example"                      # shown first
+        text = summarize(cases[0], Assets())
+        assert "newly registered" in text and "2026-10-20" in text
+        # a name missing from the list is never called old: the case is graded as before
+        quiet = NewExternalDomain(Warmup(0), popular=popular)
+        assert run(quiet, [dns(T0, "www.big.example")]) + quiet.flush() == []
+    finally:
+        detectors.set_newly_registered(None)
+    assert detectors.registered_on("cdn.fresh-shop.example") is None

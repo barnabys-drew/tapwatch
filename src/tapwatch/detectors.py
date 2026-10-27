@@ -1233,6 +1233,29 @@ def looks_random(name: str) -> bool:
     return digits >= 3 or vowel_ratio < 0.2 or longest >= 6
 
 
+# Newly registered domains (#18, feeds.nrd_feed): registrable domain -> the day its list named it. A sample of the
+# day's registrations, so only a hit is a fact: a domain missing from it says nothing about its age.
+NEWLY_REGISTERED: dict[str, str] = {}
+
+
+def set_newly_registered(directory: str | None) -> int:
+    """Load the daily lists in `directory` (YYYY-MM-DD.txt). Returns the number of domains (0: none loaded)."""
+    NEWLY_REGISTERED.clear()
+    if not directory or not Path(directory).is_dir():
+        return 0
+    for path in sorted(Path(directory).glob("*.txt"), reverse=True):   # newest first: the earliest day wins below
+        day = path.stem
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if name := line.strip():
+                NEWLY_REGISTERED[name] = day
+    return len(NEWLY_REGISTERED)
+
+
+def registered_on(name: str) -> str | None:
+    """The day a newly registered domain list named this host's registrable domain (or the name itself), or None."""
+    return NEWLY_REGISTERED.get(base_domain(name)) or NEWLY_REGISTERED.get(name.rstrip(".").lower())
+
+
 class NewExternalDomain(Detector):
     """A host starts using domains (DNS or TLS name) it has never used before.
 
@@ -1247,6 +1270,9 @@ class NewExternalDomain(Detector):
     The names are still learned, so the per-device and household first-seen sets stay whole.
     `report_popular: true` restores the old behaviour; with no popular list loaded every window
     is reported, since nothing can be judged popular.
+
+    A name on the newly registered domains list (#18) always opens a case, at severity 3 (R08's "NRD <= 30 days:
+    high"). The list is a sample of each day's registrations, so a name not on it is never graded as old.
     """
 
     name = "new_domain"
@@ -1287,6 +1313,7 @@ class NewExternalDomain(Detector):
                              # numbered CDN hosts under widely used domains aren't DGA (home eval 2026-10-13:
                              # googlevideo, microsoftaik, cdn77 made 16 of 26 digest items)
                              "random": looks_random(name) and dom not in self.popular,
+                             "registered": registered_on(name),
                              "others": others, "popular": dom in self.popular,
                              "category": cat, "category_source": cat_source})
         return out
@@ -1305,18 +1332,21 @@ class NewExternalDomain(Detector):
         """Something in the window is off the popular list or random-looking (see the class docstring)."""
         if self.report_popular or not self.popular:
             return True
-        return any(i["random"] or not i["popular"] for i in items)
+        return any(i["random"] or not i["popular"] or i.get("registered") for i in items)
 
     def _case(self, host: str, win: dict) -> Case:
         items = win["items"]
         n = len(items)
-        # Show the odd ones first: random-looking, then ones no other device uses.
-        shown = sorted(items, key=lambda i: (not i["random"], i["others"] > 0))[:3]
+        # Show the odd ones first: newly registered, random-looking, then ones no other device uses.
+        shown = sorted(items, key=lambda i: (not i.get("registered"), not i["random"], i["others"] > 0))[:3]
+        new_regs = sorted(i["registered"] for i in items if i.get("registered"))
         facts = {"count": n, "window_min": round(self.window / 60),
                  "random": sum(i["random"] for i in items),
                  "shared": sum(i["others"] > 0 for i in items),
                  "popular": sum(i["popular"] for i in items),
                  "popular_known": bool(self.popular),
+                 "newly_registered": len(new_regs),
+                 **({"registered_since": new_regs[0]} if new_regs else {}),
                  "via": items[0]["via"], "max_others": max(i["others"] for i in items),
                  "dedupe": f"{int(win['start'] // self.window)}",
                  # the addresses behind the three names the case shows come first, so the cap keeps them
@@ -1328,7 +1358,7 @@ class NewExternalDomain(Detector):
                                       if any(i.get("category") and i.get("category_source") == s for i in items)]}
         title = "First contact with a new domain" if n == 1 else f"First contact with {n} new domains"
         return Case(self.name, host, win["start"], title, facts, [i["name"] for i in shown],
-                    base_severity=2 if facts["random"] else 1)
+                    base_severity=3 if new_regs else 2 if facts["random"] else 1)
 
 
 def mac_ok(mac: str | None) -> bool:
@@ -2803,6 +2833,7 @@ def build(cfg: dict, ioc_ips: set[str] | None = None, ioc_domains: set[str] | No
     d = cfg.get("detectors", {})
     net = cfg.get("network", {})
     set_local_nets(net.get("local_nets") or ())  # the LAN's IPv6 prefix, so its devices count as inside
+    set_newly_registered(cfg.get("newly_registered_dir"))   # #18: the daily lists update-feeds keeps, when present
     set_house_ips(net.get("public_ips"))
     set_public_suffixes(cfg.get("public_suffix_file"))  # registrable domains by the PSL when downloaded
     load_categories(cfg.get("categories_file"), cfg.get("learned_categories_file"))  # domain -> kind of site (categories.py), offline

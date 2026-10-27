@@ -200,7 +200,7 @@ You need a managed switch that can **mirror** the port your router plugs into
 git clone https://github.com/barnabys-drew/tapwatch && cd tapwatch
 python3 -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/tapwatch init            # detects your router and interfaces, asks a few questions
-.venv/bin/tapwatch update-feeds    # public lists: popular domains, MAC vendors, IP-to-network, site categories, public suffixes, AdFection IOCs
+.venv/bin/tapwatch update-feeds    # public lists: popular domains, MAC vendors, IP-to-network, site categories, public suffixes, AdFection IOCs, newly registered domains
 TAP_IFACE=<mirror NIC> docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
@@ -253,7 +253,7 @@ eval/replay.sh eval/data/synthetic.pcap eval/out/synthetic        # Zeek in Dock
 | `tapwatch longhaul [--mature-days N] [--stats] [--as-of DAY]` | the long-horizon rules (R30–R34) over the summaries as they stand, or as the night after DAY saw them: what they would raise and how it would route, storing nothing (`run` raises them each night) |
 | `tapwatch mark 42 fp` | close case 42 as a false (`fp`) or true (`tp`) positive |
 | `tapwatch update` | move to the newest release (`--check` only looks): shows what changed, installs, runs the self-check, restarts what the change needs and runs doctor, and goes back to the old version if any of it fails. The daily digest says when there's a newer release. Windows: double-click `update-windows.cmd` |
-| `tapwatch update-feeds` | refresh the public lists: Tranco, IEEE MAC vendors, iptoasn, UT1 site categories, the Public Suffix List, the AdFection / Candiru indicators, and the vulnerability data for the agents' software (CISA KEV, OSV, NVD; weekly is plenty) |
+| `tapwatch update-feeds` | refresh the public lists: Tranco, IEEE MAC vendors, iptoasn, UT1 site categories, the Public Suffix List, the AdFection / Candiru indicators, 30 days of newly registered domains, and the vulnerability data for the agents' software (CISA KEV, OSV, NVD). `service install` runs it daily |
 | `tapwatch software [--vulns]` | each endpoint agent's installed software from its daily snapshot, and with `--vulns` what the downloaded vulnerability data matches |
 | `tapwatch syslog` | receive the router's CEF syslog into `udm.log` |
 | `tapwatch service install` | install systemd user services (alerter, case desk, watchdog; `--capture-iface` adds capture, `--syslog` the router syslog listener) |

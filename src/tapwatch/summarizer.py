@@ -523,6 +523,9 @@ def _new_domains(f: dict) -> str:
     if n == 1:
         parts = [f"It made its first ever {f['via']} contact with a domain it had never used before."]
         parts.append("The name looks randomly generated." if f["random"] else "The name is readable, not random-looking.")
+        if f.get("newly_registered"):
+            parts.append(f"The domain is on a list of newly registered domains (listed {f['registered_since']}), "
+                         "so it is under a month old.")
         parts.append("Other devices on this network already use this domain." if f["shared"]
                      else "No other device on this network has used this domain.")
         if f["popular_known"]:
@@ -537,6 +540,9 @@ def _new_domains(f: dict) -> str:
     parts.append(f"{f['random']} of them look randomly generated." if f["random"]
                  else "None of them look randomly generated.")
     parts.append(f"{f['shared']} of them are already used by other devices on this network.")
+    if f.get("newly_registered"):
+        parts.append(f"{f['newly_registered']} of them are on a list of newly registered domains (under a month old, "
+                     f"the earliest listed {f['registered_since']}).")
     if f["popular_known"]:
         parts.append(f"{f['popular']} of them are on the list of widely used internet domains.")
     if f.get("categories"):

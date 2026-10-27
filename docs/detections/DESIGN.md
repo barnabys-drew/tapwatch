@@ -381,6 +381,15 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
 - **Baseline:** 3-day warmup. Measured: **~150 first-seen pairs/h** on an active evening after
   warmup. Only **7 of 167** base domains were off the Tranco list, and 124 were single-device.
 - **Dedupe:** `new_domain|host|base_domain`; window-grouped as now.
+- **Newly registered domains (built 2026-10-27, #18):** `update-feeds` keeps the last 30 days of
+  WhoisFreaks' free daily list (`feeds/nrd/YYYY-MM-DD.txt`; suggested on the issue by someone who works there,
+  disclosed). It is 10,000 domains a day out of about 300,000 registrations, gTLDs only, a day behind:
+  a sample. So **only a hit is a fact**. A window with a first contact with a listed domain always opens a
+  case, even if the domain is popular, at severity 3 (the digest; a pairing can lift it to an alert). The
+  case says when the list named it (`registered_since`). A domain missing from the list is never graded
+  as old. Matching is local; the only network traffic is downloading each day's file. Expect it to fire
+  rarely, because of the sampling. A fuller source (ICANN CZDS zone files, per-TLD sign-up) can replace it
+  later without changing the rule.
 - **Popular-only windows (implemented 2026-10-19):** a window in which every name is on the
   Tranco list and none looks random opens no case; the names are still learned. Measured on the
   home install the week before: 285 of 342 `new_domain` cases were all-popular browsing (shopping,
