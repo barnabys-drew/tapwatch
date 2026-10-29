@@ -23,7 +23,7 @@ import yaml
 
 # Settings that usually name the computer they were written on.
 MACHINE_SETTINGS = (("host_context", "host"), ("ui", "host"), ("ui", "base_url"), ("ui", "zeek_dirs"),
-                    (None, "feeds_dir"), (None, "smtp"), ("fleet", "results_log"))
+                    ("ui", "home_url"), (None, "feeds_dir"), (None, "smtp"), ("fleet", "results_log"))
 
 
 class ImportRefused(ValueError):

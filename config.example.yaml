@@ -61,6 +61,8 @@ ui:                                  # `tapwatch ui` (case queue in the browser)
   # `tailscale serve --bg --https=10000 http://127.0.0.1:8765`, set base_url to
   # https://<machine>.<tailnet>.ts.net:10000 and list who may use it:
   # tailscale_users: [you@example.com]
+  # home_url: https://dashboard.example.com   # a button in the top bar back to your own start page
+  # home_label: Home
 
 herdr:                               # pop critical cases up in the Herdr terminal workspace
   enabled: false                     # `tapwatch test-alert --herdr` to try it
