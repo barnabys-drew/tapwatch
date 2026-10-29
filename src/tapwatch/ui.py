@@ -113,7 +113,9 @@ a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:under
 .tabs { gap:2px 14px; } .tab { color:var(--muted); padding:4px 0; font-size:15px; border-bottom:2px solid transparent; }
 .tab:hover { color:var(--ink); text-decoration:none; }
 .tab.on { color:var(--ink); font-weight:600; border-bottom-color:var(--accent); }
-.top form { margin-left:auto; }
+.top .end { margin-left:auto; display:flex; align-items:center; gap:14px; }
+.home { color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:3px 12px; font-size:13px; }
+.home:hover { color:var(--ink); border-color:var(--accent); text-decoration:none; }
 main { max-width:1400px; margin:0 auto; padding:22px 24px 48px; animation:fade .22s ease both; }
 @keyframes fade { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:none; } }
 
@@ -273,9 +275,11 @@ STATS_REFRESH_S = 60  # the stats page reloads itself; pages with forms never do
 
 
 def page(title: str, body: str, nonce: str, csrf: str = "", logged_in_with_token: bool = False,
-         active: str = "", refresh: int = 0) -> str:
+         active: str = "", refresh: int = 0, home: tuple[str, str] | None = None) -> str:
     logout = (f'<form method="post" action="/logout"><input type="hidden" name="csrf" value="{e(csrf)}">'
               '<button class="plain">Log out</button></form>') if logged_in_with_token else ""
+    # ui.home_url: a way back to the owner's own start page, so the desk isn't a dead end behind Back presses.
+    home_link = f'<a class="home" href="{e(home[0])}">&#8962; {e(home[1])}</a>' if home else ""
     tabs = "".join(f'<a class="tab{" on" if href == active else ""}" href="{href}">{name}</a>' for href, name in NAV)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -284,7 +288,7 @@ def page(title: str, body: str, nonce: str, csrf: str = "", logged_in_with_token
 <title>{e(title)} · tapwatch</title>
 <style nonce="{e(nonce)}">{CSS}</style></head>
 <body><div class="top"><div class="top-in"><a class="brand" href="/">{LOGO}tapwatch <small>case desk</small></a>
-<nav class="tabs">{tabs}</nav>{logout}</div></div>
+<nav class="tabs">{tabs}</nav><div class="end">{home_link}{logout}</div></div></div>
 <main>{body}</main></body></html>"""
 
 
@@ -1275,8 +1279,12 @@ class App:
 
     def __init__(self, db_path: str, assets: Assets, zeek_dirs=None, host: str = "127.0.0.1", port: int = 8765,
                  token: str | None = None, base_url: str | None = None, tailscale_users=None,
-                 judge_settings: judge.Settings | None = None):
+                 judge_settings: judge.Settings | None = None, home_url: str | None = None,
+                 home_label: str | None = None):
         self.judge = judge_settings or judge.Settings()   # #204: shown on the Judge page; the desk never closes
+        if home_url and not re.match(r"https?://", home_url, re.IGNORECASE):
+            raise SystemExit("ui.home_url must start with http:// or https://")
+        self.home = (home_url, home_label or "Home") if home_url else None
         # Behind `tailscale serve`: Tailscale authenticates, and the desk only listens on loopback.
         self.tailscale_users = {u.strip().lower() for u in tailscale_users or () if u.strip()} or None
         if self.tailscale_users:
@@ -1386,7 +1394,7 @@ class Handler(BaseHTTPRequestHandler):
         active = "/stats" if path == "/stats" else "/suppressions" if path.startswith("/suppressions") \
             else "/judge" if path.startswith("/judge") else "/"
         logged_in = self.app.token is not None and self.app.session_ok(sid)
-        self._send(status, page(title, body, nonce, self.app.csrf(sid), logged_in, active, refresh),
+        self._send(status, page(title, body, nonce, self.app.csrf(sid), logged_in, active, refresh, self.app.home),
                    nonce=nonce, set_sid=set_sid)
 
     def _error(self, status: int, message: str, sid: str | None = None) -> None:
