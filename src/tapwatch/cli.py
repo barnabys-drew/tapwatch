@@ -650,6 +650,7 @@ def cmd_ui(args, cfg) -> int:
                  host=args.host or u.get("host", "127.0.0.1"), port=args.port or u.get("port", 8765),
                  token=os.environ.get(u.get("token_env", "TAPWATCH_UI_TOKEN")) or None,
                  base_url=u.get("base_url"), tailscale_users=u.get("tailscale_users"),
+                 home_url=u.get("home_url"), home_label=u.get("home_label"),
                  judge_settings=config.judge_settings(cfg))
     ui.serve(app)
     return 0

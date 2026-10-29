@@ -615,6 +615,20 @@ def test_localhost_rejects_other_host_headers(server):
     assert request(app, "GET", "/", host="attacker.example:8765")[0].status == 421  # DNS rebinding
 
 
+def test_home_link_shows_only_when_configured(server):
+    app, _ = server()
+    assert 'class="home"' not in request(app, "GET", "/")[1]
+    app.home = ("https://dash.example.com/", "homebase")
+    for path in ("/", "/stats", "/judge"):
+        assert '<a class="home" href="https://dash.example.com/">&#8962; homebase</a>' in request(app, "GET", path)[1]
+
+
+def test_home_url_must_be_http():
+    with pytest.raises(SystemExit):
+        ui.App(":memory:", Assets(), home_url="javascript:alert(1)")
+    assert ui.App(":memory:", Assets(), home_url="https://dash.example.com").home == ("https://dash.example.com", "Home")
+
+
 def test_lan_mode_requires_a_token(server):
     with pytest.raises(SystemExit):
         ui.App(":memory:", Assets(), host="0.0.0.0")
