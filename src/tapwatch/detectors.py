@@ -113,39 +113,78 @@ PUBLIC_SUFFIXES = frozenset({
 PSL_RULES: set[str] = set()
 PSL_WILDCARDS: set[str] = set()
 PSL_EXCEPTIONS: set[str] = set()
+# The PRIVATE section, kept apart and read by `shared_platform` only (the judge's site keys, #353): a platform that
+# hands out names to strangers (`x.github.io`, `y.trycloudflare.com`), where one tenant says nothing about another.
+PSL_PRIVATE: set[str] = set()
+PSL_PRIVATE_WILDCARDS: set[str] = set()
+# Shared platforms the PSL's private section doesn't list (or didn't when this was written), checked even when the
+# list isn't downloaded: CDNs and clouds whose customers all sit under one registrable domain.
+SHARED_PLATFORMS = frozenset({
+    "github.io", "githubusercontent.com", "trycloudflare.com", "workers.dev", "pages.dev", "r2.dev",
+    "ngrok.io", "ngrok.app", "ngrok-free.app", "ngrok-free.dev", "loca.lt", "serveo.net",
+    "cloudfront.net", "amazonaws.com", "azurewebsites.net", "azureedge.net", "blob.core.windows.net",
+    "trafficmanager.net", "cloudapp.net", "windows.net", "googleusercontent.com", "appspot.com", "web.app",
+    "firebaseapp.com", "run.app", "herokuapp.com", "vercel.app", "netlify.app", "onrender.com", "fly.dev",
+    "glitch.me", "repl.co", "replit.dev", "akamaized.net", "akamaihd.net", "edgekey.net", "edgesuite.net",
+    "fastly.net", "fastlylb.net", "duckdns.org", "no-ip.org", "ddns.net", "dynu.net", "hopto.org",
+    "blogspot.com", "wordpress.com", "sharepoint.com", "dropboxusercontent.com"})
 
 
 def set_public_suffixes(path: str | None) -> int:
-    """Load the ICANN section of a Public Suffix List file; returns the number of rules (0: not loaded)."""
+    """Load the ICANN section of a Public Suffix List file, and its PRIVATE section apart (PSL_PRIVATE, for
+    `shared_platform` only); returns the number of ICANN rules (0: not loaded)."""
     PSL_RULES.clear(), PSL_WILDCARDS.clear(), PSL_EXCEPTIONS.clear()
+    PSL_PRIVATE.clear(), PSL_PRIVATE_WILDCARDS.clear()
     if not path or not Path(path).exists():
         return 0
-    icann = ended = False
+    section, ended, private_ended = None, False, False
     for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if "===BEGIN ICANN DOMAINS===" in line:
-            icann = True
+            section = "icann"
         elif "===END ICANN DOMAINS===" in line:
-            ended = True
+            section, ended = None, True
+        elif "===BEGIN PRIVATE DOMAINS===" in line:
+            section = "private"
+        elif "===END PRIVATE DOMAINS===" in line:
+            section, private_ended = None, True
             break
-        if not icann or not line or line.startswith("//"):
+        if section is None or not line or line.startswith("//"):
             continue
         rule = line.split()[0].lower()
         try:
             rule = ".".join(p.encode("idna").decode() if not p.isascii() else p for p in rule.split("."))
         except UnicodeError:
             continue
-        if rule.startswith("!"):
+        if section == "private":
+            if rule.startswith("*."):
+                PSL_PRIVATE_WILDCARDS.add(rule[2:])
+            elif not rule.startswith("!"):
+                PSL_PRIVATE.add(rule)
+        elif rule.startswith("!"):
             PSL_EXCEPTIONS.add(rule[1:])
         elif rule.startswith("*."):
             PSL_WILDCARDS.add(rule[2:])
         else:
             PSL_RULES.add(rule)
+    if not private_ended:   # truncated in the private section: the built-in SHARED_PLATFORMS still apply
+        PSL_PRIVATE.clear(), PSL_PRIVATE_WILDCARDS.clear()
     if not ended:  # a truncated download would silently drop rules (co.uk): keep the built-in table instead
         PSL_RULES.clear(), PSL_WILDCARDS.clear(), PSL_EXCEPTIONS.clear()
         log.warning("public suffix list %s has no end of its ICANN section; using the built-in table", path)
         return 0
     return len(PSL_RULES) + len(PSL_WILDCARDS) + len(PSL_EXCEPTIONS)
+
+
+def shared_platform(name: str) -> str | None:
+    """The shared platform `name` is a tenant of (`x.github.io` -> github.io), from the PSL's private section and
+    SHARED_PLATFORMS, else None. A tenant of one says nothing about the platform's other tenants."""
+    parts = [p for p in name.lower().rstrip(".").split(".") if p]
+    for i in range(1, len(parts)):   # suffixes with at least one label in front: the name itself is no tenant
+        cand = ".".join(parts[i:])
+        if cand in SHARED_PLATFORMS or cand in PSL_PRIVATE or ".".join(parts[i + 1:]) in PSL_PRIVATE_WILDCARDS:
+            return cand
+    return None
 
 
 def base_domain(name: str) -> str:

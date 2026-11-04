@@ -702,7 +702,8 @@ def _judge_card(d) -> str:
         widths = json.loads(d["widths"] or "{}")
     except (ValueError, IndexError, KeyError):   # a malformed or older row: no card rather than a broken page
         return ""
-    labels = {"device": "Same device", "any_device": "Any device"}
+    from .benchmark import WIDTH_WORDS
+    labels = {w: words[0].upper() + words[1:] for w, words in WIDTH_WORDS.items()}
     rows = ""
     for width, w in widths.items():
         links = " ".join(f'<a href="/case/{int(i)}">#{int(i)}</a>' for i in w.get("precedent_ids", [])
