@@ -173,7 +173,8 @@ def test_decide_records_both_widths_and_never_acts():
     assert d["suggestion"] == "close_noise" and d["eligible"] == 1
     assert "same device" in d["explanation"] and "cdn" not in d["explanation"]
     widths = json.loads(s.judge_decision(cid)["widths"])
-    assert set(widths) == {"device", "any_device"} and widths["any_device"]["eligible"] is False
+    assert set(widths) == set(judge.WIDTHS) and widths["any_device"]["eligible"] is False   # new_domain: all apply
+    assert widths["site"]["eligible"] is True
     r = row(s, cid)
     assert r["status"] == "new" and r["disposition"] is None and r["route"] == "digest"
     assert not s.db.execute("SELECT 1 FROM suppressions").fetchone()
@@ -200,9 +201,9 @@ def test_backfill_and_replay_on_a_small_history():
     live = add(s, indicators=("live.example.org",))
     close(s, live)
     assert judge.backfill(s.db) == {}
-    assert s.db.execute("SELECT feature_version FROM judge_examples WHERE case_id=?", (live,)).fetchone()[0] == 1
+    assert s.db.execute("SELECT feature_version FROM judge_examples WHERE case_id=?", (live,)).fetchone()[0] == judge.FEATURE_VERSION
     r = judge.replay(s.db)
-    assert r["true_positives_eligible"] == {"device": [], "any_device": []}
+    assert r["true_positives_eligible"] == {w: [] for w in judge.WIDTHS}
     assert r["detectors"]["new_domain"]["cases"] == 4
 
 
@@ -241,3 +242,118 @@ def test_precedent_from_before_the_device_was_named_counts_unless_the_mac_had_an
     add(s, facts={"device_mac": mac, "device_name": "Work-Laptop"}, indicators=("other.example.net",))
     ok, reason, _ = judge.eligible(s.db, row(s, add(s, facts=named)), before=NOW + 60)
     assert not ok and "no owner precedent" in reason
+
+
+# ---------------------------------------------------------------- wider keys (#353)
+
+def test_site_of_widens_a_host_to_its_site_but_never_a_shared_platform_tenant():
+    assert judge.site_of("domain:a.cdn.example.com") == judge.site_of("domain:example.com") == "example.com"
+    assert judge.site_of("domain:x1.github.io") == "x1.github.io"            # a tenant is its own site
+    assert judge.site_of("domain:evil.trycloudflare.com") == "evil.trycloudflare.com"
+    assert judge.site_of("program:c:/windows/system32/cmd.exe") is None
+    assert judge.site_of("ind:192.168.50.20") is None
+
+
+def test_shared_platform_reads_the_private_section_of_the_list(tmp_path):
+    from tapwatch import detectors
+
+    psl = tmp_path / "psl.dat"
+    psl.write_text("// ===BEGIN ICANN DOMAINS===\ncom\n// ===END ICANN DOMAINS===\n"
+                   "// ===BEGIN PRIVATE DOMAINS===\ntenants.example\n*.zone.example\n// ===END PRIVATE DOMAINS===\n")
+    try:
+        assert detectors.set_public_suffixes(str(psl)) == 1
+        assert detectors.shared_platform("a.tenants.example") == "tenants.example"
+        assert detectors.shared_platform("b.x.zone.example") == "x.zone.example"
+        assert detectors.shared_platform("tenants.example") is None             # the platform itself is no tenant
+        assert detectors.base_domain("a.tenants.example") == "tenants.example"  # ICANN-only registrable domains
+    finally:
+        detectors.set_public_suffixes(None)
+    assert detectors.shared_platform("a.tenants.example") is None
+    assert detectors.shared_platform("x.github.io") == "github.io"            # built in, list or not
+
+
+def test_site_width_matches_other_names_of_the_same_site():
+    s = Store(":memory:")
+    for d, name in zip([20, 12, 4], ["a.example.com", "b.example.com", "c.example.com"]):
+        close(s, add(s, ts=NOW - d * DAY, indicators=(name,)))
+    new = row(s, add(s, indicators=("d.example.com",)))
+    ok, reason, _ = judge.eligible(s.db, new, before=NOW + 60)
+    assert not ok and "no owner precedent" in reason                          # the exact name is new
+    ok, reason, prec = judge.eligible(s.db, new, before=NOW + 60, width="site")
+    assert ok and len(prec) == 3, reason
+    # an unrelated site that ends the same way is not this one
+    assert not judge.eligible(s.db, row(s, add(s, indicators=("d.notexample.com",))), before=NOW + 60,
+                              width="site")[0]
+
+
+def test_tenants_of_a_shared_platform_never_widen():
+    s = Store(":memory:")
+    for d, name in zip([20, 12, 4], ["a.github.io", "b.github.io", "c.github.io"]):
+        close(s, add(s, ts=NOW - d * DAY, indicators=(name,)))
+    new = row(s, add(s, indicators=("evil.github.io",)))
+    for width in judge.WIDTHS[:4]:
+        ok, reason, _ = judge.eligible(s.db, new, before=NOW + 60, width=width)
+        assert not ok, (width, reason)
+
+
+def test_a_true_positive_on_a_site_blocks_its_site_widths_from_any_detector():
+    s = Store(":memory:")
+    for d, name in zip([20, 12, 4], ["a.example.com", "b.example.com", "c.example.com"]):
+        close(s, add(s, ts=NOW - d * DAY, indicators=(name,)))
+    # another detector, another device, another name of the same site: called a true positive
+    close(s, add(s, detector="beaconing", host="192.168.50.99", ts=NOW - 60 * DAY, indicators=("c2.example.com",)),
+          disposition="true_positive", label_ts=NOW - 59 * DAY)
+    new = row(s, add(s, indicators=("d.example.com",)))
+    ok, reason, _ = judge.eligible(s.db, new, before=NOW + 60, width="site")
+    assert not ok and "site was called a true positive" in reason
+    # the narrow key is unaffected: c2.example.com is not cdn.example.com
+    history(s, [21, 13, 5])
+    assert judge.eligible(s.db, row(s, add(s)), before=NOW + 60)[0]
+
+
+def test_category_width_matches_the_kind_of_site_across_devices_only_when_nothing_is_odd():
+    s = Store(":memory:")
+    ads = {"categories": ["advertising"], "popular": 1, "count": 1}
+    for d, host, name in zip([20, 12, 4, 19, 11, 3], ["192.168.50.10"] * 3 + ["192.168.50.20"] * 3,
+                             ["a.ads1.example", "b.ads2.example", "c.ads3.example", "d.ads4.example",
+                              "e.ads5.example", "f.ads6.example"]):
+        close(s, add(s, host=host, ts=NOW - d * DAY, indicators=(name,), facts=ads))
+    new = row(s, add(s, host="192.168.50.30", indicators=("x.ads9.example",), facts=ads))
+    ok, reason, prec = judge.eligible(s.db, new, before=NOW + 60, width="category")
+    assert ok and len(prec) == 6, reason
+    assert "kind of site" in judge.decide(s.db, new["id"])["widths"]
+    # an unranked name, a random-looking one, another category: never matched by it
+    for facts in ({**ads, "popular": 0}, {**ads, "random": 1}, {**ads, "newly_registered": 1},
+                  {"categories": ["file_hosting"], "popular": 1, "count": 1}):
+        ok, reason, _ = judge.eligible(s.db, row(s, add(s, indicators=("y.ads9.example",), facts=facts)),
+                                       before=NOW + 60, width="category")
+        assert not ok, (facts, reason)
+    # other detectors don't opt in: the width isn't recorded for them
+    other = add(s, detector="beaconing", indicators=("z.ads9.example",), facts=ads)
+    assert "category" not in json.loads(judge.decide(s.db, other)["widths"])
+
+
+def test_widths_that_dont_apply_are_left_out_of_the_shadow_answer():
+    s = Store(":memory:")
+    cid = add(s, detector="host_lolbin", indicators=("rundll32.exe",))
+    assert set(json.loads(judge.decide(s.db, cid)["widths"])) == {"device", "any_device"}
+
+
+def test_benchmark_says_which_detectors_suit_a_judge():
+    from tapwatch import benchmark
+
+    s = Store(":memory:")
+    history(s, [20, 12, 4])
+    judge.decide(s.db, add(s, ts=NOW + 60))                                         # eligible
+    for name in ("n1.example.net", "n2.example.org"):
+        judge.decide(s.db, add(s, detector="beaconing", indicators=(name,), ts=NOW + 60))   # never repeats
+    fit = {r["detector"]: r for r in benchmark.judge_fit(s.db)}
+    assert fit["new_domain"]["eligible"] == 1 and fit["new_domain"]["reading"] == "eligible"
+    assert fit["beaconing"]["reading"] == "rare" and "no owner precedent" in fit["beaconing"]["top_reason"]
+    judge.decide(s.db, add(s, indicators=("uncategorised.example.info",), ts=NOW + 60))   # widest: category
+    fit = {r["detector"]: r for r in benchmark.judge_fit(s.db)}
+    assert fit["new_domain"]["cases"] == 2 and fit["new_domain"]["reading"] == "eligible"   # one of two
+    s.db.execute("DELETE FROM judge_decisions WHERE eligible=1")
+    assert {r["detector"]: r for r in benchmark.judge_fit(s.db)}["new_domain"]["reading"] == "context"
+    md = benchmark.judge_markdown(s.db)
+    assert "Which detectors suit the judge" in md and "rarely repeat" in md

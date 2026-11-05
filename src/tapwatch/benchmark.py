@@ -17,6 +17,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
+from . import judge as judge_widths
 from .store import DISPOSITIONS, OWNER_DISPOSITION
 
 log = logging.getLogger("tapwatch")
@@ -251,7 +252,7 @@ class Qualify:
         return q
 
 
-WIDTH_WORDS = {"device": "same device", "any_device": "any device"}
+WIDTH_WORDS = judge_widths.WIDTH_WORDS   # the case desk reads them from here
 
 
 def _judge_rows(db: sqlite3.Connection, replay: bool) -> list[tuple]:
@@ -273,7 +274,9 @@ def _judge_rows(db: sqlite3.Connection, replay: bool) -> list[tuple]:
         before, db.row_factory = db.row_factory, sqlite3.Row   # eligible() reads rows by name, as judge.replay does
         try:
             for row in cur.execute("SELECT * FROM cases ORDER BY first_ts").fetchall():
-                answers[row["id"]] = {w: judge.eligible(db, row, width=w)[0] for w in judge.WIDTHS}
+                f = judge.features(row)
+                answers[row["id"]] = {w: judge.eligible(db, row, width=w)[0] if judge.applies(w, f["detector"], f["key"])
+                                      else None for w in judge.WIDTHS}
         finally:
             db.row_factory = before   # the caller's connection is left as it was
     else:
@@ -282,7 +285,8 @@ def _judge_rows(db: sqlite3.Connection, replay: bool) -> list[tuple]:
                 widths = json.loads(r["widths"] or "{}")
             except ValueError:
                 widths = {}
-            # a row without per-width answers: its top-level columns are the "device" width, the other is unknown
+            # a row without per-width answers: its top-level columns are the "device" width, the others unknown; a
+            # width missing from `widths` didn't apply to the case, or came after it was judged (#353): not scored
             answers[r["case_id"]] = {
                 w: widths[w].get("suggestion") == "close_noise" if isinstance(widths.get(w), dict)
                 else (r["suggestion"] == "close_noise" if w == "device" else None) for w in judge.WIDTHS}
@@ -439,4 +443,83 @@ def judge_markdown(db: sqlite3.Connection, replay: bool = False, qualify: Qualif
     for w in s["weeks"]:
         lines.append(f"| {w['week']} | {w['detector'] or '**all**'} | {WIDTH_WORDS.get(w['width'], w['width'])} | "
                      f"{w['cases']} | {w['would_close']} | {_agree(w)} | {_saved(w)} | {_tps(w)} |")
+    if not replay:
+        lines += ["", judge_fit_markdown(db, s)]
+    return "\n".join(lines)
+
+
+# Why a case was left, grouped into what it says about the detector (judge_fit). Matched on the reason's start.
+FIT_GROUPS = (
+    ("no owner precedent", "rare"),
+    ("owner precedent on", "history"), ("the owner closed them all on one day", "history"),
+    ("owner precedent comes mostly", "history"),
+    ("no site category", "context"),
+)
+FIT_WORDS = {
+    "qualifies": "qualifies at some width: a candidate for auto-close, or for fixing the noise where it starts",
+    "rare": "its cases rarely repeat, even widened: rework it or give it more context, so routine cases look alike",
+    "history": "precedent exists but is thin (days, weeks or devices): more history should help",
+    "context": "the facts its widest key needs are missing (no site category): more context would help",
+    "guarded": "a guardrail keeps it with you (always-alert, a recent true positive, a critical alert): as designed",
+    "eligible": "often eligible already: watch its agreement on the scorecard",
+}
+
+
+def judge_fit(db: sqlite3.Connection, card: dict | None = None) -> list[dict]:
+    """#353: which detectors suit a precedent judge, from the shadow decisions. Per detector: cases judged, how many
+    were eligible at any width, the commonest reason it left a case at the widest width that applied (the last of
+    judge.WIDTHS present), and a reading of that reason (FIT_WORDS). `card` is benchmark.judge's result, for
+    "qualifies"; it is computed when not given. Read-only."""
+    from . import judge as judge_mod
+
+    card = card if card is not None else judge(db)
+    qualified = {d["detector"] for d in card["detectors"] if d["qualifies"]}
+    cur = db.cursor()
+    cur.row_factory = sqlite3.Row
+    try:
+        rows = cur.execute("SELECT c.detector, d.widths, d.eligible, d.ineligible_reason FROM judge_decisions d"
+                           " JOIN cases c ON c.id = d.case_id").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    per: dict[str, dict] = {}
+    for r in rows:
+        try:
+            widths = json.loads(r["widths"] or "{}")
+        except ValueError:
+            widths = {}
+        if not widths:   # an old row: only the device width
+            widths = {"device": {"eligible": bool(r["eligible"]), "reason": r["ineligible_reason"]}}
+        t = per.setdefault(r["detector"], {"detector": r["detector"], "cases": 0, "eligible": 0, "reasons": {}})
+        t["cases"] += 1
+        if any(isinstance(a, dict) and a.get("eligible") for a in widths.values()):
+            t["eligible"] += 1
+            continue
+        widest = [w for w in judge_mod.WIDTHS if isinstance(widths.get(w), dict)]
+        reason = (widths[widest[-1]].get("reason") if widest else None) or "unknown"
+        t["reasons"][reason] = t["reasons"].get(reason, 0) + 1
+    out = []
+    for t in sorted(per.values(), key=lambda t: (-t["cases"], t["detector"])):
+        top = max(t["reasons"].items(), key=lambda kv: kv[1]) if t["reasons"] else (None, 0)
+        if t["detector"] in qualified:
+            reading = "qualifies"
+        elif t["eligible"] * 2 >= t["cases"] or top[0] is None:
+            reading = "eligible"
+        else:
+            reading = next((g for start, g in FIT_GROUPS if top[0].startswith(start)), "guarded")
+        out.append({**t, "top_reason": top[0], "top_count": top[1], "reading": reading})
+    return out
+
+
+def judge_fit_markdown(db: sqlite3.Connection, card: dict | None = None) -> str:
+    rows = judge_fit(db, card)
+    head = "#### Which detectors suit the judge (#353)"
+    if not rows:
+        return head + "\n\nNo shadow decisions yet."
+    lines = [head, "", ("From the shadow decisions: eligible at any width, and otherwise the commonest reason it left "
+                        "a case at the widest width that applied."), "",
+             "| detector | cases | eligible at any width | commonest reason left | reading |", "|---|---|---|---|---|"]
+    for r in rows:
+        why = f"{r['top_reason']} ({r['top_count']})" if r["top_reason"] else "–"
+        lines.append(f"| {r['detector']} | {r['cases']} | {_pct(r['eligible'] / r['cases'])} ({r['eligible']}) | "
+                     f"{why} | {FIT_WORDS[r['reading']]} |")
     return "\n".join(lines)
