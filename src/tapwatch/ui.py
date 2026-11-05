@@ -1084,7 +1084,7 @@ def render_stats(store: Store, qualify: benchmark.Qualify | None = None, assets:
                 f'<th class="hide-sm">last hit</th></tr></thead><tbody>{sup_rows}</tbody></table></div>') if sup \
         else '<div class="card empty">No suppression rules.</div>'
 
-    # Week by week: is the noise falling, is Jev agreeing more (benchmark.py; `tapwatch benchmark` prints the same)
+    # Week by week: is the noise falling, and what Jev raised and quieted (benchmark.py; `tapwatch benchmark` prints the same)
     weeks = benchmark.weekly(db)[-12:]
     week_rows = "".join(
         f'<tr><td class="mono">{e(w["week"])}</td><td class="num">{w["cases"]}</td><td class="num">{w["alerts"]}</td>'
@@ -1092,14 +1092,17 @@ def render_stats(store: Store, qualify: benchmark.Qualify | None = None, assets:
         + (f'<td><span class="meter">{hbar(w["noise_rate"], "amber")} <span class="tnum">{_pct(w["noise_rate"])}</span></span></td>'
            if w["noise_rate"] is not None else '<td class="faint">–</td>')
         + f'<td class="num">{w["true_positives"]}</td>'
-        + (f'<td><span class="meter">{hbar(w["jev_agreement"], "green")} <span class="tnum">{_pct(w["jev_agreement"])}</span>'
-           f' <span class="faint">of {w["jev_decided"]}</span></span></td>' if w["jev_agreement"] is not None else '<td class="faint">–</td>')
+        + f'<td class="num">{e(benchmark.jev_raised_cell(w))}</td>'
+        + f'<td class="num">{w["jev_quieted"]} ' + (f'<b class="err">({w["jev_quieted_tp"]})</b>' if w["jev_quieted_tp"]
+                                                     else f'<span class="faint">({w["jev_quieted_tp"]})</span>') + '</td>'
         + "</tr>" for w in weeks)
     week_html = ('<div class="card flush scroll"><table><thead><tr><th>week</th><th class="num">cases</th>'
                  '<th class="num">alerts</th><th class="num">decided</th><th>noise rate</th><th class="num">true positives</th>'
-                 '<th>Jev agreed with you</th></tr></thead><tbody>' + week_rows + '</tbody></table>'
+                 '<th class="num">alerts Jev raised (real)</th><th class="num">quieted by Jev (real)</th></tr></thead>'
+                 '<tbody>' + week_rows + '</tbody></table>'
                  '<p class="pad faint">Noise rate is false positives plus expected benign activity over decided cases. '
-                 'Jev agreement: it called a case benign exactly when you did, over decided cases it gave a category.</p></div>') \
+                 'Jev raised: alerts sent on its call, with how many you called true positives. Quieted: cases it sent '
+                 'to the log as routine, with any true positives among them in red (it should never quiet one).</p></div>') \
         if weeks else '<div class="card empty">No cases yet.</div>'
     h = benchmark.host_context(db)
     who_rows = "".join(f'<tr><td class="mono">{e(label(k))}</td><td class="num">{v}</td></tr>' for k, v in sorted(h["who"].items()))

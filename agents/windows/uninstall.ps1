@@ -4,6 +4,7 @@ Remove osquery and Sysmon installed by install.ps1. Run from an admin PowerShell
 #Requires -RunAsAdministrator
 param([switch]$Window)     # set by uninstall.cmd: close the window when done
 $ErrorActionPreference = "Continue"
+Unregister-ScheduledTask -TaskName "tapwatch osqueryd keeper" -Confirm:$false -ErrorAction SilentlyContinue
 Stop-Service osqueryd -Force -ErrorAction SilentlyContinue
 winget uninstall --id osquery.osquery --exact --silent
 Remove-Item -Recurse -Force (Join-Path $env:ProgramFiles "osquery") -ErrorAction SilentlyContinue

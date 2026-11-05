@@ -195,6 +195,27 @@ if (-not $svc) {
 Restart-Service -Name osqueryd -Force -ErrorAction SilentlyContinue
 if ((Get-Service osqueryd).Status -ne "Running") { Start-Service osqueryd }
 
+# Keep osqueryd running. 2026-10-31 on the sensor box: osqueryd hit "Access is denied" while rotating its results log
+# and stopped with exit code 0, which Windows counts as a clean stop, so the service stayed Stopped and the PC went
+# unwatched for two days. Two layers: restart on a crash or a non-zero exit (the service's recovery actions, with
+# failureflag so a non-zero exit counts too), and a SYSTEM task that starts it every 5 minutes if it is set to start
+# automatically but isn't running, which covers exit code 0. To stop the agent on purpose, set the service to Manual
+# or Disabled first (or run uninstall.ps1); the task leaves it alone then.
+$keeperTask = "tapwatch osqueryd keeper"
+& sc.exe failure osqueryd reset= 86400 actions= restart/60000/restart/60000/restart/300000 | Out-Null
+& sc.exe failureflag osqueryd 1 | Out-Null
+$keep = '$s = Get-Service osqueryd -ErrorAction SilentlyContinue; ' +
+        'if ($s -and $s.StartType -eq ''Automatic'' -and $s.Status -eq ''Stopped'') { Start-Service osqueryd }'
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -Command `"$keep`""
+$every = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) `
+    -RepetitionDuration (New-TimeSpan -Days 9999)
+$boot = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName $keeperTask -Action $action -Trigger @($every, $boot) -Principal $principal `
+    -Settings $settings -Description "Starts osqueryd if it is set to Automatic but stopped (tapwatch)" -Force | Out-Null
+
 # ---------------------------------------------------------------- Sysmon
 # Where Sysmon comes from, in this order:
 #   1. one already installed (Sysmon, Sysmon64, Sysmon64a): our config is loaded into it.

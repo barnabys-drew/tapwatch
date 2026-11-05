@@ -1418,6 +1418,34 @@ def test_upload_spike_to_a_sync_service_is_capped_at_digest():
     assert c.facts["to_sync_service"] and c.facts["max_route"] == "digest" and c.facts["top_share_pct"] >= 90
 
 
+def test_upload_spike_says_how_the_bytes_were_carried_and_to_which_network():
+    """A steady UDP stream to a CDN's network (live video) was called exfiltration from "625 MB to an address"."""
+    from tapwatch.feeds import AsnTable
+    from tapwatch.models import Case
+    from tapwatch.summarizer import Assets, summarize
+
+    asn = AsnTable([int.from_bytes(bytes([203, 0, 113, 0]), "big")], [int.from_bytes(bytes([203, 0, 113, 255]), "big")],
+                   [64500], ["US"], {64500: "Example CDN"})
+    det = HourlyProfile(asn=asn)
+    recs = [conn(T0 + h * 3600, orig_bytes=5_000_000) for h in range(8)]
+    stream = dict(conn(T0 + 8 * 3600 + 60, dst="203.0.113.77", port=19317, orig_bytes=700_000_000, service=None),
+                  proto="udp")
+    recs += [stream, conn(T0 + 9 * 3600)]
+    c = next(x for x in run(det, recs) if x.detector == "upload_spike")
+    assert (c.facts["top_carrier"], c.facts["top_conns"], c.facts["top_network"], c.facts["top_country"]) == \
+        ("udp/19317", 1, "Example CDN", "US")
+    text = summarize(c, Assets())
+    assert "on Example CDN's network (US) received it over UDP port 19317, in 1 connection." in text
+    assert "screen sharing are sent over UDP on high ports" in text
+    # a TCP upload says how it went, without the streaming note
+    det = HourlyProfile(asn=asn)
+    recs = [conn(T0 + h * 3600, orig_bytes=5_000_000) for h in range(8)]
+    recs += [conn(T0 + 8 * 3600 + 60, dst="203.0.113.78", orig_bytes=700_000_000), conn(T0 + 9 * 3600)]
+    c = next(x for x in run(det, recs) if x.detector == "upload_spike")
+    text = summarize(Case(c.detector, c.host, c.ts, c.title, c.facts, c.indicators), Assets())
+    assert "over TCP port 443" in text and "screen sharing" not in text
+
+
 def test_one_device_with_several_addresses_is_not_shared():
     """HtBot capture: the infected machine's own IPv6 addresses made its C2 look 'shared'."""
     mac = "08:00:27:63:6f:08"
