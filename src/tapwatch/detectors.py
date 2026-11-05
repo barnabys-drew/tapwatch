@@ -1107,6 +1107,9 @@ class HourlyProfile(Detector):
         self.steady, self.stop_hours, self.busy_min = steady_mb * 1e6, stop_hours, busy_min
         self.current: dict[str, list] = {}                       # host -> [conns, upload bytes, download bytes] this hour
         self.dests: dict[str, Counter] = defaultdict(Counter)     # host -> upload bytes per destination name, this hour
+        # host -> destination -> [upload bytes per "proto/port", connections, last address], this hour. Not saved: a
+        # restart only loses how the current hour's bytes were carried, which the case then doesn't say.
+        self.carriers: dict[str, dict[str, list]] = defaultdict(dict)
         # external IP -> name (DNS/TLS). Saved: a 2 GB iCloud upload right after a restart had no name, so
         # the sync-service cap could not apply and it alerted (2026-10-15 07:59).
         self.names: dict[str, str] = {}
@@ -1142,7 +1145,12 @@ class HourlyProfile(Detector):
             cur[1] += up
             cur[2] += down
             if up:
-                self.dests[src][self.names.get(dst) or dst] += up  # unnamed: by address
+                dest = self.names.get(dst) or dst   # unnamed: by address
+                self.dests[src][dest] += up
+                how = self.carriers[src].setdefault(dest, [Counter(), 0, ""])
+                how[0][f"{rec.get('proto') or '?'}/{rec.get('id.resp_p') or '?'}"] += up
+                how[1] += 1
+                how[2] = dst
         return out
 
     def _share_now(self, rec: dict) -> float:
@@ -1177,6 +1185,7 @@ class HourlyProfile(Detector):
                 self.history[host].append((h, conns, up, down))
         self.current.clear()
         self.dests.clear()
+        self.carriers.clear()
         for host in [h for h, hist in self.history.items()
                      if len(hist) >= 7 * 24 and not any(x[1] for x in list(hist)[-7 * 24:])]:
             del self.history[host]  # gone a week (guest phone, old address): stop tracking it
@@ -1205,13 +1214,28 @@ class HourlyProfile(Detector):
             # way, 2.17 GB up, alerted as #82). Exfiltration is lopsided: the data goes one way.
             symmetric = 0.35 <= up / (up + down) <= 0.65 if down else False
             top_category, top_source = resolve(top)  # dests is keyed by name whenever one is known
+            # How the top destination's bytes were carried: its network, the protocol and port that carried
+            # most of them, and over how many connections. Measured 2026-11-05: four upload alerts in a week were
+            # a workstation's steady UDP streams to a CDN's network on ports around 19300 (live video or screen
+            # sharing). Told only "625 MB to an address, 23x normal", Jev called each one exfiltration at
+            # 0.96-0.99; with this in its state, 0.62-0.71, below alert_confidence, so a digest (three of them,
+            # two runs each).
+            how = self.carriers.get(host, {}).get(top)
+            carried = {}
+            if how:
+                named = getattr(self.asn, "network", None)   # a bare lookup table can't name networks
+                net = named(how[2]) if named and how[2] and _is_ip(how[2]) else None
+                carrier = how[0].most_common(1)[0][0] if how[0] else ""
+                carried = {"top_carrier": carrier, "top_conns": how[1],
+                           **({"top_network": net["network"], "top_asn": net["asn"], "top_country": net["country"]}
+                              if net and net.get("network") else {})}
             facts = {"mb": round(up / 1e6), "normal_mb": round(normal / 1e6, 1),
                      "times_normal": round(up / max(normal, 1)), "basis": basis, "down_mb": round(down / 1e6),
                      "symmetric": symmetric,
                      "top_share_pct": round(100 * share), "to_sync_service": bool(top) and sync_service(top),
                      "to_security_vendor": bool(top) and suffix_match(top, SECURITY_TELEMETRY) is not None,
                      "to_sync_network": sync_network,
-                     "top_category": top_category, "top_category_source": top_source}
+                     "top_category": top_category, "top_category_source": top_source, **carried}
             if (facts["to_sync_service"] or facts["to_security_vendor"] or sync_network or symmetric) and share >= 0.6:
                 facts["max_route"] = "digest"  # home eval: a 700 MB OneDrive hour was Jev's "exfiltration 1.00"
             # host is the device key (name:/mac:/IP); the assets entry may be under it, the address, or

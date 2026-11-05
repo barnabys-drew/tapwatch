@@ -69,8 +69,9 @@ def test_benchmark_markdown_stats_page_and_command(tmp_path, capsys):
     store = Store(str(tmp_path / "t.db"))
     seed(store)
     md = benchmark.markdown(store.db, now=T0 + 2 * WEEK)
-    assert "| week | cases | alerts | decided | noise rate | true positives | Jev agreement |" in md
-    assert "| 100% | 0 | 33% (3) |" in md and "| 67% | 1 | 100% (2) |" in md
+    assert ("| week | cases | alerts | decided | noise rate | true positives | alerts Jev raised (real) "
+            "| quieted by Jev (real among them) |") in md
+    assert "| 100% | 0 | 0 (0) | 0 (0) |" in md and "| 67% | 1 | 0 (0) | 0 (0) |" in md   # the seed's reasons are rules
     assert "5 cases on the PC, 1 corroborated" in md and "matched the owner's disposition on 100% of 2" in md
     page = ui.render_stats(store)[1]
     assert "Week by week" in page and "Host context: code, Jev and you" in page and "agent misused" in page
@@ -215,3 +216,28 @@ def test_judge_replay_scores_history_before_any_shadow_data(tmp_path, capsys):
     (tmp_path / "config.yaml").write_text("db_path: " + str(tmp_path / "t.db") + "\n")
     assert main(["-c", str(tmp_path / "config.yaml"), "benchmark", "--judge-replay"]) == 0
     assert f"**1** (#{tp})" in capsys.readouterr().out
+
+
+def test_weekly_scores_what_jev_raised_and_quieted(tmp_path):
+    """Jev's effect on routing, from the router's reason, against the owner's disposition (2026-11-05: the category
+    score said 26-54%, but a routine beacon's category is "c2_beaconing" by description)."""
+    store = Store(str(tmp_path / "t.db"))
+    rows = [("alert", "AI: c2_beaconing, severity 3.1/4", "false_positive"),
+            ("alert", "AI: data_exfiltration, severity 3.4/4", "true_positive"),
+            ("alert", "AI: c2_beaconing, severity 2.9/4", None),                 # not decided yet
+            ("alert", "always-alert rule", "true_positive"),                    # not Jev's doing
+            ("log", "AI: routine activity", "benign_expected"),
+            ("log", "AI: benign", "true_positive"),                             # an old reason; quieted a real one
+            ("digest", "learning: AI: c2_beaconing, severity 3.0/4", "false_positive"),   # held at digest
+            ("digest", "AI leaning c2_beaconing (0.70), not sure enough to interrupt", "false_positive")]
+    for i, (route, reason, disp) in enumerate(rows):
+        cid = store.add(Case("beaconing", "192.168.50.10", T0 + i, "t", {"dedupe": f"d{i}"}, []), "s", None,
+                        Route(route), reason)
+        store.db.execute("UPDATE cases SET disposition=? WHERE id=?", (disp, cid))
+    store.db.commit()
+    (w,) = benchmark.weekly(store.db)
+    assert (w["jev_raised"], w["jev_raised_decided"], w["jev_raised_tp"]) == (3, 2, 1)
+    assert (w["jev_quieted"], w["jev_quieted_tp"]) == (2, 1)
+    assert benchmark.jev_raised_cell(w) == "3 (1, 1 undecided)"
+    page = ui.render_stats(store)[1]
+    assert "alerts Jev raised (real)" in page and '<b class="err">(1)</b>' in page
