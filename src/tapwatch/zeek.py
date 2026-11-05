@@ -153,22 +153,45 @@ def prune(log_dirs, keep_days: float, now: float | None = None) -> list[Path]:
     return gone
 
 
+HEAD_BYTES = 1024   # how much of a file's start identifies it: past Zeek's #open stamp and osquery's calendarTime
+
+
 class _Open:
     def __init__(self, fh, inode: int, offset: int):
         self.fh, self.inode, self.offset = fh, inode, offset
+        self.head = b""     # the file's first bytes as read through our handle, up to HEAD_BYTES (`_head`)
+        self.seen = None    # (size, mtime) by path at the last poll: unchanged means no need to look again
 
 
-def _replaced(cur: _Open, st: os.stat_result) -> bool:
-    """The path now names a different file than the one we hold open, even though the inode numbers agree.
-
-    Inode numbers are not a reliable identity on every mount: WSL's drvfs reported the same st_ino for
-    osqueryd.results.log and the osqueryd.results.log.1 it had just been renamed to (2026-10-17). The
-    follower then took the new, smaller file for an in-place truncation, rewound to byte 0 of the old
-    100 MB file it still held open, and replayed it end to end every poll, raising the same cases
-    hundreds of times. A file we hold open cannot be smaller through its path than through its handle,
-    so when it is, the path has moved on to a new file and the old one must be finished and closed."""
+def _read_head(fh, n: int = HEAD_BYTES) -> bytes:
+    pos = fh.tell()
     try:
-        return st.st_size < os.fstat(cur.fh.fileno()).st_size
+        fh.seek(0)
+        return fh.read(n)
+    finally:
+        fh.seek(pos)
+
+
+def _replaced(cur: _Open, path: Path, st: os.stat_result) -> bool:
+    """The path now names a different file than the one we hold open, though the mount may say otherwise.
+
+    Neither inode numbers nor sizes identify a file on WSL's drvfs. 2026-10-17: osqueryd.results.log and the .1 it
+    had just been renamed to had the same st_ino. Measured 2026-11-05 on the sensor box: after a rotation, fstat on
+    the old, open handle reports the *new* file's size and inode, so the old size test (path smaller than handle)
+    could never fire. The follower took the rotation for an in-place truncation, rewound the old handle to byte 0,
+    re-read the old file and then waited on it forever (10-31 to 11-03, until a restart). Reading through the handle
+    still gives the old file's bytes, so a file is identified by its first HEAD_BYTES: if the path's start differs
+    from our handle's, the path has moved on. Zeek logs open with a `#open` stamp and osquery lines with a calendar
+    time, so two different files share a start only if they hold the same first records. The inode number is only a
+    hint to look, and the answer only while the file is still empty: drvfs also changes a new file's st_ino a poll
+    after the rotation (measured the same day), which on its own made the follower read the new file twice."""
+    try:
+        if len(cur.head) < HEAD_BYTES:
+            cur.head = _read_head(cur.fh)   # grown since we opened it: learn more of its start
+        if not cur.head:
+            return st.st_ino != cur.inode   # nothing written yet: the inode is all there is
+        with path.open("rb") as now:
+            return now.read(len(cur.head)) != cur.head
     except OSError:
         return True
 
@@ -196,7 +219,8 @@ class Follower:
             except FileNotFoundError:
                 st = None
             cur = self._open.get(path)
-            if cur and (st is None or st.st_ino != cur.inode or _replaced(cur, st)):
+            seen = (st.st_size, st.st_mtime_ns) if st else None
+            if cur and (st is None or ((seen != cur.seen or st.st_ino != cur.inode) and _replaced(cur, path, st))):
                 out += self._tag(self._drain(cur, kind, final=True), path)  # rotated or deleted: finish the old file
                 cur.fh.close()
                 del self._open[path]
@@ -208,8 +232,14 @@ class Follower:
                 # Files that appear later (Zeek creates logs lazily, and after rotation): from the top.
                 start = 0 if self.from_start or self._started else st.st_size
                 cur = self._open[path] = _Open(path.open("rb"), st.st_ino, start)
+                cur.head = _read_head(cur.fh)
             elif os.fstat(cur.fh.fileno()).st_size < cur.offset:
-                cur.offset = 0  # truncated in place: the file we hold open really did shrink
+                # Truncated in place: the file we hold open really did shrink. Its start is the same (`_replaced` said
+                # so), so this is a log rewritten from the top under the same name; drvfs's fstat can't be trusted
+                # alone (see _replaced), but by now the bytes agree.
+                cur.offset = 0
+                cur.head = _read_head(cur.fh)
+            cur.seen, cur.inode = seen, st.st_ino   # the same file, whatever number the mount gives it now
             out += self._tag(self._drain(cur, kind), path)
         self._started = True
         out.sort(key=lambda r: r.get("ts", 0.0))

@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 from conftest import T0, conn, dhcp, dns, jev_response, ssl, write_logs
@@ -352,6 +354,50 @@ def test_follower_survives_rotation_when_the_mount_reuses_inode_numbers(tmp_path
     with log.open("a") as fh:
         fh.write(json.dumps({"ts": 4}) + "\n")
     assert [r["ts"] for r in f.poll()] == [4]              # and the new one is followed normally
+    f.close()
+
+
+def _drvfs(monkeypatch, path):
+    """Make the follower see `path` the way WSL's drvfs shows a rotated Windows file (measured on the sensor box,
+    2026-11-05): fstat on the old, open handle reports the *path's* size, and the path keeps the old inode number.
+    Only reading through the handle still gives the old file's bytes."""
+    real_stat, real_fstat = Path.stat, zeek.os.fstat
+    inode = {}
+
+    def stat(self, *a, **kw):
+        st = real_stat(self, *a, **kw)
+        if self == path:
+            inode.setdefault("ino", st.st_ino)
+            return os.stat_result((st.st_mode, inode["ino"], *tuple(st)[2:]))
+        return st
+
+    def fstat(fd):
+        return stat(path) if path.exists() else real_fstat(fd)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(zeek.os, "fstat", fstat)
+    return inode   # set inode["ino"] to move the number, as drvfs does a poll after a rotation
+
+
+def test_follower_survives_rotation_on_drvfs_where_the_handle_reports_the_path(tmp_path, monkeypatch):
+    # 2026-10-31/11-03: the Windows agent's log rotated; the follower took the new, smaller file for an in-place
+    # truncation of the one it held, rewound the old handle and then read nothing new until a restart.
+    log = tmp_path / "conn.log"
+    log.write_text("".join(json.dumps({"ts": i, "pad": "x" * 200}) + "\n" for i in range(1, 9)))
+    inode = _drvfs(monkeypatch, log)
+    f = zeek.Follower(tmp_path, from_start=True)
+    assert [r["ts"] for r in f.poll()] == list(range(1, 9))
+    with log.open("a") as fh:
+        fh.write(json.dumps({"ts": 9}) + "\n")         # the old file's last line...
+    log.rename(tmp_path / "conn.log.1")                  # ...then rotation
+    log.write_text(json.dumps({"ts": 10}) + "\n")       # a new, much smaller file
+    assert [r["ts"] for r in f.poll()] == [9, 10]       # tail of the old, then the new from the top
+    assert f.poll() == []                                # nothing replayed
+    inode["ino"] += 1                                    # the mount gives the new file its own number later
+    assert f.poll() == []                                # same bytes: the same file, not read twice
+    with log.open("a") as fh:
+        fh.write(json.dumps({"ts": 11}) + "\n")
+    assert [r["ts"] for r in f.poll()] == [11]          # and the new file is followed
     f.close()
 
 
