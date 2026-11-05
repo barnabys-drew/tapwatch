@@ -35,8 +35,25 @@ Three parts, in order:
   closing uses; `AutoClose.status` says in words which is missing.
 
 Precedent before models (roadmap, 2026-10-25): with 9 true positives in 1,198 labels a trained model adds risk and
-hides its reasons, so the judge matches exact keys. Wider keys (a domain on any device) are earned per detector
-through the scorecard (#203), never assumed. Nothing here touches the network.
+hides its reasons, so the judge matches keys, not scores. Wider keys are earned per detector through the scorecard
+(#203), never assumed. Shadow mode records an answer at every width that applies to the case (WIDTHS, #353):
+
+- `device`: the same detector, device and exact key (a program's path, a full host name, an indicator).
+- `site`: the same device and the same site, the registrable domain of a host-name key. A tenant of a shared
+  platform (`x.github.io`, `y.trycloudflare.com`: the PSL's private section and detectors.SHARED_PLATFORMS) never
+  widens: its site is its full name.
+- `any_device`: the exact key on any of the owner's devices (for a program key, that is "the same program on any
+  PC").
+- `site_any_device`: the site on any device.
+- `category`: for CATEGORY_DETECTORS only, the kind of site (the offline category list) and whether every name is
+  on the popular list, on any device; never for a random-looking or newly registered name. The widest and riskiest
+  width (FluBot hid behind www.facebook.com), so it never inherits a narrower width's qualification.
+
+A true positive blocks wider too: one on a site (any detector, any device) keeps the judge off that site at the
+site and category widths. Nothing here touches the network.
+
+Measured 2026-11-04, ten days of shadow mode: 301 cases, every one "leave". The exact keys rarely repeat (a new
+destination each time), which is what the wider widths are for.
 """
 
 from __future__ import annotations
@@ -48,12 +65,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from .detectors import base_domain, shared_platform
 from .models import Case, Route, Verdict, device_id, main_indicator
 from .router import CODE_ONLY, LONG_HORIZON, agent_misused, critical
 
 log = logging.getLogger("tapwatch")
 
-FEATURE_VERSION = 1
+FEATURE_VERSION = 2           # 2: `category_key` in the features (#353)
 MODEL_VERSION = "precedent-1"
 NOISE = ("false_positive", "benign_expected")
 # Who decided, from the audit actor. Only COUNTED sources are precedent.
@@ -74,7 +92,14 @@ TP_LOOKBACK = 30 * 86400      # a true positive on the device this recently keep
 SENSOR_HEALTH = ("feed_silence",)
 BACKED_WINDOW = 7 * 86400     # another case on the device this recent keeps the judge off a long-horizon case
 KEY_WORDS = {"domain": "destination", "program": "program", "ind": "indicator", "detector": "case type"}
-WIDTHS = ("device", "any_device")   # precedent key widths shadow mode records (see eligible)
+# Precedent key widths shadow mode records (module docstring, `eligible`), narrowest first: auto-close tries an
+# allowed detector's widths in this order.
+WIDTHS = ("device", "site", "any_device", "site_any_device", "category")
+WIDTH_WORDS = {"device": "same device", "site": "same device, same site", "any_device": "any device",
+               "site_any_device": "any device, same site", "category": "any device, same kind of site"}
+ANY_DEVICE = frozenset({"any_device", "site_any_device", "category"})   # precedent from two devices, none over half
+SITE_WIDTHS = frozenset({"site", "site_any_device"})
+CATEGORY_DETECTORS = ("new_domain",)   # detectors that opt in to the category width
 PRECEDENT_LINKS = 5           # case ids named in an explanation
 
 
@@ -111,6 +136,42 @@ def key_for(detector: str, facts: dict, indicators: list[str]) -> str:
     return f"ind:{ind}" if ind else f"detector:{detector}"
 
 
+def site_of(key: str) -> str | None:
+    """The site a "domain:" key belongs to: its registrable domain, or the full name for a tenant of a shared
+    platform (which never widens). None for any other key (a program, an address, a dedupe fact)."""
+    if not key.startswith("domain:"):
+        return None
+    host = key[len("domain:"):]
+    return host if shared_platform(host) else base_domain(host)
+
+
+def category_key(detector: str, facts: dict) -> str | None:
+    """The category width's key (CATEGORY_DETECTORS only): the case's site categories and whether every name in it
+    is on the popular list, e.g. "category:advertising+cdn|ranked". None without a category. No network strings."""
+    if detector not in CATEGORY_DETECTORS:
+        return None
+    cats = facts.get("categories") or ([facts["category"]] if facts.get("category") else [])
+    cats = sorted({str(c) for c in cats if c})
+    if not cats:
+        return None
+    popular = facts.get("popular")
+    if isinstance(popular, bool) or popular is None:
+        ranked = popular is True
+    else:   # new_domain counts the popular names in its window: ranked only when all of them are
+        ranked = isinstance(popular, int) and popular >= int(facts.get("count") or 1)
+    return "category:" + "+".join(cats) + ("|ranked" if ranked else "|unranked")
+
+
+def applies(width: str, detector: str, key: str) -> bool:
+    """Does this width mean anything for a case with this key? A site width needs a host name, the category width
+    an opted-in detector. Shadow mode leaves the others out, so the scorecard doesn't count copies of narrower rows."""
+    if width in SITE_WIDTHS:
+        return site_of(key) is not None
+    if width == "category":
+        return detector in CATEGORY_DETECTORS
+    return True
+
+
 def features(row: sqlite3.Row) -> dict:
     """Code facts only, as the case stands now. No indicator text beyond the normalised key, no network strings."""
     facts = json.loads(row["facts"] or "{}")
@@ -131,6 +192,7 @@ def features(row: sqlite3.Row) -> dict:
         "correlated_best": facts.get("correlated_best"),
         "jev_category": verdict.get("category"),
         "jev_confidence": verdict.get("category_confidence"),
+        "category_key": category_key(row["detector"], facts),
     }
 
 
@@ -224,15 +286,78 @@ def device_keys(db: sqlite3.Connection, device: str, facts: dict) -> list[str]:
     return [device] if other else [device, f"mac:{mac}"]
 
 
+def _site_query(site: str) -> tuple[str, tuple]:
+    """SQL narrowing judge_examples to keys that may belong to `site` (the name itself or a name under it); the
+    caller checks `site_of` on each, so a tenant under a shared platform never matches its platform."""
+    return "(key = ? OR key LIKE ? ESCAPE '\\')", ("domain:" + site, "domain:%." + site.replace("_", "\\_"))
+
+
+def _site_true_positive(db: sqlite3.Connection, site: str, before: float) -> bool:
+    """A true positive labelled before `before` on any name of this site, by any detector on any device."""
+    where, args = _site_query(site)
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only fixed text and '?' placeholders are joined; every value is bound
+    keys = db.execute("SELECT key FROM judge_examples WHERE label='true_positive' AND labelled_ts < ? AND " + where,
+                      (before, *args)).fetchall()
+    return any(site_of(k[0]) == site for k in keys)
+
+
+_CATEGORY_CACHE: dict[tuple[int, float], str | None] = {}
+
+
+def _example_category(db: sqlite3.Connection, p: sqlite3.Row) -> str | None:
+    """A training example's category key: from its snapshot (feature version 2 on), else from its case's facts as
+    stored now (older examples, an estimate like backfill). Cached per (case, label time): a new label replaces both."""
+    cache_key = (p["case_id"], p["labelled_ts"])
+    if cache_key not in _CATEGORY_CACHE:
+        try:
+            snap = json.loads(p["features"] or "{}")
+        except ValueError:
+            snap = {}
+        if "category_key" in snap:
+            value = snap["category_key"]
+        else:
+            case = db.execute("SELECT detector, facts FROM cases WHERE id=?", (p["case_id"],)).fetchone()
+            value = category_key(case[0], json.loads(case[1] or "{}")) if case else None
+        if len(_CATEGORY_CACHE) > 50000:
+            _CATEGORY_CACHE.clear()
+        _CATEGORY_CACHE[cache_key] = value
+    return _CATEGORY_CACHE[cache_key]
+
+
+def _precedents(db: sqlite3.Connection, width: str, f: dict, devices: list[str], before: float, case_id: int,
+                site: str | None) -> list[sqlite3.Row]:
+    """The training examples that are "the same thing" at this width, labelled before `before`, newest first."""
+    clauses, args = ["detector=?", "labelled_ts < ?", "case_id != ?"], [f["detector"], before, case_id]
+    if width not in ANY_DEVICE:
+        clauses.append(f"device IN ({','.join('?' * len(devices))})")
+        args += devices
+    if width in ("device", "any_device"):
+        clauses.append("key=?")
+        args.append(f["key"])
+    elif width in SITE_WIDTHS:
+        where, site_args = _site_query(site)
+        clauses.append(where)
+        args += site_args
+    cur = db.cursor()
+    cur.row_factory = sqlite3.Row
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only fixed text and '?' placeholders are joined; every value is bound
+    rows = cur.execute("SELECT * FROM judge_examples WHERE " + " AND ".join(clauses) + " ORDER BY labelled_ts DESC",
+                       args).fetchall()
+    if width in SITE_WIDTHS:
+        return [p for p in rows if site_of(p["key"]) == site]
+    if width == "category":
+        return [p for p in rows if _example_category(db, p) == f["category_key"]]
+    return rows
+
+
 def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = None,
              width: str = "device") -> tuple[bool, str, list]:
     """May the judge suggest closing this case? (allowed, reason, precedent rows). Only examples labelled before
     `before` count (default: the case's first time), so a replay sees what the judge would have seen then.
 
-    `width` is how wide the precedent key is: "device" (same detector, device and key: what the judge acts on first)
-    or "any_device" (the same detector and key on any device, which the roadmap says real savings need, and where a
-    real case hides: FluBot used www.facebook.com). A wider key is earned per detector through the scorecard (#203);
-    until then shadow mode records both. "any_device" needs precedent from two devices, none giving over half."""
+    `width` is how wide the precedent key is (WIDTHS, the module docstring). A wider key is earned per detector
+    through the scorecard (#203); until then shadow mode records each. The any-device widths need precedent from
+    two devices, none giving over half. A width that doesn't apply to the case (`applies`) is never eligible."""
     case, verdict = _case(row), _verdict(row)
     before = row["first_ts"] if before is None else before
     if case.must_alert:
@@ -248,6 +373,14 @@ def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = No
     if case.detector in LONG_HORIZON and (other := backed_long_horizon(db, row, case, before)):
         return False, f"a long-horizon case backed by another case on this device ({other})", []
     f = features(row)
+    if not applies(width, f["detector"], f["key"]):
+        return False, f"the {WIDTH_WORDS.get(width, width)} width doesn't apply to this case", []
+    site = site_of(f["key"]) if width in SITE_WIDTHS or width == "category" else None
+    if width == "category":
+        if f["category_key"] is None:
+            return False, "no site category for this case", []
+        if case.facts.get("random") or case.facts.get("newly_registered"):
+            return False, "a random-looking or newly registered name: never matched by its kind of site", []
     devices = device_keys(db, f["device"], case.facts)
     marks = ",".join("?" * len(devices))
     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only '?' placeholders are joined; every value is bound
@@ -255,22 +388,17 @@ def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = No
                   f" BETWEEN ? AND ? AND detector NOT IN ({','.join('?' * len(SENSOR_HEALTH))}) LIMIT 1",
                   (*devices, before - TP_LOOKBACK, before, *SENSOR_HEALTH)).fetchone():
         return False, "a true positive on this device in the last 30 days", []
-    if width == "device":
-        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only '?' placeholders are joined; every value is bound
-        same = db.execute(f"SELECT * FROM judge_examples WHERE detector=? AND device IN ({marks}) AND key=?"
-                          " AND labelled_ts < ? AND case_id != ? ORDER BY labelled_ts DESC",
-                          (f["detector"], *devices, f["key"], before, row["id"])).fetchall()
-    else:
-        same = db.execute("SELECT * FROM judge_examples WHERE detector=? AND key=? AND labelled_ts < ?"
-                          " AND case_id != ? ORDER BY labelled_ts DESC",
-                          (f["detector"], f["key"], before, row["id"])).fetchall()
+    if site and _site_true_positive(db, site, before):
+        return False, "this site was called a true positive before", []
+    same = _precedents(db, width, f, devices, before, row["id"], site)
     if any(p["label"] == "true_positive" for p in same):   # from any source: a TP label only makes the judge careful
         return False, "this same thing was called a true positive before", []
     counted = [p for p in same if p["label_source"] in COUNTED]
-    where = "this device" if width == "device" else "any device"
+    where = "any device" if width in ANY_DEVICE else "this device"
     if not counted:
         ai_only = " (only closes the owner didn't make)" if same else ""
-        what = KEY_WORDS.get(f["key"].split(":")[0], "indicator")
+        what = "site" if width in SITE_WIDTHS else "kind of site" if width == "category" \
+            else KEY_WORDS.get(f["key"].split(":")[0], "indicator")
         return False, f"no owner precedent on {where} for this {what}{ai_only}", []
     firsts = {r["id"]: r["first_ts"] for r in db.execute(
         # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- only '?' placeholders are joined; every value is bound
@@ -287,7 +415,7 @@ def eligible(db: sqlite3.Connection, row: sqlite3.Row, before: float | None = No
         weeks[w] = weeks.get(w, 0) + 1
     if max(weeks.values()) / len(days) > MAX_WEEK_SHARE:
         return False, "owner precedent comes mostly from one week", counted
-    if width != "device":
+    if width in ANY_DEVICE:
         devices: dict[str, int] = {}
         for p in counted:
             devices[p["device"]] = devices.get(p["device"], 0) + 1
@@ -303,22 +431,29 @@ def _explain(ok: bool, reason: str, precedents: list, width: str) -> tuple[str, 
     if not ok:
         return f"not eligible: {reason}", ids, confidence
     labels = sorted({p["label"] for p in precedents})
-    what = "program" if precedents[0]["key"].startswith("program:") else "destination" \
-        if precedents[0]["key"].startswith("domain:") else "indicator"
-    where = "same device" if width == "device" else "any device"
-    return (f"like {len(precedents)} earlier cases the owner closed: {where}, same {what}, all "
+    if width in SITE_WIDTHS or width == "category":
+        where = WIDTH_WORDS[width]
+    else:
+        what = "program" if precedents[0]["key"].startswith("program:") else "destination" \
+            if precedents[0]["key"].startswith("domain:") else "indicator"
+        where = f"{WIDTH_WORDS.get(width, width)}, same {what}"
+    return (f"like {len(precedents)} earlier cases the owner closed: {where}, all "
             f"{' or '.join(labels)} (" + ", ".join(f"#{i}" for i in ids) + ")"), ids, confidence
 
 
 def decide(db: sqlite3.Connection, case_id: int, now: float | None = None) -> dict | None:
-    """Shadow mode: record what the judge would do with a stored case, and why, at each key width. Never acts on
-    it. The top-level columns are the "device" width, the one it would act on first; `widths` holds both."""
+    """Shadow mode: record what the judge would do with a stored case, and why, at each key width that applies to
+    it. Never acts on it. The top-level columns are the "device" width, the one it would act on first; `widths`
+    holds every applicable width."""
     db.row_factory = sqlite3.Row
     row = db.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
     if row is None:
         return None
     widths = {}
+    f = features(row)
     for width in WIDTHS:
+        if not applies(width, f["detector"], f["key"]):
+            continue
         ok, reason, precedents = eligible(db, row, width=width)
         explanation, ids, confidence = _explain(ok, reason, precedents, width)
         widths[width] = {"eligible": ok, "reason": None if ok else reason,
@@ -347,7 +482,10 @@ def replay(db: sqlite3.Connection) -> dict:
     for row in db.execute("SELECT * FROM cases ORDER BY first_ts").fetchall():
         d = out.setdefault(row["detector"], {"cases": 0, **{w: 0 for w in WIDTHS}, "eligible_tp": 0})
         d["cases"] += 1
+        f = features(row)
         for width in WIDTHS:
+            if not applies(width, f["detector"], f["key"]):
+                continue
             ok, reason, _ = eligible(db, row, width=width)
             reasons[width][reason] = reasons[width].get(reason, 0) + 1
             if ok:
@@ -640,7 +778,7 @@ class AutoClose:
         """Close the case in one transaction, only if it is still new with no disposition: the owner may have moved
         or labelled it while the judge looked (review of #334). Audited like `update_case`, which writes no training
         example for the judge's actor either. False, and nothing written, when it changed."""
-        where = "same device" if width == "device" else "any device"
+        where = WIDTH_WORDS.get(width, width)
         note = (f"Closed by the judge (auto-close, {where} width): {explanation}. Undo on this page puts it back to "
                 "investigating with no disposition.")
         with db:

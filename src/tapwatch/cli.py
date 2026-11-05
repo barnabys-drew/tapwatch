@@ -216,6 +216,7 @@ def cmd_selfcheck(args, cfg) -> int:
 
 def cmd_benchmark(args, cfg) -> int:
     """Week-by-week noise rate, Jev agreement, host-context accuracy and the judge's scorecard, as Markdown."""
+    detectors.set_public_suffixes(cfg.get("public_suffix_file"))   # a replay's site keys match the live judge's
     print(benchmark.markdown(Store(cfg.get("db_path", "tapwatch.db")).db, judge_replay=args.judge_replay,
                              qualify=benchmark.Qualify.from_config(cfg)))
     return 0
@@ -224,6 +225,7 @@ def cmd_benchmark(args, cfg) -> int:
 def cmd_judge(args, cfg) -> int:
     """The learned judge's training set and guardrails (#200, #201), and what auto-close did (#204, #205).
     Read-only except `backfill` and `undo`."""
+    detectors.set_public_suffixes(cfg.get("public_suffix_file"))   # site keys (#353) as the live judge reads them
     store = Store(cfg.get("db_path", "tapwatch.db"))
     db = store.db
     if args.action == "closed":
@@ -258,10 +260,11 @@ def cmd_judge(args, cfg) -> int:
         print(benchmark.judge_examples_markdown(db))
         return 0
     result = judge.replay(db)
-    print("| Detector | Cases | Eligible, same device | Eligible, any device | Eligible true positives |")
-    print("|---|---|---|---|---|")
+    print("| Detector | Cases | " + " | ".join(f"Eligible, {judge.WIDTH_WORDS[w]}" for w in judge.WIDTHS)
+          + " | Eligible true positives |")
+    print("|---" * (len(judge.WIDTHS) + 3) + "|")
     for name, d in sorted(result["detectors"].items(), key=lambda kv: -kv[1]["cases"]):
-        print(f"| {name} | {d['cases']} | {d['device']} | {d['any_device']} | {d['eligible_tp']} |")
+        print(f"| {name} | {d['cases']} | " + " | ".join(str(d[w]) for w in judge.WIDTHS) + f" | {d['eligible_tp']} |")
     for width, reasons in result["reasons"].items():
         print(f"\nWhy not eligible ({width.replace('_', ' ')}):")
         for reason, n in sorted(reasons.items(), key=lambda kv: -kv[1]):

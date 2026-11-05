@@ -326,6 +326,26 @@ day, no behaviour change, and it gives per-detector numbers). Then the shadow ju
 for 2 to 4 weeks. Auto-close (#204) only follows for detectors whose scorecard qualifies, then drift back-off
 (#205).
 
+### Wider keys, measured (2026-11-04, #353)
+
+Ten days of shadow mode gave 301 cases and 301 "leave" answers, so #353 added the wider widths: the site, the site
+on any device, and for `new_domain` the kind of site. Replayed over the whole live history (1,511 cases), they
+barely help: 2 more cases eligible (one at each site width, both in the last week), none at the category width, and
+no true positive eligible at any width. The noise is a long tail: 693 domain cases came from 512 different sites,
+and only 33 sites recur three times or more. `new_domain` is first contact by definition, so its own site never
+repeats on a device. Its only wider match is the kind of site, and 282 of its 506 cases have no category.
+
+So waiting won't make precedent matching close much. The lever is the detectors and their facts:
+
+- **Context the detector lacks.** A site category for more names (the category model, `categories.ai`), and the
+  program that made the connection (host context), so "a browser contacted an ad network" is something that repeats.
+- **Detectors that fire on uniqueness.** `new_domain`, `beaconing` and `host_persist` are mostly "no precedent,
+  even widened". They need reworking, splitting or more context, not more history.
+- **Bulk closes don't teach.** The 10-17 duplicate flood (338 `host_encoded_cmd` cases) was closed in one sitting
+  the next day, so it can't train the judge, as intended.
+
+The benchmark's "which detectors suit the judge" table tracks this per detector from the shadow decisions.
+
 ## v0.5: home XDR ([milestone](https://github.com/barnabys-drew/tapwatch/milestone/5))
 
 The end goal: one story per device from every signal a home has, not just the wire. Each source is something a
