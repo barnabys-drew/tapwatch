@@ -280,6 +280,31 @@ user would answer "home"). The one false alert is a WannaCry-capture host that i
 dataset's infected list; the rules alert on it without Jev too, so wording can't change it. Lowering the alert thresholds to
 compensate for `home` would be tuning on two cases.
 
+## Jev on the live network: what it raised and what it quieted (2026-11-05)
+
+The benchmark used to report "Jev agreement" at 26–54% a week: Jev's category was "benign" exactly when the owner
+called the case noise. That score misleads. The category question asks what kind of activity a case is, so a routine
+beacon is `c2_beaconing` by description, a scan `recon_scanning`, an upload spike `data_exfiltration`: 167, 48 and
+32 of the 441 decided cases Jev answered. What matters is what Jev's answer did to the route, which the benchmark now
+scores:
+
+| Jev's effect (all cases to 2026-11-05) | cases | true positives |
+|---|---|---|
+| raised to an alert on its own call | 72 | 1 |
+| quieted to the log as routine | 111 | 0 |
+
+The false alerts it raised were mostly the first live week, before tuning: 61, then 6, 3 and 2 a week. Four of the
+last five were one shape: a workstation's steady one-way UDP stream to a CDN's network on ports around 19300 (about
+3 Mbit/s, one-minute flows, nothing back), which is live video or screen sharing. Jev's state said only "uploaded 625
+MB to an address, 23 times its normal". Adding how the bytes were carried (the network, UDP and the port, the number
+of connections, and that live media goes over UDP on high ports while file uploads use TCP or QUIC on 443) moved Jev
+from exfiltration at 0.96–0.99 to 0.62–0.71 on three of them, two runs each, below the 0.75 it needs to alert alone:
+a digest instead of an interruption. `upload_spike` cases now carry those facts.
+
+Two things were checked and left alone. The `home` wording was measured to cost two real infections their alert
+(above), so `office` stays the default. Jev's `routine` score didn't separate the two true positives it saw (0.4,
+0.5) from noise (0.1–0.87); two is too few to say more.
+
 ## The judge's guardrails on the live history (2026-10-25, #201)
 
 `tapwatch judge backfill` then `tapwatch judge replay` on a copy of the live sensor's database: 1,205 cases from

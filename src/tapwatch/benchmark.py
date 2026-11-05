@@ -36,8 +36,25 @@ def _rows(db: sqlite3.Connection) -> list[sqlite3.Row]:
     cur.row_factory = sqlite3.Row  # on the cursor, not the caller's connection
     # The owner's disposition only: a judge auto-close (#204) is not the owner's verdict (store.OWNER_DISPOSITION)
     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- a fixed constant
-    return cur.execute(f"SELECT first_ts, route, {OWNER_DISPOSITION} AS disposition, verdict, facts FROM cases"
+    return cur.execute(f"SELECT first_ts, route, reason, {OWNER_DISPOSITION} AS disposition, verdict, facts FROM cases"
                        ).fetchall()
+
+
+# What Jev's answer did to a case, from the router's reason (router._route): raised it to an alert on its own call, or
+# quieted it to the log as routine ("AI: benign" in rows from before 2026-10-20). Anything else it only kept at the
+# digest, which is where the rules would have put it anyway.
+JEV_QUIETED = ("AI: routine activity", "AI: benign")
+
+
+def jev_effect(route: str | None, reason: str | None) -> str | None:
+    """"raised", "quieted" or None, from a case's route and reason. A learning-period prefix ("learning: ...") is
+    ignored: that case was held at digest, so Jev raised nothing."""
+    reason = reason or ""
+    if route == "alert" and reason.startswith("AI: ") and ", severity " in reason:
+        return "raised"
+    if route == "log" and reason in JEV_QUIETED:
+        return "quieted"
+    return None
 
 
 def _week(ts: float) -> str:
@@ -57,15 +74,29 @@ def _jev_benign(verdict: str | None) -> bool | None:
 
 
 def weekly(db: sqlite3.Connection) -> list[dict]:
-    """Per ISO week, oldest first: cases, alerts, decided, noise (FP + benign), true positives, and Jev's agreement
-    with the disposition over the decided cases Jev had a category for."""
+    """Per ISO week, oldest first: cases, alerts, decided, noise (FP + benign), true positives, and what Jev's answer
+    did, scored against the owner: `jev_raised` alerts it raised on its own call and `jev_raised_tp` how many of the
+    decided ones were real; `jev_quieted` cases it sent to the log as routine and `jev_quieted_tp` true positives
+    among them (it must stay 0). `jev_agreement` (its category was "benign" exactly when the owner called the case
+    noise) is kept for the record but misleads: the category question asks what kind of activity a case is, so a
+    routine beacon is "c2_beaconing" by description (measured 2026-11-05: 167 of 441 decided cases)."""
     weeks: dict[str, dict] = {}
     for r in _rows(db):
         w = weeks.setdefault(_week(r["first_ts"]), {"week": _week(r["first_ts"]), "cases": 0, "alerts": 0, "decided": 0,
-                                                     "noise": 0, "true_positives": 0, "jev_decided": 0, "jev_agree": 0})
+                                                     "noise": 0, "true_positives": 0, "jev_decided": 0, "jev_agree": 0,
+                                                     "jev_raised": 0, "jev_raised_decided": 0, "jev_raised_tp": 0,
+                                                     "jev_quieted": 0, "jev_quieted_tp": 0})
         w["cases"] += 1
         w["alerts"] += r["route"] == "alert"
         d = r["disposition"]
+        effect = jev_effect(r["route"], r["reason"])
+        if effect == "raised":
+            w["jev_raised"] += 1
+            w["jev_raised_decided"] += d in DISPOSITIONS
+            w["jev_raised_tp"] += d == "true_positive"
+        elif effect == "quieted":
+            w["jev_quieted"] += 1
+            w["jev_quieted_tp"] += d == "true_positive"
         if d in DISPOSITIONS:
             w["decided"] += 1
             w["noise"] += d in NOISE
@@ -147,14 +178,22 @@ def _pct(v) -> str:
     return f"{v:.0%}" if isinstance(v, (int, float)) else "–"
 
 
+def jev_raised_cell(w: dict) -> str:
+    undecided = w["jev_raised"] - w["jev_raised_decided"]
+    return f"{w['jev_raised']} ({w['jev_raised_tp']}" + (f", {undecided} undecided)" if undecided else ")")
+
+
 def markdown(db: sqlite3.Connection, now: float | None = None, judge_replay: bool = False,
              qualify: Qualify | None = None) -> str:
     stamp = datetime.fromtimestamp(now).strftime("%Y-%m-%d") if now else datetime.now().strftime("%Y-%m-%d")
     lines = [f"### Benchmark {stamp}", "",
-             "| week | cases | alerts | decided | noise rate | true positives | Jev agreement |", "|---|---|---|---|---|---|---|"]
+             ("| week | cases | alerts | decided | noise rate | true positives | alerts Jev raised (real) "
+             "| quieted by Jev (real among them) |"), "|---|---|---|---|---|---|---|---|"]
     for w in weekly(db):
         lines.append(f"| {w['week']} | {w['cases']} | {w['alerts']} | {w['decided']} | {_pct(w['noise_rate'])} | "
-                     f"{w['true_positives']} | {_pct(w['jev_agreement'])} ({w['jev_decided']}) |")
+                     f"{w['true_positives']} | {jev_raised_cell(w)} | {w['jev_quieted']} ({w['jev_quieted_tp']}) |")
+    lines += ["", ("Jev's effect: alerts it raised on its own call (real: the owner called them true positives), and "
+              "cases it sent to the log as routine (real: true positives among them, which must stay 0).")]
     h = host_context(db)
     lines += ["", f"Host context: {h['cases']} cases on the PC, {h['corroborated']} corroborated. Code said "
               + (", ".join(f"{k} {v}" for k, v in sorted(h["who"].items())) or "nothing") + ". "

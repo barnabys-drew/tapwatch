@@ -131,6 +131,15 @@ def _observed(c: Case, words: dict) -> str:
         elif f.get("to_sync_network"):
             text += (f" {f.get('top_share_pct', 0)}% went to {f['to_sync_network']}'s own network, where that "
                      "company's cloud backup and sync services live.")
+        if f.get("top_carrier"):
+            where = f" on {f['top_network']}'s network ({f.get('top_country') or '?'})" if f.get("top_network") else ""
+            proto, _, port = str(f["top_carrier"]).partition("/")
+            conns = f.get("top_conns") or 0
+            text += (f" The main destination{where} received it over {proto.upper()} port {port}, in {conns} "
+                     f"connection{'s' if conns != 1 else ''}.")
+            if proto == "udp" and port not in ("443", "?"):
+                text += (" Live audio, video and screen sharing are sent over UDP on high ports; file uploads "
+                         "normally use TCP, or QUIC on port 443.")
         if f.get("symmetric"):
             text += (f" It also downloaded about {f.get('down_mb', 0)} MB in the same hour, the shape of a video "
                      "call rather than an upload.")
