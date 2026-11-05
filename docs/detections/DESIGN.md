@@ -398,6 +398,19 @@ TV/streamer, hub, printer, network gear and audio/AV: their profiles are stable,
   news, app telemetry), none ever a threat, and they were most of the triage queue. tapwatch looks
   for threats, not content: a site's kind never opens a case. `new_domain: {report_popular: true}`
   restores the old behaviour.
+- **Routine first contacts (implemented 2026-11-04, #356):** a window in which every name is popular or
+  *routine* opens no case either. Routine means an everyday kind of site from an explicit allowlist
+  (`NewExternalDomain.ROUTINE_CATEGORIES`: advertising, media, SaaS, CDN, shopping, ...; never file or web
+  hosting, cloud infrastructure, developer tools, remote control, proxies, VPNs, or no category), with a second
+  signal behind the category: the offline list named it, or another household device already used the site. A
+  model's category alone doesn't count, because it reads only the name, and an attacker chooses the name. Never
+  for a random-looking or newly registered name, or a tenant of a shared platform (`x.github.io`). The names are
+  still learned and the daily summaries still record the destinations; each filed window is logged and counted
+  (`routine_windows`), and cases carry a `routine` count. Why: of 165 cases from 10-20 to 11-04, 158 routed to the
+  log and all were closed by hand as noise, none of the 506 ever was a true positive, and a first contact never
+  repeats on its device, so the judge can't learn them (#353). Estimated on the stored single-name cases: 22 of 219
+  filed, none a true positive. The rest stay mostly because the name has no category (166) or only a model's
+  (19). `new_domain: {report_routine: true}` restores the old behaviour.
 - **Category:** each name is looked up in the offline UT1 category list (`categories.py`, from
   `update-feeds`): the case carries the distinct kinds found (advertising, media, remote control,
   ...) as a fact for the summary. A fact only, not routing: measured first (2026-10-16, the day's

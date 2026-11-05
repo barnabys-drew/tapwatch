@@ -1345,16 +1345,33 @@ class NewExternalDomain(Detector):
 
     A name on the newly registered domains list (#18) always opens a case, at severity 3 (R08's "NRD <= 30 days:
     high"). The list is a sample of each day's registrations, so a name not on it is never graded as old.
+
+    Routine first contacts (#356) open no case either: a window whose every name is popular or *routine* (`routine`:
+    an everyday kind of site from ROUTINE_CATEGORIES, backed by a second signal, not random-looking, not newly
+    registered, not a tenant of a shared platform). Measured 2026-11-04: of 165 cases since 10-20, 158 routed to the
+    log and every one was closed as noise by hand; none of the 506 cases ever was a true positive, and a first contact
+    never repeats on its device, so the judge can't learn them (#353). The names are still learned and the daily
+    summaries still record the destinations; `routine_windows` / `routine_names` count what was filed, and each
+    window is logged. `report_routine: true` restores the old behaviour.
     """
 
     name = "new_domain"
+    # Everyday kinds of site (categories.LABELS). An explicit allowlist, so a label added later is never routine until
+    # someone puts it here. Left out on purpose: no category or "unknown", and the kinds an attacker can rent or that
+    # carry someone else's content: file and web hosting, cloud infrastructure, developer tools (paste sites, code
+    # hosting), downloads, URL shorteners, remote control, proxies, VPNs, DoH resolvers, and the threat labels.
+    ROUTINE_CATEGORIES: ClassVar[frozenset[str]] = frozenset({
+        "advertising", "marketing", "media", "social", "chat", "webmail", "software_update", "security_vendor",
+        "conferencing", "cdn", "saas", "telemetry", "news", "shopping", "games", "healthcare", "finance", "government",
+        "education"})
     PERSIST: ClassVar[tuple[str, ...]] = ("known", "users")
     DEVICE_KEYED: ClassVar[tuple[str, ...]] = ("known",)
 
     def __init__(self, warmup: Warmup, window: float = 300, popular: set[str] | None = None,
-                 dev: DevProfile | None = None, report_popular: bool = False):
+                 dev: DevProfile | None = None, report_popular: bool = False, report_routine: bool = False):
         self.warmup, self.window, self.popular, self.dev = warmup, window, popular or set(), dev or DevProfile()
-        self.report_popular = report_popular
+        self.report_popular, self.report_routine = report_popular, report_routine
+        self.routine_windows = self.routine_names = 0   # filed as routine since start (#356), for the record
         self.known: dict[str, set[str]] = defaultdict(set)       # host -> base domains it has used
         self.users: dict[str, set[str]] = defaultdict(set)       # base domain -> hosts that used it
         self.pending: dict[str, dict] = {}                       # host -> open window
@@ -1387,7 +1404,8 @@ class NewExternalDomain(Detector):
                              "random": looks_random(name) and dom not in self.popular,
                              "registered": registered_on(name, rec["ts"]),
                              "others": others, "popular": dom in self.popular,
-                             "category": cat, "category_source": cat_source})
+                             "category": cat, "category_source": cat_source,
+                             "tenant": shared_platform(name) is not None})
         return out
 
     def _close_due(self, now: float) -> list[Case]:
@@ -1398,13 +1416,34 @@ class NewExternalDomain(Detector):
         return self._cases([(h, self.pending.pop(h)) for h in list(self.pending)])
 
     def _cases(self, closed: list[tuple[str, dict]]) -> list[Case]:
-        return [self._case(h, w) for h, w in closed if self._worth_a_case(w["items"])]
+        out = []
+        for h, w in closed:
+            if self._worth_a_case(w["items"]):
+                out.append(self._case(h, w))
+            elif any(self._routine(i) and not self._quiet_popular(i) for i in w["items"]):
+                self.routine_windows += 1
+                self.routine_names += len(w["items"])
+                log.info("new_domain: %d first contact(s) from %s filed as routine, no case (#356)", len(w["items"]), h)
+        return out
+
+    def _quiet_popular(self, i: dict) -> bool:
+        """On the popular list and readable (R08's popular-only windows); never when popular lists are switched off."""
+        return not self.report_popular and bool(self.popular) and i["popular"] and not i["random"]
+
+    def _routine(self, i: dict) -> bool:
+        """#356: an everyday kind of site with a second signal behind the category. The offline list said so, or
+        another household device already used the site: a model's answer alone reads only the name, which an attacker
+        chooses. Never random-looking, newly registered or a tenant of a shared platform (x.github.io)."""
+        if self.report_routine or i["random"] or i.get("registered") or i.get("tenant"):
+            return False
+        return i.get("category") in self.ROUTINE_CATEGORIES and (i.get("category_source") == "list" or i["others"] > 0)
 
     def _worth_a_case(self, items: list[dict]) -> bool:
-        """Something in the window is off the popular list or random-looking (see the class docstring)."""
-        if self.report_popular or not self.popular:
+        """Something in the window is newly registered, or neither popular-and-readable nor routine (see the class
+        docstring)."""
+        if any(i.get("registered") for i in items):
             return True
-        return any(i["random"] or not i["popular"] or i.get("registered") for i in items)
+        return not all(self._quiet_popular(i) or self._routine(i) for i in items)
 
     def _case(self, host: str, win: dict) -> Case:
         items = win["items"]
@@ -1418,6 +1457,7 @@ class NewExternalDomain(Detector):
                  "popular": sum(i["popular"] for i in items),
                  "popular_known": bool(self.popular),
                  "newly_registered": len(new_regs),
+                 "routine": sum(self._routine(i) for i in items),   # #356: everyday kinds with a second signal
                  **({"registered_since": new_regs[0]} if new_regs else {}),
                  "via": items[0]["via"], "max_others": max(i["others"] for i in items),
                  "dedupe": f"{int(win['start'] // self.window)}",
