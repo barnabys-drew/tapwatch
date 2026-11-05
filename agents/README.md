@@ -218,5 +218,9 @@ SELECT datetime, data FROM windows_eventlog
   snapshots still show which program holds a connection, but program starts and DNS lookups aren't recorded.
 - **ARM PCs (Windows):** Sysmon runs natively (`Sysmon64a`). osquery's pinned MSI is x64 only, so on ARM it runs
   under Windows' x64 emulation.
+- **Keeping the agent running (Windows):** the osqueryd service restarts itself after a crash or a non-zero exit,
+  and a SYSTEM scheduled task, "tapwatch osqueryd keeper", starts it every 5 minutes if it is set to Automatic but
+  stopped (osqueryd once stopped with exit code 0, which Windows treats as a clean stop). To stop the agent on purpose,
+  set the service to Manual or Disabled first, or uninstall.
 - **Uninstall:** `./uninstall.sh`, or double-click `uninstall.cmd` on Windows.
 - Re-running an installer is safe: it upgrades osquery and rewrites the config.
