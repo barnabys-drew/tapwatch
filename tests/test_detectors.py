@@ -1296,7 +1296,7 @@ def test_beacon_to_an_expected_tool_is_skipped():
 
 def test_new_domain_random_only_off_popular_and_no_bare_hostnames():
     nd = NewExternalDomain(Warmup(0), popular={"googlevideo.com"})
-    run(nd, [dns(T0, "rr4---sn-bvvbaxivnuxqjvhj5nu-vgqe.googlevideo.com"), dns(T0 + 1, "jsl-dtc-010"),
+    run(nd, [dns(T0, "rr4---sn-bvvbaxivnuxqjvhj5nu-vgqe.googlevideo.com"), dns(T0 + 1, "office-server"),
              dns(T0 + 2, "q8z3kx0vw7p2mr.example.net")])
     c = nd.flush()[0]
     assert c.facts["count"] == 2 and c.facts["random"] == 1 and c.indicators[0] == "q8z3kx0vw7p2mr.example.net"
@@ -1324,6 +1324,89 @@ def test_new_domain_report_popular_and_no_list_keep_every_window():
     no_list = NewExternalDomain(Warmup(0))
     run(no_list, [dns(T0, "api.target.com")])
     assert len(no_list.flush()) == 1
+
+
+def _routine_lists(fn):
+    """Run `fn` with a small category list and a model's cached answers in place, then clear both."""
+    import time as _time
+
+    from tapwatch import categories
+
+    categories.set_categories({"ads.example": "advertising", "files.example": "file_hosting"})
+    today = _time.strftime("%Y-%m-%d")
+    categories.LEARNED.update({"guessed.example": ("media", today), "shop.example": ("shopping", today)})
+    try:
+        fn()
+    finally:
+        categories.set_categories({})
+        for k in ("guessed.example", "shop.example"):
+            categories.LEARNED.pop(k, None)
+
+
+def test_new_domain_routine_first_contacts_open_no_case():
+    """#356: an everyday kind of site from the offline list, or a model's kind backed by another device, is filed."""
+    def check():
+        nd = NewExternalDomain(Warmup(0), popular={"target.com"})
+        run(nd, [dns(T0, "px.ads.example"), dns(T0 + 1, "api.target.com")])     # list category + popular
+        assert nd.flush() == [] and nd.routine_windows == 1 and nd.routine_names == 2
+        assert any("ads.example" in seen for seen in nd.known.values())     # still learned
+        # a model's answer alone is not enough: an attacker chooses the name it reads
+        run(nd, [dns(T0 + 10, "www.guessed.example")])
+        c = nd.flush()
+        assert len(c) == 1 and c[0].facts["routine"] == 0
+        # ...but with another household device already using the site, it is
+        run(nd, [dns(T0 + 20, "www.shop.example", src="192.168.50.20")])
+        nd.flush()   # the first device's own first contact: model-only, a case
+        run(nd, [dns(T0 + 30, "cdn.shop.example", src="192.168.50.21")])
+        assert nd.flush() == [] and nd.routine_windows == 2
+
+    _routine_lists(check)
+
+
+def test_new_domain_never_files_odd_or_rentable_names_as_routine():
+    def check():
+        from tapwatch import categories
+
+        categories.set_categories({"ads.example": "advertising", "files.example": "file_hosting",
+                                   "github.io": "advertising"})
+        cases = []
+        for name in ("dl.files.example",                 # rentable kind: file hosting
+                     "q8z3kx0vw7p2mr.ads.example",       # random-looking
+                     "someone.github.io",                # a tenant of a shared platform
+                     "nothing-known.example"):           # no category
+            nd = NewExternalDomain(Warmup(0))
+            run(nd, [dns(T0, name)])
+            cases += nd.flush()
+        assert len(cases) == 4
+        # one odd name in the window reports the whole window
+        nd = NewExternalDomain(Warmup(0))
+        run(nd, [dns(T0, "px.ads.example"), dns(T0 + 1, "nothing-known.example")])
+        c = nd.flush()
+        assert len(c) == 1 and c[0].facts["count"] == 2 and c[0].facts["routine"] == 1
+
+    _routine_lists(check)
+
+
+def test_new_domain_newly_registered_routine_name_still_opens_a_case(monkeypatch):
+    def check():
+        import tapwatch.detectors as det
+
+        monkeypatch.setattr(det, "registered_on", lambda name, ts=None: "2026-11-01" if "ads" in name else None)
+        nd = NewExternalDomain(Warmup(0))
+        run(nd, [dns(T0, "px.ads.example")])
+        c = nd.flush()
+        assert len(c) == 1 and c[0].base_severity == 3
+
+    _routine_lists(check)
+
+
+def test_new_domain_report_routine_keeps_every_routine_window():
+    def check():
+        nd = NewExternalDomain(Warmup(0), report_routine=True)
+        run(nd, [dns(T0, "px.ads.example")])
+        assert len(nd.flush()) == 1 and nd.routine_windows == 0
+
+    _routine_lists(check)
 
 
 def test_upload_spike_to_a_sync_service_is_capped_at_digest():
