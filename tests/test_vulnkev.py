@@ -225,3 +225,12 @@ def test_349_standing_rules_do_not_back_a_long_horizon_case():
     from tapwatch import hostrules, longhaul
     assert {"host_av_off", "host_usb_new", "host_patch", "vuln_kev"} == hostrules.STANDING
     assert "hostrules.STANDING" in Path(longhaul.__file__).read_text()
+
+
+def test_a_given_index_is_not_replaced_by_the_feeds_directory(tmp_path):
+    # selfcheck passes its fixture as `index` while the live config also names a feeds_dir: the live kev.json, with
+    # newer bugs than the fixture knows, must not leak into the scenarios
+    (tmp_path / vulns.KEV_FILE).write_text('{"vulnerabilities": []}')
+    fixture = index()
+    r = VulnKev(EndpointState(PC), feeds_dir=str(tmp_path), index=fixture)
+    assert r.index() is fixture
