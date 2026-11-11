@@ -52,7 +52,9 @@ class VulnKev(Detector):
     def __init__(self, state, feeds_dir: str | None = None, index: vulns.VulnIndex | None = None,
                  repeat_days: float = REPEAT_DAYS):
         self.state = state                                # hostrules.EndpointState: the PC's address for the case
-        self.feeds_dir = feeds_dir
+        # A given index is fixed (selfcheck's fixture): the feeds directory must not replace it. Measured 2026-11-11:
+        # once the live kev.json listed a newer Chrome bug, selfcheck's "patched" browser failed and update rolled back.
+        self.feeds_dir = None if index is not None else feeds_dir
         self._index, self._index_mtime = index, None
         self.repeat = repeat_days * DAY
         self.agents_os: dict[str, dict] = {}              # agent -> its os_version row (name, version)
