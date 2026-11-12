@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 CREATE TABLE IF NOT EXISTS suppressions (
     id INTEGER PRIMARY KEY,
-    scope TEXT NOT NULL,        -- device_indicator | indicator | port | device_program
+    scope TEXT NOT NULL,        -- device_indicator | indicator | port | device_program | device
     detector TEXT NOT NULL,
     host TEXT,
     indicator TEXT,
@@ -206,7 +206,10 @@ JUDGE_DECIDED = ("EXISTS (SELECT 1 FROM judge_closures j WHERE j.case_id = cases
 OWNER_DISPOSITION = f"(CASE WHEN {JUDGE_DECIDED} THEN NULL ELSE cases.disposition END)"
 # device_program needs host context; the domain scopes match any host under the indicator's registrable
 # domain (ch-tanzone-02 after ch-tanzone-01 was suppressed: a sibling host alerted again, 2026-10-15).
-SCOPES = ("device_indicator", "indicator", "device_domain", "domain", "port", "device_program")
+# device: the detector is off for one device, whatever the indicator. For detectors whose indicator is only
+# a date (off_hours' dedupe is the day), which no indicator rule can follow: a dev box running jobs
+# and agent sessions overnight, paged off_hours at midnight and 11 PM (#1696, #1698, 2026-11-12).
+SCOPES = ("device_indicator", "indicator", "device_domain", "domain", "port", "device_program", "device")
 
 # `tapwatch mark` labels and the old feedback column, mapped onto dispositions.
 FEEDBACK_TO_DISPOSITION = {"fp": "false_positive", "tp": "true_positive"}
@@ -231,6 +234,8 @@ def describe_rule(rule) -> str:
     elif rule["scope"] == "device_program":
         name = str(rule["indicator"]).replace("\\", "/").rsplit("/", 1)[-1]  # the path names the user: the name only
         what = f"{rule['host']}, program {name}"
+    elif rule["scope"] == "device":
+        what = f"{rule['host']}, anything"
     else:
         what = f"{rule['host']}, {rule['indicator']}"
     return f"#{rule['id']} {rule['detector']} ({what})"
@@ -518,7 +523,7 @@ class Store:
         program = facts.get("host_program_path") or ""
         if scope == "device_program" and not program:
             raise WorkflowError("no single program on the device explains this case (needs host context)")
-        if scope not in ("port", "device_program") and not indicator:
+        if scope not in ("port", "device_program", "device") and not indicator:
             raise WorkflowError("this case has no indicator to suppress on")
         if scope in ("device_domain", "domain") and "." not in indicator:
             raise WorkflowError("this case's indicator isn't a domain name")
@@ -526,7 +531,8 @@ class Store:
         dev = device_id(row["host"], facts)  # the rule follows the device, not the address it had that day
         values = {"device_indicator": (dev, indicator, None), "indicator": (None, indicator, None),
                   "device_domain": (dev, dom, None), "domain": (None, dom, None),
-                  "port": (None, None, port), "device_program": (dev, program, None)}[scope]
+                  "port": (None, None, port), "device_program": (dev, program, None),
+                  "device": (dev, None, None)}[scope]
         now = time.time()
         with self.db:
             cur = self.db.execute(
@@ -592,7 +598,8 @@ class Store:
                     or (scope == "device_domain" and same_device and suffix_match(case.indicator, {r["indicator"]})) \
                     or (scope == "domain" and suffix_match(case.indicator, {r["indicator"]})) \
                     or (scope == "port" and isinstance(port, int) and r["port"] == port) \
-                    or (scope == "device_program" and same_device and program and r["indicator"] == program):
+                    or (scope == "device_program" and same_device and program and r["indicator"] == program) \
+                    or (scope == "device" and same_device):
                 rule = r
                 break
         if rule is None:
