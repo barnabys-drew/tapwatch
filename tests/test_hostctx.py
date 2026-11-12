@@ -392,6 +392,21 @@ def test_device_program_suppression(tmp_path):
         s.add_suppression(no_prog, "device_program", "x", "test")
 
 
+def test_device_suppression_turns_a_detector_off_for_one_device(tmp_path):
+    from tapwatch.store import Store, describe_rule
+    s = Store(str(tmp_path / "t.db"))
+    facts = {"conns": 369, "normal": 0, "hour": 0, "dedupe": "2026-11-12", "device_name": "devbox"}
+    cid = s.add(case(detector="off_hours", facts=facts, indicators=[]), "state", None, Route.ALERT, "r")
+    s.add_suppression(cid, "device", "dev box runs jobs overnight", "test")
+    assert "name:devbox, anything" in describe_rule(s.suppressions()[0])
+    # another day (a new dedupe, so a new indicator) and another address: still the same device
+    later = dict(facts, dedupe="2026-11-13")
+    assert s.match_suppression(case(detector="off_hours", host="192.168.1.99", facts=later, indicators=[]))
+    other = dict(facts, device_name="gaming-pc")
+    assert s.match_suppression(case(detector="off_hours", facts=other, indicators=[])) is None
+    assert s.match_suppression(case(detector="beaconing", facts=dict(facts), indicators=["x.example"])) is None
+
+
 def test_explain_suggests_only_repeated_all_benign_groups_and_applies(tmp_path):
     from tapwatch import explain
     from tapwatch.store import Store

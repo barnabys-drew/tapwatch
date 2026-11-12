@@ -749,6 +749,7 @@ def _suppress_form(r, facts: dict, indicators: list, csrf: str) -> str:
             choices.append(("domain", f"{r['detector']} + any host under {dom}, any device"))
     if isinstance(port, int):
         choices.append(("port", f"{r['detector']} + port {port}, any device"))
+    choices.append(("device", f"{r['detector']} + {this}, anything (the detector is off for it)"))  # broadest: last
     if not choices:
         return ""
     radios = "".join(f'<label class="scope"><input type="radio" name="scope" value="{e(s)}"{" checked" if i == 0 else ""}>'
