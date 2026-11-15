@@ -610,6 +610,17 @@ def _regularity(word: str) -> str:
     return f"{word} timing"
 
 
+def _clock_note(f: dict) -> str:
+    """The agent's clock is off from the sensor's (hostctx SKEW_WARN): worth fixing, and already corrected for."""
+    off = f.get("host_clock_offset")
+    if not isinstance(off, (int, float)) or not off:
+        return ""
+    amount = f"{round(abs(off) / 60)} minutes" if abs(off) >= 90 else f"{round(abs(off))} seconds"
+    pc = "That computer's" if f.get("host_source") == "fleet" else "The PC's"
+    return (f" {pc} clock is about {amount} {'fast' if off > 0 else 'slow'} compared with the sensor's;"
+            " tapwatch allowed for it, but its time should be set to sync automatically.")
+
+
 def _on_the_pc(f: dict) -> str:
     """Host context facts (hostctx.py) as plain sentences. Program names are untrusted (a binary can be named anything).
     A case on a computer enrolled in Fleet (#14 part 2) says which computer, and that its agent's log is the source."""
@@ -625,7 +636,7 @@ def _on_the_pc(f: dict) -> str:
                         else "; the owner's message did not name it."))
             if f.get("host_matched_by") == "ip":
                 text += " " + BY_ADDRESS
-        return text
+        return text + _clock_note(f)
     progs = ", ".join(json.dumps(clean_untrusted(p)) for p in f.get("host_programs", [])) or "unknown"
     what = "holding the connection" if f.get("host_matched") else "that made the DNS lookups"
     parts = [f"{where}" + ("" if f.get("host_source") == "fleet" else " (checked locally)") + f": the program {what} was {progs}."]
@@ -668,7 +679,7 @@ def _on_the_pc(f: dict) -> str:
                }.get(f.get("host_assessment", ""))
     if verdict:
         parts.append(verdict)
-    return " ".join(parts)
+    return " ".join(parts) + _clock_note(f)
 
 
 def summarize(case: Case, assets: Assets) -> str:
