@@ -50,6 +50,7 @@ import logging
 import os
 import re
 import socket
+import statistics
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -123,6 +124,17 @@ ADDR_KEY = f'{ADDRS}"'.encode()
 def _query(rec: dict) -> str:
     """A results-log record's query name, without Fleet's pack prefix (pack/Global/sysmon_events -> sysmon_events)."""
     return str(rec.get("name") or "").rsplit("/", 1)[-1]
+# An agent's clock can be off from the sensor's, and its events are matched to Zeek's rows within SLACK. Measured
+# 2026-11-14 on three days of connections: one Fleet computer's clock ran 19-20 minutes fast, so 3% of its completed
+# TCP connections found their Sysmon event (100% once corrected), and the tapwatch PC's own Windows agent sat about
+# 100 s behind Zeek, past SLACK. The offset is measured from the data: each established TCP connection Zeek saw,
+# paired with the agent's own connect event to the same address and port, nearest in time.
+SKEW_MAX = 3600               # an agent event this far from Zeek's row can still be its pair
+SKEW_TOL = 30                 # pairs within this of their median agree; and an offset this small is left alone
+SKEW_MIN_PAIRS = 3            # pairs needed for an estimate, two thirds of them agreeing
+SKEW_KEEP = 7 * 86400         # a case without enough pairs uses the last estimate this recent
+SKEW_WARN = 120               # an offset this large is logged once and described in the case
+ESTABLISHED = frozenset({"SF", "S1", "S2", "S3", "RSTO", "RSTR"})  # the TCP handshake completed: Sysmon logged it
 ADDR_WINDOW = 900             # an address is the PC's for cases within 15 minutes of a snapshot that holds it
 ADDR_KEEP = 6000              # snapshots kept in memory: about 8 days from two agents
 REJECTED_NAMES_MAX = 16       # distinct DHCP names warned about once each when they differ from the PC's own
@@ -525,6 +537,29 @@ class OwnerIndex:
         except (TypeError, ValueError):
             pass
 
+    def clock_offset(self, conn_rows: list[dict]) -> float | None:
+        """The agent's clock minus Zeek's, in seconds, from established TCP connections paired with the agent's own
+        connect events (Sysmon 3, eBPF) to the same address and port; None without enough pairs that agree."""
+        diffs = []
+        for r in conn_rows:
+            if r.get("proto") != "tcp" or r.get("conn_state") not in ESTABLISHED:
+                continue
+            try:
+                key, ts = (r["id.resp_h"], int(r["id.resp_p"])), float(r["ts"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            starts = [o.start for o in self.by_remote.get(key, ()) if o.start and o.end == o.start]
+            if starts:
+                d = min((t - ts for t in starts), key=abs)
+                if abs(d) <= SKEW_MAX:
+                    diffs.append(d)
+        if len(diffs) < SKEW_MIN_PAIRS:
+            return None
+        mid = statistics.median(diffs)
+        if 3 * sum(abs(d - mid) <= SKEW_TOL for d in diffs) < 2 * len(diffs):
+            return None   # the nearest events disagree: repeated connections to one address, not one clock offset
+        return mid
+
     def who(self, remote: str, port: int, ts: float, duration: float = 0.0) -> list[Owner]:
         out = []
         for o in self.by_remote.get((remote, int(port)), ()):
@@ -760,6 +795,22 @@ class HostContext:
         self._snaps: list[tuple[float, frozenset]] = []   # (time, addresses) from the agents' host_addresses
         self._addr_pos: dict[str, tuple[int, int]] = {}   # results log -> (inode, bytes read)
         self.agent = agent   # a Fleet host's hostIdentifier: read only its rows from the shared Fleet log
+        self.clock_offset, self._offset_at, self._offset_warned = 0.0, 0.0, 0.0   # agent clock minus Zeek's (s)
+
+    def offset_at(self, ts: float) -> float:
+        """The agent clock offset to apply around `ts`: the last estimate if it is recent and large enough to matter."""
+        if abs(self.clock_offset) < SKEW_TOL or abs(ts - self._offset_at) > SKEW_KEEP:
+            return 0.0
+        return self.clock_offset
+
+    def _learn_offset(self, est: float | None, ts: float) -> None:
+        if est is None:
+            return
+        self.clock_offset, self._offset_at = est, ts
+        if abs(est) >= SKEW_WARN and abs(est - self._offset_warned) >= SKEW_WARN:
+            self._offset_warned = est
+            log.warning("the endpoint agent's clock on %s is %+.0f s off from the sensor's; tapwatch corrects for it "
+                        "when matching, but set the computer's time to sync", self.hostname or self.host, est)
 
     def _snapshot_logs(self) -> list[Path]:
         logs = [p.with_name(p.name.replace("results", "snapshots")) for p in self.results_logs if "results" in p.name]
@@ -814,7 +865,7 @@ class HostContext:
         case #373: the PC and a work laptop share a docking station, so the dock's MAC and DHCP address go to
         whichever machine is docked, and a lookup by the laptop's own security agent got the PC's programs
         attached. No DHCP name seen: the address rule alone, as before."""
-        near = self.addresses_near(ts)
+        near = self.addresses_near(ts + self.offset_at(ts))
         if not (ip in near if near is not None else ip == self.host):
             return False
         name = first_label(device_name)
@@ -890,6 +941,8 @@ class HostContext:
         idx = self.index(since=case.ts - BEFORE - 3600, live=now - case.ts < LIVE_WINDOW)
         outbound = [r for r in conn_rows if r.get("id.orig_h") == case.host and not is_internal(r.get("id.resp_h", ""))
                     and isinstance(r.get("id.resp_p"), int)]
+        self._learn_offset(idx.clock_offset(outbound), case.ts)   # the whole window: more pairs than the destination's
+        skew = self.offset_at(case.ts)   # the agent's times are Zeek's plus this
         # The rows are the PC's connections within +-180 s of the case. When the case's destination is known (its
         # indicators, or what the PC's lookups of them returned), only that destination's rows are its context;
         # measured 2026-10-17, case #413: a temp-folder test program connecting elsewhere in the same window was
@@ -902,7 +955,7 @@ class HostContext:
         owners: list[Owner] = []
         matched = 0
         for r in outbound:
-            found = idx.who(r["id.resp_h"], r["id.resp_p"], r["ts"], float(r.get("duration") or 0))
+            found = idx.who(r["id.resp_h"], r["id.resp_p"], r["ts"] + skew, float(r.get("duration") or 0))
             matched += bool(found)
             owners += found
         # DNS lookups the PC made, tied to the program that asked (Sysmon 22): what DNS-anomaly cases need.
@@ -913,7 +966,7 @@ class HostContext:
         lookups_matched = 0
         lookups_followed = 0
         for r in lookups:
-            found, followed = idx.who_dns(r["query"], r["ts"], r.get("answers") or ())
+            found, followed = idx.who_dns(r["query"], r["ts"] + skew, r.get("answers") or ())
             lookups_matched += bool(found)
             lookups_followed += followed
             owners += found
@@ -974,6 +1027,8 @@ class HostContext:
             facts["min_route"] = "alert"
         elif assessment == "likely_benign" and not corroborated:
             facts["host_max_route"] = "digest"  # its own key: never loosens a detector's stricter max_route
+        if abs(skew) >= SKEW_WARN:
+            facts["host_clock_offset"] = round(skew)
         if idx.notes:
             facts["host_notes"] = idx.notes[:2]
         return facts
