@@ -1305,3 +1305,51 @@ def test_a_computer_that_starts_reporting_later_is_picked_up(tmp_path):
     now[0] = T0 + FLEET_DISCOVER + 1
     found = fc.find("192.168.50.30", T0 + 60)
     assert found is not None and found.hostname == "laptop" and len(fc.agents) == 3
+
+
+# ------------------------------------------------------------ an agent whose clock is off from the sensor's
+
+SKEWED = 1180   # measured 2026-11-14: a Fleet computer's clock ran about 19-20 minutes fast
+
+
+def skewed_log(tmp_path, skew=SKEWED, dsts=("203.0.113.50", "203.0.113.51", "203.0.113.52", "203.0.113.53")):
+    """Sysmon connect events for four connections, stamped by an agent clock `skew` seconds off from Zeek's."""
+    log = tmp_path / "osqueryd.results.log"
+    log.write_text("\n".join(json.dumps(sysmon(3, T0 + 10 * i + skew, guid=GUID, path=PS, remote_address=d,
+                                               remote_port="443")) for i, d in enumerate(dsts)))
+    return log, [dict(out_conn(T0 + 10 * i, dst=d), conn_state="SF") for i, d in enumerate(dsts)]
+
+
+def test_clock_offset_is_measured_from_paired_connections(tmp_path):
+    log, conns = skewed_log(tmp_path)
+    idx = OwnerIndex()
+    idx.read_log(log, since=0)
+    assert idx.clock_offset(conns) == pytest.approx(SKEWED, abs=1)
+    # unanswered SYNs: Sysmon never logged them, so they are no evidence either way
+    assert idx.clock_offset([dict(c, conn_state="S0") for c in conns]) is None
+    assert idx.clock_offset(conns[:2]) is None                     # too few pairs
+    scattered = [dict(c, ts=c["ts"] + k * 400) for k, c in enumerate(conns)]
+    assert idx.clock_offset(scattered) is None                     # the nearest events disagree
+
+
+def test_collect_corrects_for_a_skewed_agent_clock_and_says_so(tmp_path):
+    log, conns = skewed_log(tmp_path)
+    hc = HostContext(PC, None, [log], str(tmp_path), hostname="")
+    facts = hc.collect(case(indicators=[]), conns, [], now=T0 + 10)
+    assert facts["host_matched"] == 4 and facts["host_programs"] == ["powershell.exe"]
+    assert facts["host_clock_offset"] == SKEWED
+    text = summarize(case(indicators=[], facts={**case().facts, **facts}), Assets())
+    assert "clock is about 20 minutes fast" in text
+    # a later case with no pairs of its own (one connection) still gets the correction learned above
+    one = [dict(conns[0], ts=T0 + 3000)]
+    log.write_text(log.read_text() + "\n" + json.dumps(sysmon(3, T0 + 3000 + SKEWED, guid=GUID, path=PS,
+                                                               remote_address=DST, remote_port="443")))
+    later = hc.collect(case(indicators=[], ts=T0 + 3000), one, [], now=T0 + 3010)
+    assert later["host_matched"] == 1 and later["host_clock_offset"] == SKEWED
+
+
+def test_a_small_clock_offset_is_left_alone(tmp_path):
+    log, conns = skewed_log(tmp_path, skew=8)
+    hc = HostContext(PC, None, [log], str(tmp_path), hostname="")
+    facts = hc.collect(case(indicators=[]), conns, [], now=T0 + 10)
+    assert facts["host_matched"] == 4 and "host_clock_offset" not in facts and hc.offset_at(T0) == 0
